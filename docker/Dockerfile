@@ -3,10 +3,8 @@ FROM python:3.11-slim           # Debian bookworm‑slim
 
 # —— 切换 APT 源到公司内源（华为镜像示例）——
 # 一些极简 slim 变体没有 /etc/apt/sources.list；统一先写一份新的再换源，避免 sed 报错
-RUN echo "deb http://mirrors.tools.huawei.com/debian bookworm main contrib non-free
-\
-deb http://mirrors.tools.huawei.com/debian-security bookworm-security main contrib non-free
-\
+RUN echo "deb http://mirrors.tools.huawei.com/debian bookworm main contrib non-free \
+deb http://mirrors.tools.huawei.com/debian-security bookworm-security main contrib non-free \
 deb http://mirrors.tools.huawei.com/debian bookworm-updates main contrib non-free" > /etc/apt/sources.list && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
