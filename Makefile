@@ -1,11 +1,14 @@
+# 自动检测 docker compose 命令名
+COMPOSE_CMD := $(shell command -v docker-compose >/dev/null 2>&1 && echo docker-compose || echo docker compose)
+
 up:
-	docker compose -f docker/docker-compose.yml up -d
+	$(COMPOSE_CMD) -f docker/docker-compose.yml up -d
 
 down:
-	docker compose -f docker/docker-compose.yml down
+	$(COMPOSE_CMD) -f docker/docker-compose.yml down
 
 psql:
 	docker exec -it local_pg psql -U postgres
 
 init-db:
-	docker compose exec -T local_pg psql -U postgres -f /workspace/sql/00_init_local_pg.sql
+	$(COMPOSE_CMD) exec -T local_pg psql -U postgres -f /workspace/sql/00_init_local_pg.sql
