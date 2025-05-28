@@ -1,0 +1,6 @@
+.env
+/pgdata/
+*.gpkg
+*.jsonl
+__pycache__/
+*.pyc
