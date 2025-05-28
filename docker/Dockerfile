@@ -24,7 +24,7 @@ RUN python -m pip install --upgrade pip && \
     pip config set global.extra-index-url "https://cmc.centralrepo.rnd.huawei.com/artifactory/product_pypi/simple/ https://cmc.centralrepo.rnd.huawei.com/artifactory/pypi-central-repo/simple/" && \
     # 先装本地 whl，如不存在再 fallback
     if ls /tmp/moxing-*.whl 1> /dev/null 2>&1; then \
-        pip install /tmp/moxing-*.whl; \
+        pip install /tmp/moxing_framework-2.2.9-py2-none-any.whl; \
     else \
         pip install moxing; \
     fi && \
