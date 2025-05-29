@@ -13,6 +13,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks: [app_net]
 
   pgadmin:
     image: dpage/pgadmin4
@@ -22,6 +23,7 @@ services:
       PGADMIN_DEFAULT_EMAIL: admin@local
       PGADMIN_DEFAULT_PASSWORD: admin
     depends_on: [local_pg]
+    networks: [app_net]
 
   workspace:
     build: .
@@ -31,3 +33,12 @@ services:
     working_dir: /workspace
     depends_on: [local_pg]
     command: tail -f /dev/null
+    networks: [app_net]
+
+# —— 自定义 Docker 网络，避免与公司代理网段冲突 ——
+networks:
+  app_net:
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.31.0.0/24   # 如有冲突可自行改成未占用网段
