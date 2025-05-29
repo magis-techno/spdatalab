@@ -8,4 +8,4 @@ psql:
 	docker exec -it local_pg psql -U postgres
 
 init-db:
-	docker compose exec -T local_pg psql -U postgres -f /workspace/sql/00_init_local_pg.sql
+	docker compose exec -T workspace psql -h local_pg -U postgres -f sql/00_init_local_pg.sql
