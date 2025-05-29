@@ -1,3 +1,4 @@
+-- clip_filter & clips_bbox tables
 CREATE TABLE IF NOT EXISTS clip_filter(
     scene_token text PRIMARY KEY,
     dataset_name text
