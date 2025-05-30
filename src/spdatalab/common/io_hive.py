@@ -20,9 +20,6 @@ def _get_conn(catalog: str) -> HiveConnector:
     return HiveConnector(
         configuration={"kyuubi.engine.type": "dws"},
         catalog=catalog,
-        username=getenv("ADS_DATALAKE_USERNAME", required=True),
-        password=getenv("ADS_DATALAKE_PASSWORD", required=True),
-        service_url=getenv("DATALAKE_SERVICE_URL", required=True),
     )
 
 
