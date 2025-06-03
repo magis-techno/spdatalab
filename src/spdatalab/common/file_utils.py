@@ -5,6 +5,7 @@ from typing import Union, TextIO, BinaryIO, Optional
 from pathlib import Path
 import moxing as mox
 from contextlib import contextmanager
+from spdatalab.common.io_obs import init_moxing
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,7 @@ def open_file(path: Union[str, Path], mode: str = 'r') -> Union[TextIO, BinaryIO
     
     try:
         if is_obs:
+            init_moxing()  # 初始化 moxing 环境
             file_obj = mox.file.File(path, mode)
         else:
             file_obj = open(path, mode)
