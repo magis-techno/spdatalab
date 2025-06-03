@@ -1,17 +1,16 @@
 import os
 from pathlib import Path
-import moxing as mox
-from spdatalab.common.config import getenv
 
 def init_moxing():
-    os.environ.update({
-        'S3_ENDPOINT': getenv('S3_ENDPOINT', required=True),
-        'S3_USE_HTTPS': getenv('S3_USE_HTTPS', default='0'),
-        'ACCESS_KEY_ID': getenv('ADS_DATALAKE_USERNAME', required=True),
-        'SECRET_ACCESS_KEY': getenv('ADS_DATALAKE_PASSWORD', required=True),
-    })
+    # 先设置环境变量和取消代理
+    os.environ['S3_ENDPOINT'] = getenv('S3_ENDPOINT', required=True)
+    os.environ['S3_USE_HTTPS'] = getenv('S3_USE_HTTPS', default='0')
+    os.environ['ACCESS_KEY_ID'] = getenv('ADS_DATALAKE_USERNAME', required=True)
+    os.environ['SECRET_ACCESS_KEY'] = getenv('ADS_DATALAKE_PASSWORD', required=True)
     os.environ.pop('http_proxy', None)
     os.environ.pop('https_proxy', None)
+    # 再 import moxing 并 shift
+    import moxing as mox
     mox.file.shift('os', 'mox')
 
 def download(obs_path: str, local_path: Path, retries: int = 3):
