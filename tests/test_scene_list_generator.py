@@ -96,7 +96,7 @@ class TestSceneListGenerator:
 # 集成测试
 @pytest.mark.integration
 class TestIntegration:
-    @pytest.mark.skipif(not pytest.config.getoption("--run-obs-tests"), 
+    @pytest.mark.skipif(lambda request: not request.config.getoption("--run-obs-tests"), 
                        reason="需要 --run-obs-tests 参数来运行OBS测试")
     def test_iter_scenes_from_obs_file(self, scene_list_generator):
         """集成测试：实际读取OBS上的shrink文件，验证能否正常读取内容。"""
@@ -110,7 +110,7 @@ class TestIntegration:
             assert len(scenes) > 0, f"{path} 没有读取到数据"
             assert scene_list_generator.stats["failed_scenes"] >= 0
 
-    @pytest.mark.skipif(not pytest.config.getoption("--run-obs-tests"), 
+    @pytest.mark.skipif(lambda request: not request.config.getoption("--run-obs-tests"), 
                        reason="需要 --run-obs-tests 参数来运行OBS测试")
     def test_open_obs_file_env(self):
         """集成测试：验证 open_file 在打开 OBS 文件时是否正确初始化 moxing 环境。"""
@@ -123,7 +123,7 @@ class TestIntegration:
         except FileNotFoundError:
             pytest.skip("OBS 文件不存在，跳过测试")
 
-    @pytest.mark.skipif(not pytest.config.getoption("--run-obs-tests"), 
+    @pytest.mark.skipif(lambda request: not request.config.getoption("--run-obs-tests"), 
                        reason="需要 --run-obs-tests 参数来运行OBS测试")
     def test_iter_shrink_lines_from_obs_file(self):
         """集成测试：逐行读取 OBS 上的 jsonl.shrink 文件，并用 decode_shrink_line 解码。"""
@@ -145,7 +145,7 @@ class TestIntegration:
         except FileNotFoundError:
             pytest.skip("OBS 文件不存在，跳过测试")
 
-    @pytest.mark.skipif(not pytest.config.getoption("--run-local-tests"), 
+    @pytest.mark.skipif(lambda request: not request.config.getoption("--run-local-tests"), 
                        reason="需要 --run-local-tests 参数来运行本地文件测试")
     def test_local_shrink_file(self):
         """集成测试：验证本地 shrink 文件的读取，确保场景数大于 0。"""
