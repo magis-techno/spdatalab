@@ -37,7 +37,7 @@ def test_iter_scenes_from_file_and_stats():
     # 模拟文件内容
     lines = ['{"a": 1}\n', 'notjson\n', '{"b": 2}\n']
     gen = SceneListGenerator()
-    with patch("spdatalab.common.file_utils.open_file", mock_open(read_data="".join(lines))):
+    with patch("spdatalab.dataset.scene_list_generator.open_file", mock_open(read_data="".join(lines))):
         scenes = list(gen.iter_scenes_from_file("dummy.txt"))
     assert scenes == [{"a": 1}, {"b": 2}]
     assert gen.stats["failed_scenes"] == 1
