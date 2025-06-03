@@ -1,7 +1,7 @@
 """数据集管理器，提供数据集的组织和管理功能。"""
 
 import logging
-from typing import Dict, List, Optional, Iterator, Tuple, Union
+from typing import Dict, List, Optional, Iterator, Tuple, Union, TYPE_CHECKING
 from pathlib import Path
 import json
 import re
@@ -18,6 +18,10 @@ except ImportError:
     pd = None
     pa = None
     pq = None
+
+# 只在类型检查时导入pandas类型
+if TYPE_CHECKING and PARQUET_AVAILABLE:
+    import pandas as pd
 
 from ..common.file_utils import open_file, ensure_dir
 
@@ -479,7 +483,7 @@ class DatasetManager:
                 for _ in range(subdataset.duplication_factor):
                     yield scene_id
                     
-    def query_scenes_parquet(self, parquet_file: str, **filters) -> pd.DataFrame:
+    def query_scenes_parquet(self, parquet_file: str, **filters):
         """查询Parquet格式数据集。
         
         Args:
