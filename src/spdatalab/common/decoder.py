@@ -6,6 +6,8 @@ import json
 import logging
 from typing import Dict, Optional, Union
 from io import BytesIO
+import pickle
+import io
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +107,17 @@ def decode_shrink_line(line: str) -> Optional[Dict]:
             # base64 -> gzip -> json
             decoded = decode_base64(line)
             decompressed = decode_gzip(decoded)
-            return decode_json(decompressed)
+            try:
+                # 先尝试直接json解码
+                return decode_json(decompressed)
+            except JsonDecodeError:
+                # 如果失败，尝试pickle解码
+                try:
+                    json_str = pickle.load(io.BytesIO(decompressed))
+                    return decode_json(json_str)
+                except Exception as e:
+                    logger.warning(f"pickle解码失败: {str(e)}")
+                    return None
         except (Base64DecodeError, GzipDecodeError) as e:
             logger.warning(f"压缩格式解码失败: {str(e)}")
             return None
