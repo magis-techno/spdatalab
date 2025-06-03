@@ -4,6 +4,8 @@ import pytest
 import json
 import base64
 import gzip
+import os
+from pathlib import Path
 from unittest.mock import patch, mock_open
 from spdatalab.dataset.scene_list_generator import SceneListGenerator
 from spdatalab.common.decoder import decode_shrink_line as decoder_decode_shrink_line
@@ -28,8 +30,8 @@ def scene_list_generator():
 def mock_file_content():
     return {
         "index": "file1@duplicate2\nfile2@duplicate1\n",
-        "file1": ['{"x": 1}\n'],
-        "file2": ['{"y": 2}\n', '{"z": 3}\n']
+        "file1": '{"x": 1}\n',
+        "file2": '{"y": 2}\n{"z": 3}\n'
     }
 
 # 单元测试
@@ -65,12 +67,17 @@ class TestSceneListGenerator:
         assert scene_list_generator.stats["failed_scenes"] == 1
 
     def test_iter_scene_list_and_duplication(self, scene_list_generator, mock_file_content):
-        m = mock_open(read_data=mock_file_content["index"])
-        m2 = mock_open(read_data="".join(mock_file_content["file1"]))
-        m3 = mock_open(read_data="".join(mock_file_content["file2"]))
-        open_file_side_effects = [m.return_value, m2.return_value, m3.return_value]
-        
-        with patch("spdatalab.dataset.scene_list_generator.open_file", side_effect=open_file_side_effects):
+        """测试场景列表迭代和重复功能"""
+        def mock_open_file(path, mode='r'):
+            if path == "index.txt":
+                return mock_open(read_data=mock_file_content["index"]).return_value
+            elif "file1" in path:
+                return mock_open(read_data=mock_file_content["file1"]).return_value
+            elif "file2" in path:
+                return mock_open(read_data=mock_file_content["file2"]).return_value
+            raise FileNotFoundError(f"File not found: {path}")
+
+        with patch("spdatalab.dataset.scene_list_generator.open_file", side_effect=mock_open_file):
             scenes = list(scene_list_generator.iter_scene_list("index.txt"))
         
         assert scenes == [{"x": 1}, {"x": 1}, {"y": 2}, {"z": 3}]
@@ -78,20 +85,25 @@ class TestSceneListGenerator:
         assert scene_list_generator.stats["total_scenes"] == 4
 
     def test_generate_scene_list_output(self, scene_list_generator, tmp_path):
+        """测试生成场景列表输出"""
         index_content = "file1@duplicate2\n"
-        file1_lines = ['{"a": 1}\n']
-        m = mock_open(read_data=index_content)
-        m2 = mock_open(read_data="".join(file1_lines))
-        open_file_side_effects = [m.return_value, m2.return_value]
+        file1_content = '{"a": 1}\n'
         
-        output_file = tmp_path / "out.json"
-        with patch("spdatalab.dataset.scene_list_generator.open_file", side_effect=open_file_side_effects):
+        def mock_open_file(path, mode='r'):
+            if path == "index.txt":
+                return mock_open(read_data=index_content).return_value
+            elif "file1" in path:
+                return mock_open(read_data=file1_content).return_value
+            raise FileNotFoundError(f"File not found: {path}")
+
+        with patch("spdatalab.dataset.scene_list_generator.open_file", side_effect=mock_open_file):
+            output_file = tmp_path / "out.json"
             result = scene_list_generator.generate_scene_list("index.txt", str(output_file))
         
+        assert result == [{"a": 1}, {"a": 1}]
         with open(output_file, "r") as f:
             data = json.load(f)
         assert data == [{"a": 1}, {"a": 1}]
-        assert result == [{"a": 1}, {"a": 1}]
 
 # 集成测试
 @pytest.mark.integration
