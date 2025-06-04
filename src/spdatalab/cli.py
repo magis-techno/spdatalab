@@ -105,6 +105,134 @@ def build_dataset(index_file: str, dataset_name: str, description: str, output: 
         raise
 
 @cli.command()
+@click.option('--input', required=True, help='输入文件路径（支持JSON/Parquet/文本格式）')
+@click.option('--batch', type=int, default=1000, help='处理批次大小')
+@click.option('--insert-batch', type=int, default=1000, help='插入批次大小')
+@click.option('--buffer-meters', type=int, default=50, help='缓冲区大小（米）')
+@click.option('--precise-buffer', is_flag=True, help='使用精确的米级缓冲区（需要投影转换）')
+def process_bbox(input: str, batch: int, insert_batch: int, buffer_meters: int, precise_buffer: bool):
+    """处理边界框数据。
+    
+    从数据集文件中加载场景ID，获取边界框信息并插入到PostGIS数据库中。
+    支持JSON、Parquet和文本格式的数据集文件。
+    
+    Args:
+        input: 输入文件路径，支持JSON/Parquet/文本格式
+        batch: 处理批次大小，每批从数据库获取多少个场景的信息
+        insert_batch: 插入批次大小，每批向数据库插入多少条记录
+        buffer_meters: 缓冲区大小（米），用于点数据的边界框扩展
+        precise_buffer: 是否使用精确的米级缓冲区（通过投影转换实现）
+    """
+    setup_logging()
+    
+    try:
+        from .dataset.bbox import run as bbox_run
+        
+        click.echo(f"开始处理边界框数据:")
+        click.echo(f"  - 输入文件: {input}")
+        click.echo(f"  - 处理批次: {batch}")
+        click.echo(f"  - 插入批次: {insert_batch}")
+        click.echo(f"  - 缓冲区: {buffer_meters}米")
+        click.echo(f"  - 精确模式: {'是' if precise_buffer else '否'}")
+        
+        bbox_run(
+            input_path=input,
+            batch=batch,
+            insert_batch=insert_batch,
+            buffer_meters=buffer_meters,
+            use_precise_buffer=precise_buffer
+        )
+        
+        click.echo("✅ 边界框处理完成")
+        
+    except Exception as e:
+        logger.error(f"处理边界框失败: {str(e)}")
+        raise
+
+@cli.command()
+@click.option('--index-file', required=True, help='索引文件路径')
+@click.option('--dataset-name', required=True, help='数据集名称')
+@click.option('--description', default='', help='数据集描述')
+@click.option('--output', required=True, help='输出数据集文件路径')
+@click.option('--format', type=click.Choice(['json', 'parquet']), default='json', help='数据集保存格式')
+@click.option('--batch', type=int, default=1000, help='边界框处理批次大小')
+@click.option('--insert-batch', type=int, default=1000, help='边界框插入批次大小')
+@click.option('--buffer-meters', type=int, default=50, help='缓冲区大小（米）')
+@click.option('--precise-buffer', is_flag=True, help='使用精确的米级缓冲区')
+@click.option('--skip-bbox', is_flag=True, help='跳过边界框处理')
+def build_dataset_with_bbox(index_file: str, dataset_name: str, description: str, output: str, 
+                           format: str, batch: int, insert_batch: int, buffer_meters: int, 
+                           precise_buffer: bool, skip_bbox: bool):
+    """构建数据集并处理边界框（完整工作流程）。
+    
+    从索引文件构建数据集，保存后自动处理边界框数据，提供一键式完整工作流程。
+    
+    Args:
+        index_file: 索引文件路径，每行格式为 obs_path@duplicateN
+        dataset_name: 数据集名称
+        description: 数据集描述
+        output: 输出数据集文件路径
+        format: 数据集保存格式，json 或 parquet
+        batch: 边界框处理批次大小
+        insert_batch: 边界框插入批次大小
+        buffer_meters: 缓冲区大小（米）
+        precise_buffer: 是否使用精确的米级缓冲区
+        skip_bbox: 是否跳过边界框处理
+    """
+    setup_logging()
+    
+    try:
+        # 步骤1：构建数据集
+        click.echo("=== 步骤1: 构建数据集 ===")
+        manager = DatasetManager()
+        dataset = manager.build_dataset_from_index(index_file, dataset_name, description)
+        
+        # 显示数据集统计信息
+        stats = manager.get_dataset_stats(dataset)
+        click.echo(f"数据集统计信息:")
+        click.echo(f"  - 数据集名称: {stats['dataset_name']}")
+        click.echo(f"  - 子数据集数量: {stats['subdataset_count']}")
+        click.echo(f"  - 唯一场景数: {stats['total_unique_scenes']}")
+        click.echo(f"  - 总场景数(含倍增): {stats['total_scenes_with_duplicates']}")
+        
+        # 步骤2：保存数据集
+        click.echo("=== 步骤2: 保存数据集 ===")
+        # 确保输出目录存在
+        Path(output).parent.mkdir(parents=True, exist_ok=True)
+        manager.save_dataset(dataset, output, format=format)
+        click.echo(f"✅ 数据集已保存到: {output} ({format}格式)")
+        
+        # 步骤3：处理边界框（如果需要）
+        if not skip_bbox:
+            click.echo("=== 步骤3: 处理边界框 ===")
+            
+            from .dataset.bbox import run as bbox_run
+            
+            click.echo(f"边界框处理配置:")
+            click.echo(f"  - 处理批次: {batch}")
+            click.echo(f"  - 插入批次: {insert_batch}")
+            click.echo(f"  - 缓冲区: {buffer_meters}米")
+            click.echo(f"  - 精确模式: {'是' if precise_buffer else '否'}")
+            
+            bbox_run(
+                input_path=output,
+                batch=batch,
+                insert_batch=insert_batch,
+                buffer_meters=buffer_meters,
+                use_precise_buffer=precise_buffer
+            )
+            
+            click.echo("✅ 边界框处理完成")
+        else:
+            click.echo("=== 步骤3: 跳过边界框处理 ===")
+        
+        click.echo("🎉 完整工作流程完成！")
+        
+    except Exception as e:
+        logger.error(f"完整工作流程失败: {str(e)}")
+        raise
+
+@cli.command()
 @click.option('--dataset-file', required=True, help='数据集文件路径')
 @click.option('--subdataset', default=None, help='子数据集名称（可选）')
 @click.option('--output', default=None, help='输出文件路径（可选）')
