@@ -99,14 +99,14 @@ def fetch_bbox_with_geometry(names, eng):
                 ELSE
                     -- 对于已有边界框的数据，直接使用边界框
                     ST_MakeEnvelope(xmin, ymin, xmax, ymax, 4326)
-            END AS geom
+            END AS geometry
         FROM bbox_data;""")
     
     return gpd.read_postgis(
         sql_query, 
         eng, 
         params={"names_param": names},
-        geom_col='geom'
+        geom_col='geometry'
     )
 
 def batch_insert_to_postgis(gdf, eng, table_name='clips_bbox', batch_size=1000):
@@ -213,7 +213,7 @@ def run(input_path, batch=1000, insert_batch=1000):
             # 创建最终的GeoDataFrame
             final_gdf = gpd.GeoDataFrame(
                 merged[['scene_token', 'data_name', 'event_id', 'city_id', 'timestamp', 'all_good']], 
-                geometry=merged['geom'], 
+                geometry=merged['geometry'], 
                 crs=4326
             )
             
