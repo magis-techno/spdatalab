@@ -12,6 +12,11 @@
 - **灵活字段选择**: 可以选择特定字段并进行汇总统计
 - **易于扩展**: 后续添加新要素类型只需调整参数
 
+## 依赖要求
+
+- **PostGIS数据库**: 项目使用PostGIS进行空间计算
+- **Python依赖**: pandas, geopandas, sqlalchemy, psycopg
+
 ## 快速开始
 
 ### 1. 最简单的用法
@@ -22,7 +27,7 @@ from spdatalab.fusion import SpatialJoin
 # 初始化
 spatial_join = SpatialJoin()
 
-# bbox与路口相交分析
+# bbox与路口相交分析（20米缓冲区）
 results = spatial_join.bbox_intersect_features(
     feature_table="intersections",
     buffer_meters=20.0
@@ -79,29 +84,36 @@ poi_results = spatial_join.bbox_intersect_features(
 
 ```bash
 # 基础相交分析
-python -m spdatalab spatial-join --right-table intersections
+spdatalab spatial-join --right-table intersections
 
 # 距离范围内连接
-python -m spdatalab spatial-join \
+spdatalab spatial-join \
     --right-table intersections \
     --spatial-relation dwithin \
     --distance-meters 50
 
 # 使用缓冲区
-python -m spdatalab spatial-join \
+spdatalab spatial-join \
     --right-table intersections \
     --buffer-meters 30 \
     --output-table bbox_intersection_results
 ```
 
-### 自定义字段选择
+### 自定义字段选择和导出
 
 ```bash
-# 选择特定字段
-python -m spdatalab spatial-join \
+# 选择特定字段并导出CSV
+spdatalab spatial-join \
     --right-table intersections \
     --select-fields "inter_id,inter_type,count:count" \
     --output-file results.csv
+
+# 同时保存到数据库和文件
+spdatalab spatial-join \
+    --right-table intersections \
+    --buffer-meters 25 \
+    --output-table analysis_results \
+    --output-file analysis_results.csv
 ```
 
 ## 支持的空间关系
@@ -126,10 +138,10 @@ select_fields = {
 ### 汇总统计
 ```python
 select_fields = {
-    "count": "count",                    # 计数
-    "avg_value": "some_field|mean",      # 平均值
-    "min_distance": "distance|min",      # 最小值
-    "max_value": "some_field|max"        # 最大值
+    "intersection_count": "count",                    # 计数
+    "avg_value": "some_field|mean",                   # 平均值
+    "min_distance": "distance_meters|min",           # 最小距离
+    "max_value": "some_field|max"                     # 最大值
 }
 ```
 
@@ -146,6 +158,9 @@ intersection_analysis = spatial_join.bbox_intersect_features(
         "nearest_intersection_distance": "min_distance"
     }
 )
+
+# 查看结果统计
+print(f"平均每个bbox附近有 {intersection_analysis['nearby_intersections'].mean():.1f} 个路口")
 ```
 
 ### 2. 道路网络分析
@@ -161,6 +176,11 @@ road_analysis = spatial_join.join_attributes_by_location(
         "road_count": "count"
     }
 )
+
+# 按道路类型统计
+road_type_stats = road_analysis['road_type'].value_counts()
+print("道路类型分布:")
+print(road_type_stats)
 ```
 
 ### 3. 兴趣点密度分析
@@ -172,14 +192,18 @@ poi_analysis = spatial_join.bbox_intersect_features(
     buffer_meters=200.0,
     summary_fields={
         "poi_density": "count",
-        "poi_types": "poi_type|collect"  # 收集所有POI类型
+        "nearest_poi_distance": "min_distance"
     }
 )
+
+# 统计POI密度分布
+high_density_areas = poi_analysis[poi_analysis['poi_density'] > 10]
+print(f"高密度POI区域: {len(high_density_areas)} 个bbox")
 ```
 
 ## 性能优化建议
 
-1. **建立空间索引**
+1. **建立空间索引** (必需)
 ```sql
 CREATE INDEX IF NOT EXISTS idx_clips_bbox_geometry 
     ON clips_bbox USING GIST(geometry);
@@ -189,27 +213,38 @@ CREATE INDEX IF NOT EXISTS idx_intersections_geom
 ```
 
 2. **合理选择缓冲区大小**
-   - 太小可能遗漏相关要素
-   - 太大会影响性能和精度
+   - 路口分析: 20-50米
+   - 道路分析: 5-15米  
+   - POI分析: 100-500米
 
 3. **使用合适的空间关系**
    - 精确分析使用`intersects`
    - 邻近分析使用`dwithin`
+   - 包含关系使用`within`/`contains`
 
 4. **分批处理大数据集**
 ```python
 # 按城市分批处理
-for city_id in city_list:
+cities = ['beijing', 'shanghai', 'guangzhou']
+all_results = []
+
+for city_id in cities:
     results = spatial_join.join_attributes_by_location(
         left_table="clips_bbox",
         right_table="intersections",
         where_clause=f"l.city_id = '{city_id}'"
     )
+    all_results.append(results)
+    print(f"{city_id}: {len(results)} 条记录")
+
+# 合并结果
+import pandas as pd
+final_results = pd.concat(all_results, ignore_index=True)
 ```
 
 ## 扩展到新要素类型
 
-添加新的要素类型分析非常简单：
+添加新的要素类型分析非常简单，只需要知道表名和字段名：
 
 ```python
 # 假设有新的要素表 "traffic_lights"
@@ -231,26 +266,48 @@ custom_analysis = spatial_join.join_attributes_by_location(
     distance_meters=100.0,
     select_fields={
         "light_type": "light_type",
-        "light_status": "status",
+        "light_status": "status", 
         "light_count": "count"
     },
     where_clause="r.status = 'active'"  # 只考虑活跃的交通灯
 )
 ```
 
-## 常见问题
+## 常见问题解答
 
 ### Q: 如何处理没有匹配结果的情况？
-A: 使用LEFT JOIN（默认），bbox记录会被保留，关联字段为NULL。
+A: 使用LEFT JOIN（默认），bbox记录会被保留，关联字段为NULL。可以用`dropna()`删除无匹配的记录。
 
 ### Q: 如何获得更精确的距离计算？
-A: 系统会自动将几何转换到Web Mercator投影（EPSG:3857）进行距离计算。
+A: 系统会自动将几何转换到Web Mercator投影（EPSG:3857）进行距离计算，精度约为米级。
 
 ### Q: 能否同时与多个要素表进行连接？
-A: 目前一次只能连接两个表，但可以多次调用进行链式连接。
+A: 目前一次只能连接两个表，但可以多次调用进行链式连接：
+```python
+# 先与路口连接
+result1 = spatial_join.join_attributes_by_location("clips_bbox", "intersections")
+# 保存中间结果到新表，然后与道路连接
+result2 = spatial_join.join_attributes_by_location("result1_table", "roads")
+```
 
 ### Q: 如何处理复杂的空间关系？
-A: 可以在`where_clause`中添加额外的PostGIS空间函数条件。
+A: 可以在`where_clause`中添加额外的PostGIS空间函数条件：
+```python
+results = spatial_join.join_attributes_by_location(
+    left_table="clips_bbox",
+    right_table="complex_features", 
+    where_clause="ST_Area(r.geom) > 1000 AND r.category = 'important'"
+)
+```
+
+### Q: 命令行运行时提示找不到命令？
+A: 确保已安装项目并且环境变量正确：
+```bash
+cd src && python -m spdatalab.cli spatial-join --help
+# 或者
+export PYTHONPATH="${PYTHONPATH}:$(pwd)/src"
+spdatalab spatial-join --help
+```
 
 ## 示例数据结果
 
@@ -264,4 +321,13 @@ scene_002   | data_1    | beijing | POLYGON  | inter_002       | stop_sign      
 ...
 ```
 
-这个简化的空间连接功能让你可以轻松地将bbox与任何空间要素进行关联分析，为后续的深入分析提供基础数据。 
+## 总结
+
+这个简化的空间连接功能让你可以轻松地将bbox与任何空间要素进行关联分析：
+
+1. **简单易用**: 一行代码即可完成基础分析
+2. **功能强大**: 支持多种空间关系和字段汇总
+3. **性能优化**: 基于PostGIS的高效空间计算
+4. **易于扩展**: 添加新要素类型无需修改代码
+
+这为后续的深入空间分析提供了坚实的基础。 
