@@ -155,7 +155,7 @@ class SpatialJoin:
         bbox与要素相交分析的简化接口
         
         Args:
-            feature_table: 要素表名
+            feature_table: 要素表名（应使用标准化的表名，如 intersections）
             feature_type: 要素类型描述（用于日志）
             buffer_meters: 缓冲区半径
             summary_fields: 要汇总的字段，格式: {"new_name": "field|method"}

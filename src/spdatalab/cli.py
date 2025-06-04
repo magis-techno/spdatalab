@@ -500,24 +500,43 @@ def spatial_join(left_table: str, right_table: str, spatial_relation: str,
         # 执行空间连接
         spatial_joiner = SpatialJoin()
         
-        if buffer_meters > 0:
-            # 使用简化接口
-            result = spatial_joiner.bbox_intersect_features(
-                feature_table=right_table,
-                feature_type=right_table.replace('s', ''),  # 简单复数转单数
-                buffer_meters=buffer_meters,
-                output_table=output_table
-            )
-        else:
-            # 使用完整接口
-            result = spatial_joiner.join_attributes_by_location(
-                left_table=left_table,
-                right_table=right_table,
-                spatial_relation=spatial_relation,
-                distance_meters=distance_meters,
-                select_fields=parsed_fields,
-                output_table=output_table
-            )
+        try:
+            if buffer_meters > 0:
+                # 使用简化接口
+                result = spatial_joiner.bbox_intersect_features(
+                    feature_table=right_table,
+                    feature_type=right_table.replace('s', ''),  # 简单复数转单数
+                    buffer_meters=buffer_meters,
+                    output_table=output_table
+                )
+            else:
+                # 使用完整接口
+                result = spatial_joiner.join_attributes_by_location(
+                    left_table=left_table,
+                    right_table=right_table,
+                    spatial_relation=spatial_relation,
+                    distance_meters=distance_meters,
+                    select_fields=parsed_fields,
+                    output_table=output_table
+                )
+        except Exception as join_error:
+            # 提供更友好的错误信息和建议
+            error_msg = str(join_error)
+            if "does not exist" in error_msg and "relation" in error_msg:
+                click.echo(f"❌ 表 '{right_table}' 不存在")
+                click.echo("\n💡 请检查以下事项:")
+                click.echo("1. 确保已正确配置FDW远程数据源:")
+                click.echo("   psql -h local_pg -U postgres -f sql/01_fdw_remote.sql")
+                click.echo("\n2. 使用标准化的表名:")
+                click.echo("   - intersections    (路口数据)")
+                click.echo("   - trajectory_points (轨迹点数据)")
+                click.echo("   - roads            (道路数据，如果已配置)")
+                click.echo("   - pois             (POI数据，如果已配置)")
+                click.echo("\n3. 查看可用的图层:")
+                click.echo("   SELECT * FROM available_layers;")
+                click.echo("\n4. 检查数据库中的表:")
+                click.echo("   SELECT table_name FROM information_schema.tables WHERE table_schema='public';")
+            raise
         
         click.echo(f"✅ 空间连接完成，共 {len(result)} 条记录")
         
@@ -537,6 +556,59 @@ def spatial_join(left_table: str, right_table: str, spatial_relation: str,
         
     except Exception as e:
         logger.error(f"空间连接失败: {str(e)}")
+        raise
+
+@cli.command()
+def list_layers():
+    """查看可用的标准化图层信息。
+    
+    显示当前FDW配置中可用的标准化图层列表和基本信息。
+    """
+    setup_logging()
+    
+    try:
+        from .fusion import SpatialJoin
+        spatial_joiner = SpatialJoin()
+        
+        # 查询可用图层信息
+        try:
+            import pandas as pd
+            layers_df = pd.read_sql(
+                "SELECT * FROM available_layers ORDER BY layer_name",
+                spatial_joiner.engine
+            )
+            
+            if len(layers_df) == 0:
+                click.echo("❌ 没有找到可用的图层")
+                click.echo("请确保已正确配置FDW：")
+                click.echo("  psql -h local_pg -U postgres -f sql/01_fdw_remote.sql")
+                return
+            
+            click.echo("📋 可用的标准化图层:")
+            click.echo("=" * 80)
+            
+            for _, layer in layers_df.iterrows():
+                click.echo(f"🗂️  {layer['layer_name']}")
+                click.echo(f"   描述: {layer['description']}")
+                click.echo(f"   源表: {layer['source_table']}")
+                click.echo(f"   几何类型: {layer['geometry_type']}")
+                click.echo(f"   记录数: {layer['record_count']:,}")
+                click.echo()
+            
+            click.echo("💡 使用示例:")
+            for _, layer in layers_df.iterrows():
+                click.echo(f"  spdatalab spatial-join --right-table {layer['layer_name']} --buffer-meters 50")
+            
+        except Exception as e:
+            if "available_layers" in str(e):
+                click.echo("❌ available_layers 视图不存在")
+                click.echo("请重新配置FDW以创建标准化视图：")
+                click.echo("  psql -h local_pg -U postgres -f sql/01_fdw_remote.sql")
+            else:
+                click.echo(f"❌ 查询图层信息失败: {str(e)}")
+            
+    except Exception as e:
+        logger.error(f"列出图层失败: {str(e)}")
         raise
 
 def setup_logging():

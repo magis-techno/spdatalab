@@ -113,7 +113,7 @@ def load_scene_ids(file_path):
 
 def fetch_meta(tokens):
     """批量获取场景元数据"""
-    sql = ("SELECT id AS scene_token,name AS data_name,event_id,city_id,timestamp "
+    sql = ("SELECT id AS scene_token,origin_name AS data_name,event_id,city_id,timestamp "
            "FROM transform.ods_t_data_fragment_datalake WHERE id IN %(tok)s")
     with hive_cursor() as cur:
         cur.execute(sql, {"tok": tuple(tokens)})
