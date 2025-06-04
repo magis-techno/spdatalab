@@ -123,8 +123,7 @@ def batch_insert_to_postgis(gdf, eng, table_name='clips_bbox', batch_size=1000):
                 table_name, 
                 eng, 
                 if_exists='append', 
-                index=False,
-                method='multi'  # 使用多行插入提高效率
+                index=False
             )
             inserted_rows += len(batch_gdf)
             print(f'[批量插入] 已插入: {inserted_rows}/{total_rows} 行')
