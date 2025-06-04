@@ -133,7 +133,12 @@ def batch_insert_to_postgis(gdf, eng, table_name='clips_bbox', batch_size=1000):
             # 如果批量失败，尝试逐行插入
             for _, row in batch_gdf.iterrows():
                 try:
-                    single_gdf = gpd.GeoDataFrame([row], geometry='geom', crs=4326)
+                    # 创建单行GeoDataFrame，确保几何列名正确
+                    single_gdf = gpd.GeoDataFrame(
+                        [row.drop('geometry')], 
+                        geometry=[row.geometry], 
+                        crs=4326
+                    )
                     single_gdf.to_postgis(table_name, eng, if_exists='append', index=False)
                     inserted_rows += 1
                 except Exception as row_e:
