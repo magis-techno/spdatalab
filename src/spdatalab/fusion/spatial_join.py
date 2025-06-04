@@ -12,7 +12,8 @@ import geopandas as gpd
 from sqlalchemy import create_engine, text
 from enum import Enum
 
-from ..common.config import LOCAL_DSN
+# 数据库连接配置
+LOCAL_DSN = "postgresql+psycopg://postgres:postgres@local_pg:5432/postgres"
 
 logger = logging.getLogger(__name__)
 
