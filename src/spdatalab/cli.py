@@ -446,6 +446,346 @@ def dataset_stats(dataset_file: str, output_format: str):
         logger.error(f"获取数据集统计信息失败: {str(e)}")
         raise
 
+@cli.command()
+@click.option('--analysis-type', type=click.Choice([
+    'trajectory-junction', 'trajectory-road', 'trajectory-region', 
+    'trajectory-to-trajectory', 'comprehensive'
+]), required=True, help='交集分析类型')
+@click.option('--trajectory-table', default='clips_bbox', help='轨迹数据表名')
+@click.option('--target-table', help='目标数据表名（路口、道路、区域等）')
+@click.option('--buffer-meters', type=float, default=20.0, help='缓冲区半径（米）')
+@click.option('--time-tolerance', type=int, help='时间容差（秒），仅用于轨迹间分析')
+@click.option('--output-table', help='输出数据库表名')
+@click.option('--output-dir', default='data/intersection_results', help='输出目录')
+@click.option('--export-formats', multiple=True, default=['csv', 'geojson'], 
+              help='导出格式，可选: csv, geojson, gpkg, shp')
+@click.option('--parallel', is_flag=True, help='启用并行处理（按城市分组）')
+@click.option('--max-workers', type=int, default=4, help='最大并行工作线程数')
+@click.option('--quality-check', is_flag=True, help='执行结果质量检查')
+def analyze_intersection(analysis_type: str, trajectory_table: str, target_table: str,
+                        buffer_meters: float, time_tolerance: int, output_table: str,
+                        output_dir: str, export_formats: tuple, parallel: bool,
+                        max_workers: int, quality_check: bool):
+    """运行轨迹交集分析。
+    
+    支持多种类型的交集分析：
+    - trajectory-junction: 轨迹与路口交集
+    - trajectory-road: 轨迹与道路交集  
+    - trajectory-region: 轨迹与区域交集
+    - trajectory-to-trajectory: 轨迹间交集
+    - comprehensive: 综合分析（根据配置运行多种分析）
+    
+    Args:
+        analysis_type: 分析类型
+        trajectory_table: 轨迹数据表名
+        target_table: 目标数据表名
+        buffer_meters: 缓冲区半径
+        time_tolerance: 时间容差（秒）
+        output_table: 输出表名
+        output_dir: 输出目录
+        export_formats: 导出格式列表
+        parallel: 是否启用并行处理
+        max_workers: 最大工作线程数
+        quality_check: 是否执行质量检查
+    """
+    setup_logging()
+    
+    try:
+        from .fusion import TrajectoryIntersectionAnalyzer, IntersectionProcessor
+        
+        click.echo(f"开始执行交集分析:")
+        click.echo(f"  - 分析类型: {analysis_type}")
+        click.echo(f"  - 轨迹表: {trajectory_table}")
+        click.echo(f"  - 目标表: {target_table or '自动确定'}")
+        click.echo(f"  - 缓冲区: {buffer_meters}米")
+        click.echo(f"  - 输出目录: {output_dir}")
+        click.echo(f"  - 并行处理: {'是' if parallel else '否'}")
+        
+        if analysis_type == 'comprehensive':
+            # 综合分析
+            processor = IntersectionProcessor(max_workers=max_workers)
+            
+            # 构建分析配置
+            config = {
+                'trajectory_junction_analysis': {
+                    'enabled': True,
+                    'trajectory_table': trajectory_table,
+                    'junction_table': target_table or 'intersections',
+                    'buffer_meters': buffer_meters,
+                    'output_table': f"{output_table}_junction" if output_table else None
+                },
+                'trajectory_to_trajectory_analysis': {
+                    'enabled': True,
+                    'trajectory_table1': trajectory_table,
+                    'buffer_meters': buffer_meters,
+                    'time_tolerance_seconds': time_tolerance,
+                    'output_table': f"{output_table}_traj" if output_table else None
+                },
+                'generate_visualizations': True
+            }
+            
+            if target_table and 'road' in target_table.lower():
+                config['trajectory_road_analysis'] = {
+                    'enabled': True,
+                    'trajectory_table': trajectory_table,
+                    'road_table': target_table,
+                    'buffer_meters': buffer_meters,
+                    'output_table': f"{output_table}_road" if output_table else None
+                }
+            
+            if target_table and 'region' in target_table.lower():
+                config['trajectory_region_analysis'] = {
+                    'enabled': True,
+                    'trajectory_table': trajectory_table,
+                    'region_table': target_table,
+                    'buffer_meters': buffer_meters,
+                    'output_table': f"{output_table}_region" if output_table else None
+                }
+            
+            results = processor.run_comprehensive_intersection_analysis(
+                analysis_config=config,
+                output_dir=output_dir,
+                export_formats=list(export_formats)
+            )
+            
+            click.echo(f"✅ 综合分析完成，共导出 {len(results['exported_files'])} 个文件")
+            
+        else:
+            # 单个分析类型
+            analyzer = TrajectoryIntersectionAnalyzer()
+            
+            if analysis_type == 'trajectory-junction':
+                if not target_table:
+                    target_table = 'intersections'
+                
+                result_gdf = analyzer.analyze_trajectory_intersection_with_junctions(
+                    trajectory_table=trajectory_table,
+                    junction_table=target_table,
+                    buffer_meters=buffer_meters,
+                    output_table=output_table
+                )
+                
+            elif analysis_type == 'trajectory-road':
+                if not target_table:
+                    target_table = 'roads'
+                    
+                result_gdf = analyzer.analyze_trajectory_intersection_with_roads(
+                    trajectory_table=trajectory_table,
+                    road_table=target_table,
+                    buffer_meters=buffer_meters,
+                    output_table=output_table
+                )
+                
+            elif analysis_type == 'trajectory-region':
+                if not target_table:
+                    target_table = 'regions'
+                    
+                result_gdf = analyzer.analyze_trajectory_intersection_with_regions(
+                    trajectory_table=trajectory_table,
+                    region_table=target_table,
+                    buffer_meters=buffer_meters,
+                    output_table=output_table
+                )
+                
+            elif analysis_type == 'trajectory-to-trajectory':
+                result_gdf = analyzer.analyze_trajectory_to_trajectory_intersection(
+                    trajectory_table1=trajectory_table,
+                    trajectory_table2=target_table,
+                    buffer_meters=buffer_meters,
+                    time_tolerance_seconds=time_tolerance,
+                    output_table=output_table
+                )
+            
+            click.echo(f"✅ 分析完成，找到 {len(result_gdf)} 个交集")
+            
+            # 导出结果
+            if len(result_gdf) > 0:
+                processor = IntersectionProcessor()
+                exported_files = processor._export_results(
+                    result_gdf,
+                    Path(output_dir) / f"{analysis_type}_results",
+                    list(export_formats)
+                )
+                click.echo(f"结果已导出到 {len(exported_files)} 个文件")
+                
+                # 质量检查
+                if quality_check:
+                    quality_report = processor.evaluate_intersection_quality(result_gdf)
+                    click.echo(f"质量评估 - 得分: {quality_report['quality_score']}, 等级: {quality_report['quality_level']}")
+                    
+                    if quality_report['recommendations']:
+                        click.echo("改进建议:")
+                        for rec in quality_report['recommendations']:
+                            click.echo(f"  - {rec}")
+            else:
+                click.warning("没有找到交集结果")
+        
+    except Exception as e:
+        logger.error(f"交集分析失败: {str(e)}")
+        raise
+
+@cli.command()
+@click.option('--config-file', required=True, help='分析配置JSON文件路径')
+@click.option('--output-dir', default='data/batch_intersection_results', help='输出目录')
+@click.option('--max-workers', type=int, default=4, help='最大并行工作线程数')
+def batch_intersection_analysis(config_file: str, output_dir: str, max_workers: int):
+    """批量交集分析。
+    
+    从JSON配置文件读取多个分析任务并批量执行。
+    
+    配置文件格式示例:
+    {
+        "analyses": [
+            {
+                "name": "analysis1",
+                "type": "trajectory-junction",
+                "trajectory_table": "clips_bbox",
+                "target_table": "intersections", 
+                "buffer_meters": 20.0,
+                "export_formats": ["csv", "geojson"]
+            }
+        ]
+    }
+    
+    Args:
+        config_file: 配置文件路径
+        output_dir: 输出目录
+        max_workers: 最大工作线程数
+    """
+    setup_logging()
+    
+    try:
+        import json
+        from .fusion import IntersectionProcessor
+        
+        # 读取配置文件
+        with open(config_file, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        
+        click.echo(f"从配置文件加载了 {len(config.get('analyses', []))} 个分析任务")
+        
+        processor = IntersectionProcessor(max_workers=max_workers)
+        
+        for i, analysis_config in enumerate(config.get('analyses', [])):
+            analysis_name = analysis_config.get('name', f'analysis_{i+1}')
+            click.echo(f"执行分析: {analysis_name}")
+            
+            # 构建输出目录
+            analysis_output_dir = Path(output_dir) / analysis_name
+            
+            if analysis_config.get('type') == 'comprehensive':
+                # 综合分析
+                results = processor.run_comprehensive_intersection_analysis(
+                    analysis_config=analysis_config.get('config', {}),
+                    output_dir=str(analysis_output_dir),
+                    export_formats=analysis_config.get('export_formats', ['csv', 'geojson'])
+                )
+            else:
+                # 单个分析 - 这里可以扩展具体的单个分析逻辑
+                click.echo(f"单个分析类型 {analysis_config.get('type')} 暂未在批量模式中实现")
+                continue
+            
+            click.echo(f"✅ {analysis_name} 完成")
+        
+        click.echo(f"✅ 批量分析完成，结果保存到: {output_dir}")
+        
+    except Exception as e:
+        logger.error(f"批量分析失败: {str(e)}")
+        raise
+
+@cli.command()
+@click.option('--left-table', default='clips_bbox', help='左表名（如clips_bbox）')
+@click.option('--right-table', required=True, help='右表名（如intersections）')
+@click.option('--spatial-relation', type=click.Choice([
+    'intersects', 'within', 'contains', 'touches', 'crosses', 'overlaps', 'dwithin'
+]), default='intersects', help='空间关系')
+@click.option('--distance-meters', type=float, help='距离阈值（仅用于dwithin关系）')
+@click.option('--buffer-meters', type=float, default=0.0, help='缓冲区半径（米）')
+@click.option('--output-table', help='输出数据库表名')
+@click.option('--output-file', help='输出文件路径（CSV格式）')
+@click.option('--select-fields', help='选择字段，格式: field1,field2:method')
+def spatial_join(left_table: str, right_table: str, spatial_relation: str,
+                distance_meters: float, buffer_meters: float, output_table: str,
+                output_file: str, select_fields: str):
+    """执行空间连接分析 - 类似QGIS的join attributes by location。
+    
+    Examples:
+        # 基础相交分析
+        spdatalab spatial-join --right-table intersections
+        
+        # 距离范围内连接
+        spdatalab spatial-join --right-table intersections --spatial-relation dwithin --distance-meters 50
+        
+        # 自定义字段选择
+        spdatalab spatial-join --right-table intersections --select-fields "inter_id,inter_type,count:count"
+    """
+    setup_logging()
+    
+    try:
+        from .fusion import SpatialJoin, SpatialRelation
+        
+        click.echo(f"执行空间连接:")
+        click.echo(f"  - 左表: {left_table}")
+        click.echo(f"  - 右表: {right_table}")
+        click.echo(f"  - 空间关系: {spatial_relation}")
+        if distance_meters:
+            click.echo(f"  - 距离阈值: {distance_meters}米")
+        if buffer_meters > 0:
+            click.echo(f"  - 缓冲区: {buffer_meters}米")
+        
+        # 解析字段选择
+        parsed_fields = None
+        if select_fields:
+            parsed_fields = {}
+            for field_spec in select_fields.split(','):
+                if ':' in field_spec:
+                    field, method = field_spec.split(':')
+                    parsed_fields[field] = method
+                else:
+                    parsed_fields[field_spec] = field_spec
+        
+        # 执行空间连接
+        spatial_joiner = SpatialJoin()
+        
+        if buffer_meters > 0:
+            # 使用简化接口
+            result = spatial_joiner.bbox_intersect_features(
+                feature_table=right_table,
+                feature_type=right_table.replace('s', ''),  # 简单复数转单数
+                buffer_meters=buffer_meters,
+                output_table=output_table
+            )
+        else:
+            # 使用完整接口
+            result = spatial_joiner.join_attributes_by_location(
+                left_table=left_table,
+                right_table=right_table,
+                spatial_relation=spatial_relation,
+                distance_meters=distance_meters,
+                select_fields=parsed_fields,
+                output_table=output_table
+            )
+        
+        click.echo(f"✅ 空间连接完成，共 {len(result)} 条记录")
+        
+        # 显示基础统计
+        if len(result) > 0:
+            if 'scene_token' in result.columns:
+                click.echo(f"  - 唯一场景数: {result['scene_token'].nunique()}")
+            if 'city_id' in result.columns:
+                click.echo(f"  - 涉及城市数: {result['city_id'].nunique()}")
+        
+        # 导出文件
+        if output_file and len(result) > 0:
+            # 移除几何列并保存为CSV
+            df = result.drop(columns=['geometry']) if 'geometry' in result.columns else result
+            df.to_csv(output_file, index=False, encoding='utf-8')
+            click.echo(f"  - 结果已导出到: {output_file}")
+        
+    except Exception as e:
+        logger.error(f"空间连接失败: {str(e)}")
+        raise
+
 def setup_logging():
     """设置日志配置。"""
     logging.basicConfig(

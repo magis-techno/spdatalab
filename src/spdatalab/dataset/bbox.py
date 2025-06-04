@@ -251,9 +251,6 @@ def run(input_path, batch=1000, insert_batch=1000, create_table=True):
                     
                 print(f"[批次 {batch_num}] 获取到 {len(meta)} 条元数据")
                 
-                # 调试：显示前几个data_name
-                print(f"[批次 {batch_num}] 元数据中的前5个data_name: {meta.data_name.head().tolist()}")
-                
             except Exception as e:
                 print(f"[批次 {batch_num}] 获取元数据失败: {str(e)}")
                 continue
@@ -271,42 +268,6 @@ def run(input_path, batch=1000, insert_batch=1000, create_table=True):
                     continue
                     
                 print(f"[批次 {batch_num}] 获取到 {len(bbox_gdf)} 条边界框数据")
-                
-                # 调试：显示边界框数据中的dataset_name
-                print(f"[批次 {batch_num}] 边界框数据中的前5个dataset_name: {bbox_gdf.dataset_name.head().tolist()}")
-                
-                # 调试：检查哪些data_name没有匹配到边界框数据
-                meta_names = set(meta.data_name.tolist())
-                bbox_names = set(bbox_gdf.dataset_name.tolist())
-                missing_names = meta_names - bbox_names
-                
-                if missing_names:
-                    print(f"[批次 {batch_num}] 警告：{len(missing_names)} 个data_name在点数据表中未找到")
-                    print(f"[批次 {batch_num}] 缺失的前10个data_name: {list(missing_names)[:10]}")
-                    
-                    # 如果缺失数据过多，进行详细分析
-                    if len(missing_names) > len(meta_names) * 0.5:  # 超过50%缺失
-                        print(f"[批次 {batch_num}] 缺失数据过多，进行详细分析...")
-                        analyze_data_availability(meta.data_name.tolist(), eng)
-                    
-                    # 进一步调试：检查点数据表中是否真的没有这些数据
-                    debug_sql = text(f"""
-                        SELECT dataset_name, COUNT(*) as point_count
-                        FROM {POINT_TABLE}
-                        WHERE dataset_name = ANY(:debug_names)
-                        GROUP BY dataset_name
-                        LIMIT 10
-                    """)
-                    
-                    debug_names = list(missing_names)[:10]  # 只检查前10个
-                    with eng.connect() as conn:
-                        debug_result = conn.execute(debug_sql, {"debug_names": debug_names})
-                        debug_data = debug_result.fetchall()
-                        
-                    if debug_data:
-                        print(f"[批次 {batch_num}] 点数据表中找到的缺失数据: {debug_data}")
-                    else:
-                        print(f"[批次 {batch_num}] 点数据表中确实没有这些dataset_name的数据")
                 
             except Exception as e:
                 print(f"[批次 {batch_num}] 获取边界框失败: {str(e)}")
@@ -365,93 +326,6 @@ def run(input_path, batch=1000, insert_batch=1000, create_table=True):
             print(f"程序优雅退出！已处理: {total_processed} 条记录，成功插入: {total_inserted} 条记录")
         else:
             print(f"处理完成！总计处理: {total_processed} 条记录，成功插入: {total_inserted} 条记录")
-
-def analyze_data_availability(data_names, eng, sample_size=20):
-    """分析数据可用性，帮助诊断为什么边界框数据少"""
-    print(f"\n=== 数据可用性分析 ===")
-    
-    # 1. 检查总体数据分布
-    total_sql = text(f"""
-        SELECT 
-            COUNT(DISTINCT dataset_name) as unique_datasets,
-            COUNT(*) as total_points
-        FROM {POINT_TABLE}
-    """)
-    
-    with eng.connect() as conn:
-        result = conn.execute(total_sql)
-        total_stats = result.fetchone()
-        print(f"点数据表总体统计: {total_stats.unique_datasets} 个唯一数据集, {total_stats.total_points} 个点")
-    
-    # 2. 检查请求的数据名称在表中的存在情况
-    sample_names = data_names[:sample_size] if len(data_names) > sample_size else data_names
-    
-    availability_sql = text(f"""
-        SELECT 
-            input_name,
-            CASE WHEN point_count > 0 THEN 'EXISTS' ELSE 'MISSING' END as status,
-            COALESCE(point_count, 0) as point_count
-        FROM (
-            SELECT unnest(:input_names) as input_name
-        ) input_data
-        LEFT JOIN (
-            SELECT dataset_name, COUNT(*) as point_count
-            FROM {POINT_TABLE}
-            GROUP BY dataset_name
-        ) point_data ON input_data.input_name = point_data.dataset_name
-        ORDER BY point_count DESC NULLS LAST
-    """)
-    
-    with eng.connect() as conn:
-        result = conn.execute(availability_sql, {"input_names": sample_names})
-        availability_data = result.fetchall()
-        
-        exists_count = sum(1 for row in availability_data if row.status == 'EXISTS')
-        missing_count = len(availability_data) - exists_count
-        
-        print(f"样本分析结果 (前{len(sample_names)}个data_name):")
-        print(f"  - 存在: {exists_count} 个")
-        print(f"  - 缺失: {missing_count} 个")
-        
-        # 显示前几个存在的和缺失的
-        exists_samples = [row for row in availability_data if row.status == 'EXISTS'][:5]
-        missing_samples = [row for row in availability_data if row.status == 'MISSING'][:5]
-        
-        if exists_samples:
-            print(f"存在的数据样本: {[(row.input_name, row.point_count) for row in exists_samples]}")
-        if missing_samples:
-            print(f"缺失的数据样本: {[row.input_name for row in missing_samples]}")
-    
-    # 3. 检查数据名称的模式
-    pattern_sql = text(f"""
-        SELECT 
-            dataset_name,
-            COUNT(*) as point_count
-        FROM {POINT_TABLE}
-        WHERE dataset_name LIKE ANY(:patterns)
-        GROUP BY dataset_name
-        ORDER BY point_count DESC
-        LIMIT 10
-    """)
-    
-    # 根据样本数据推测可能的命名模式
-    patterns = []
-    for name in sample_names[:5]:
-        if '_' in name:
-            # 尝试截取不同长度的前缀
-            parts = name.split('_')
-            if len(parts) > 1:
-                patterns.append(f"{parts[0]}_%")
-    
-    if patterns:
-        with eng.connect() as conn:
-            result = conn.execute(pattern_sql, {"patterns": patterns})
-            pattern_data = result.fetchall()
-            
-            if pattern_data:
-                print(f"模式匹配结果: {pattern_data}")
-    
-    print("=== 分析完成 ===\n")
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(description='从数据集文件生成边界框数据')
