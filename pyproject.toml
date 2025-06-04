@@ -5,9 +5,26 @@ description = "Spatial‑Data‑Lab scaffold"
 requires-python = ">=3.9"
 readme = "README.md"
 license = {text = "MIT"}
+dependencies = [
+    "click",
+    "pandas",
+    "geopandas", 
+    "sqlalchemy",
+    "psycopg[binary]",
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pyarrow",
+    "pytest",
+]
 
 [project.urls]
 Homepage = "https://example.com"
+
+[project.scripts]
+spdatalab = "spdatalab.cli:cli"
 
 [build-system]
 requires = ["setuptools>=64"]
