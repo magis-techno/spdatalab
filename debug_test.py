@@ -56,7 +56,7 @@ def debug_test():
         
         # 手动推送到远端
         print("🚀 推送数据到远端...")
-        temp_table_name = f"debug_test_table_{test_city}"
+        temp_table_name = f"debug_test_table_{test_city}".lower()  # 确保小写
         
         # 清理可能存在的表
         joiner._cleanup_remote_temp_table(temp_table_name)
@@ -68,7 +68,7 @@ def debug_test():
             if_exists='replace',
             index=False
         )
-        print(f"✅ 数据推送完成")
+        print(f"✅ 数据推送完成，表名: {temp_table_name}")
         
         # 验证表是否存在
         print("🔍 验证远端表...")
@@ -81,7 +81,7 @@ def debug_test():
                 columns = conn.execute(text(f"""
                     SELECT column_name, data_type 
                     FROM information_schema.columns 
-                    WHERE table_name = '{temp_table_name.lower()}'
+                    WHERE table_name = '{temp_table_name}'
                 """)).fetchall()
                 print(f"表结构: {columns}")
                 

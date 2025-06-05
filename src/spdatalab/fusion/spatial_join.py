@@ -170,7 +170,7 @@ class SpatialJoin:
                     continue
                 
                 # 步骤2：推送到远端临时表
-                temp_table_name = f"{temp_table_prefix}_{city_id}_{uuid.uuid4().hex[:8]}"
+                temp_table_name = f"{temp_table_prefix}_{city_id}_{uuid.uuid4().hex[:8]}".lower()
                 self._push_batch_to_remote(local_batch, temp_table_name)
                 
                 try:
@@ -354,6 +354,9 @@ class SpatialJoin:
     ) -> pd.DataFrame:
         """在远端执行空间连接"""
         
+        # 确保表名是小写（PostgreSQL标准）
+        temp_table_name_lower = temp_table_name.lower()
+        
         # 构建空间条件
         spatial_condition = self._build_spatial_condition(
             spatial_relation, f"t.geometry", f"r.wkb_geometry", distance_meters
@@ -374,7 +377,7 @@ class SpatialJoin:
             SELECT 
                 {select_part},
                 {field_selection}
-            FROM {temp_table_name} t
+            FROM {temp_table_name_lower} t
             LEFT JOIN {remote_table} r ON {spatial_condition}
             {group_by_clause}
             ORDER BY t.scene_token
@@ -429,9 +432,11 @@ class SpatialJoin:
     def _verify_table_exists(self, temp_table_name: str) -> bool:
         """验证远端临时表是否存在"""
         try:
+            # 确保表名是小写（PostgreSQL标准）
+            table_name_lower = temp_table_name.lower()
             with self.remote_engine.connect() as conn:
                 # 使用更简单的方式检查表是否存在
-                result = conn.execute(text(f"SELECT 1 FROM {temp_table_name} LIMIT 1")).fetchone()
+                result = conn.execute(text(f"SELECT 1 FROM {table_name_lower} LIMIT 1")).fetchone()
                 return True
         except Exception as e:
             if "does not exist" in str(e) or "relation" in str(e):
@@ -510,19 +515,22 @@ class SpatialJoin:
 
     def _cleanup_remote_temp_table(self, temp_table_name: str):
         """清理远端临时表"""
+        # 确保表名是小写（PostgreSQL标准）
+        table_name_lower = temp_table_name.lower()
+        
         try:
             with self.remote_engine.connect() as conn:
-                conn.execute(text(f"DROP TABLE IF EXISTS {temp_table_name}"))
+                conn.execute(text(f"DROP TABLE IF EXISTS {table_name_lower}"))
                 conn.commit()
-            self.logger.debug(f"已清理远端临时表: {temp_table_name}")
+            self.logger.debug(f"已清理远端临时表: {table_name_lower}")
         except Exception as e:
             # 如果远端数据库不支持DROP TABLE IF EXISTS，尝试直接删除
             if "syntax error" in str(e) and "IF EXISTS" in str(e):
                 try:
                     with self.remote_engine.connect() as conn:
-                        conn.execute(text(f"DROP TABLE {temp_table_name}"))
+                        conn.execute(text(f"DROP TABLE {table_name_lower}"))
                         conn.commit()
-                    self.logger.debug(f"已清理远端临时表: {temp_table_name}")
+                    self.logger.debug(f"已清理远端临时表: {table_name_lower}")
                 except Exception as e2:
                     if "does not exist" not in str(e2) and "relation" not in str(e2):
                         self.logger.warning(f"清理远端临时表失败: {str(e2)}")
