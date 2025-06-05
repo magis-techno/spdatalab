@@ -39,8 +39,15 @@ class LightweightProgressTracker:
     """轻量级进度跟踪器，使用Parquet文件存储状态，针对大规模数据优化"""
     
     def __init__(self, work_dir="./bbox_import_logs"):
-        self.work_dir = Path(work_dir)
-        self.work_dir.mkdir(exist_ok=True)
+        self.work_dir = Path(work_dir).resolve()  # 使用绝对路径
+        try:
+            self.work_dir.mkdir(exist_ok=True, parents=True)
+        except PermissionError:
+            # 如果当前目录权限不足，尝试使用临时目录
+            import tempfile
+            self.work_dir = Path(tempfile.gettempdir()) / "bbox_import_logs"
+            self.work_dir.mkdir(exist_ok=True, parents=True)
+            print(f"权限不足，使用临时目录: {self.work_dir}")
         
         # 状态文件路径
         self.success_file = self.work_dir / "successful_tokens.parquet"
@@ -298,29 +305,6 @@ def create_table_if_not_exists(eng, table_name='clips_bbox'):
         print("建议：如果表已通过cleanup_clips_bbox.sql创建，请使用 --no-create-table 选项")
         return False
 
-def check_existing_records(eng, scene_tokens, table_name='clips_bbox'):
-    """检查数据库中已存在的记录"""
-    if not scene_tokens:
-        return set()
-    
-    # 批量查询，避免SQL注入
-    placeholders = ','.join(['%s'] * len(scene_tokens))
-    sql_query = text(f"""
-        SELECT scene_token FROM {table_name} 
-        WHERE scene_token IN ({placeholders})
-    """)
-    
-    try:
-        with eng.connect() as conn:
-            result = conn.execute(sql_query, scene_tokens)
-            existing = {row[0] for row in result}
-            if existing:
-                print(f"发现 {len(existing)} 个scene_token已存在于数据库中，将跳过")
-            return existing
-    except Exception as e:
-        print(f"检查已存在记录时出错: {str(e)}")
-        return set()
-
 def chunk(lst, n):
     """将列表分块处理"""
     for i in range(0, len(lst), n):
@@ -414,7 +398,7 @@ def fetch_bbox_with_geometry(names, eng):
     )
 
 def batch_insert_to_postgis(gdf, eng, table_name='clips_bbox', batch_size=1000, tracker=None, batch_num=None):
-    """批量插入到PostGIS，提高插入效率，并记录失败信息"""
+    """批量插入到PostGIS，依赖数据库约束处理重复数据"""
     total_rows = len(gdf)
     inserted_rows = 0
     successful_tokens = []
@@ -425,7 +409,7 @@ def batch_insert_to_postgis(gdf, eng, table_name='clips_bbox', batch_size=1000, 
         batch_tokens = batch_gdf['scene_token'].tolist()
         
         try:
-            # 使用 ON CONFLICT DO NOTHING 处理重复数据
+            # 直接插入，让数据库处理重复
             batch_gdf.to_postgis(
                 table_name, 
                 eng, 
@@ -438,27 +422,44 @@ def batch_insert_to_postgis(gdf, eng, table_name='clips_bbox', batch_size=1000, 
             print(f'[批量插入] 已插入: {inserted_rows}/{total_rows} 行')
             
         except Exception as e:
-            print(f'[批量插入错误] 批次 {i//batch_size + 1}: {str(e)}')
-            # 如果批量失败，尝试逐行插入
-            for idx, row in batch_gdf.iterrows():
-                scene_token = row['scene_token']
-                try:
-                    # 创建单行GeoDataFrame，确保几何列名正确
-                    single_gdf = gpd.GeoDataFrame(
-                        [row.drop('geometry')], 
-                        geometry=[row.geometry], 
-                        crs=4326
-                    )
-                    single_gdf.to_postgis(table_name, eng, if_exists='append', index=False)
-                    inserted_rows += 1
-                    successful_tokens.append(scene_token)
-                except Exception as row_e:
-                    error_msg = f'插入失败: {str(row_e)}'
-                    print(f'[逐行插入错误] scene_token: {scene_token}: {error_msg}')
+            error_str = str(e).lower()
+            
+            # 如果是重复键违反约束，尝试逐行插入以识别具体的重复记录
+            if 'unique' in error_str or 'duplicate' in error_str or 'constraint' in error_str:
+                print(f'[批量插入] 批次 {i//batch_size + 1} 遇到重复数据，进行逐行插入')
+                
+                for idx, row in batch_gdf.iterrows():
+                    scene_token = row['scene_token']
+                    try:
+                        # 创建单行GeoDataFrame
+                        single_gdf = gpd.GeoDataFrame(
+                            [row.drop('geometry')], 
+                            geometry=[row.geometry], 
+                            crs=4326
+                        )
+                        single_gdf.to_postgis(table_name, eng, if_exists='append', index=False)
+                        inserted_rows += 1
+                        successful_tokens.append(scene_token)
+                    except Exception as row_e:
+                        row_error_str = str(row_e).lower()
+                        if 'unique' in row_error_str or 'duplicate' in row_error_str:
+                            # 重复数据，不记录为失败，只是跳过
+                            print(f'[跳过重复] scene_token: {scene_token}')
+                            successful_tokens.append(scene_token)  # 视为成功（已存在）
+                        else:
+                            # 其他类型的错误才记录为失败
+                            error_msg = f'插入失败: {str(row_e)}'
+                            print(f'[插入错误] scene_token: {scene_token}: {error_msg}')
+                            if tracker:
+                                tracker.save_failed_record(scene_token, error_msg, batch_num, "database_insert")
+            else:
+                # 非重复数据问题，记录为失败
+                print(f'[批量插入错误] 批次 {i//batch_size + 1}: {str(e)}')
+                for token in batch_tokens:
                     if tracker:
-                        tracker.save_failed_record(scene_token, error_msg, batch_num, "database_insert")
+                        tracker.save_failed_record(token, f"批量插入异常: {str(e)}", batch_num, "database_insert")
     
-    # 批量保存成功的tokens
+    # 批量保存成功的tokens（包括重复跳过的）
     if tracker and successful_tokens:
         tracker.save_successful_batch(successful_tokens, batch_num)
     
@@ -544,19 +545,16 @@ def run(input_path, batch=1000, insert_batch=1000, create_table=False, retry_fai
                 
             print(f"[批次 {batch_num}] 处理 {len(token_batch)} 个场景")
             
-            # 使用高效的批量检查已存在的记录
+            # 只检查进度跟踪器中的记录（内存中的成功缓存）
             existing_in_progress = tracker.check_tokens_exist(token_batch)
-            existing_in_db = check_existing_records(eng, token_batch)
-            all_existing = existing_in_progress | existing_in_db
-            
-            token_batch = [token for token in token_batch if token not in all_existing]
+            token_batch = [token for token in token_batch if token not in existing_in_progress]
             
             if not token_batch:
-                print(f"[批次 {batch_num}] 所有数据已存在，跳过")
+                print(f"[批次 {batch_num}] 所有数据已在进度中标记为处理过，跳过")
                 continue
             
-            if all_existing:
-                print(f"[批次 {batch_num}] 跳过 {len(all_existing)} 个已存在的记录")
+            if existing_in_progress:
+                print(f"[批次 {batch_num}] 跳过 {len(existing_in_progress)} 个已处理的记录")
             
             # 获取元数据
             try:
