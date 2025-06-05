@@ -456,10 +456,14 @@ def dataset_stats(dataset_file: str, output_format: str):
 @click.option('--buffer-meters', type=float, default=0.0, help='缓冲区半径（米）')
 @click.option('--output-table', help='输出数据库表名')
 @click.option('--output-file', help='输出文件路径（CSV格式）')
-@click.option('--select-fields', help='选择字段，格式: field1,field2:method')
+@click.option('--fields-to-add', help='要添加的字段列表，逗号分隔（如: field1,field2）')
+@click.option('--discard-nonmatching', is_flag=True, help='丢弃未匹配的记录（INNER JOIN）')
+@click.option('--summarize', is_flag=True, help='开启统计汇总模式')
+@click.option('--summary-fields', help='统计字段，格式: field1:method1,field2:method2')
 def spatial_join(left_table: str, right_table: str, spatial_relation: str,
                 distance_meters: float, buffer_meters: float, output_table: str,
-                output_file: str, select_fields: str):
+                output_file: str, fields_to_add: str, discard_nonmatching: bool,
+                summarize: bool, summary_fields: str):
     """执行空间连接分析 - 类似QGIS的join attributes by location。
     
     Examples:
@@ -469,8 +473,11 @@ def spatial_join(left_table: str, right_table: str, spatial_relation: str,
         # 距离范围内连接
         spdatalab spatial-join --right-table intersections --spatial-relation dwithin --distance-meters 50
         
-        # 自定义字段选择
-        spdatalab spatial-join --right-table intersections --select-fields "inter_id,inter_type,count:count"
+        # 选择特定字段
+        spdatalab spatial-join --right-table intersections --fields-to-add "intersection_id,intersection_type"
+        
+        # 统计汇总
+        spdatalab spatial-join --right-table intersections --buffer-meters 50 --summarize --summary-fields "count:count,distance:distance"
     """
     setup_logging()
     
@@ -485,17 +492,26 @@ def spatial_join(left_table: str, right_table: str, spatial_relation: str,
             click.echo(f"  - 距离阈值: {distance_meters}米")
         if buffer_meters > 0:
             click.echo(f"  - 缓冲区: {buffer_meters}米")
+        if discard_nonmatching:
+            click.echo(f"  - 连接类型: INNER JOIN (丢弃未匹配)")
+        else:
+            click.echo(f"  - 连接类型: LEFT JOIN (保留所有左表记录)")
         
         # 解析字段选择
-        parsed_fields = None
-        if select_fields:
-            parsed_fields = {}
-            for field_spec in select_fields.split(','):
+        parsed_fields_to_add = None
+        if fields_to_add:
+            parsed_fields_to_add = [f.strip() for f in fields_to_add.split(',')]
+        
+        # 解析统计字段
+        parsed_summary_fields = None
+        if summary_fields:
+            parsed_summary_fields = {}
+            for field_spec in summary_fields.split(','):
                 if ':' in field_spec:
-                    field, method = field_spec.split(':')
-                    parsed_fields[field] = method
+                    field, method = field_spec.split(':', 1)
+                    parsed_summary_fields[field.strip()] = method.strip()
                 else:
-                    parsed_fields[field_spec] = field_spec
+                    parsed_summary_fields[field_spec.strip()] = "count"
         
         # 执行空间连接
         spatial_joiner = SpatialJoin()
@@ -507,6 +523,7 @@ def spatial_join(left_table: str, right_table: str, spatial_relation: str,
                     feature_table=right_table,
                     feature_type=right_table.replace('s', ''),  # 简单复数转单数
                     buffer_meters=buffer_meters,
+                    summary_fields=parsed_summary_fields,
                     output_table=output_table
                 )
             else:
@@ -516,7 +533,10 @@ def spatial_join(left_table: str, right_table: str, spatial_relation: str,
                     right_table=right_table,
                     spatial_relation=spatial_relation,
                     distance_meters=distance_meters,
-                    select_fields=parsed_fields,
+                    fields_to_add=parsed_fields_to_add,
+                    discard_nonmatching=discard_nonmatching,
+                    summarize=summarize,
+                    summary_fields=parsed_summary_fields,
                     output_table=output_table
                 )
         except Exception as join_error:

@@ -53,30 +53,28 @@ def advanced_spatial_join_example():
     
     spatial_join = SpatialJoin()
     
-    # 2. 自定义字段选择的空间连接
-    logger.info("2. 自定义字段的空间连接...")
+    # 2. 高级自定义分析
+    logger.info("2. 执行高级自定义分析...")
     
-    # 选择特定的路口属性并重命名
     custom_results = spatial_join.join_attributes_by_location(
         left_table="clips_bbox",
         right_table="intersections",
         spatial_relation=SpatialRelation.DWITHIN,
         distance_meters=50.0,
-        select_fields={
-            "intersection_id": "inter_id",           # 重命名路口ID
-            "intersection_type": "inter_type",       # 重命名路口类型
-            "intersection_count": SummaryMethod.COUNT,  # 统计相交路口数量
-            "min_distance_to_intersection": "distance_meters|min"  # 最近路口距离
+        summarize=True,
+        summary_fields={
+            "intersection_count": "count",  # 统计相交路口数量
+            "min_distance_to_intersection": "distance"  # 最近路口距离
         },
-        where_clause="r.inter_type IS NOT NULL",  # 只考虑有类型的路口
+        where_clause="r.intersection_type IS NOT NULL",  # 只考虑有类型的路口
         output_table="bbox_custom_intersections"
     )
     
     if len(custom_results) > 0:
         logger.info(f"自定义连接结果: {len(custom_results)} 条记录")
         logger.info("样例数据:")
-        print(custom_results[['scene_token', 'intersection_id', 'intersection_type', 
-                           'intersection_count', 'min_distance_to_intersection']].head())
+        print(custom_results[['scene_token', 'intersection_count', 
+                           'min_distance_to_intersection']].head())
     
     return custom_results
 
@@ -166,14 +164,16 @@ def spatial_relationship_comparison():
                     right_table="intersections", 
                     spatial_relation=relation,
                     distance_meters=30.0,
-                    select_fields={"count": SummaryMethod.COUNT}
+                    summarize=True,
+                    summary_fields={"count": "count"}
                 )
             else:
                 result = spatial_join.join_attributes_by_location(
                     left_table="clips_bbox",
                     right_table="intersections",
                     spatial_relation=relation,
-                    select_fields={"count": SummaryMethod.COUNT}
+                    summarize=True,
+                    summary_fields={"count": "count"}
                 )
             
             comparison_results[description] = len(result)
@@ -205,12 +205,7 @@ def export_and_summary_example():
         right_table="intersections",
         spatial_relation=SpatialRelation.DWITHIN,
         distance_meters=30.0,
-        select_fields={
-            "inter_id": "inter_id",
-            "inter_type": "inter_type", 
-            "distance_m": "distance_meters|min",
-            "intersection_count": SummaryMethod.COUNT
-        },
+        fields_to_add=["intersection_id", "intersection_type"],
         output_table="full_bbox_intersection_analysis"
     )
     
@@ -222,16 +217,10 @@ def export_and_summary_example():
         logger.info(f"  - 唯一场景数: {full_results['scene_token'].nunique()}")
         logger.info(f"  - 涉及城市数: {full_results['city_id'].nunique()}")
         
-        if 'distance_m' in full_results.columns:
-            logger.info(f"  - 平均距离: {full_results['distance_m'].mean():.2f} 米")
-            logger.info(f"  - 最小距离: {full_results['distance_m'].min():.2f} 米")
-            logger.info(f"  - 最大距离: {full_results['distance_m'].max():.2f} 米")
-        
         # 按城市汇总
         if 'city_id' in full_results.columns:
             city_summary = full_results.groupby('city_id').agg({
-                'scene_token': 'count',
-                'distance_m': 'mean' if 'distance_m' in full_results.columns else 'size'
+                'scene_token': 'count'
             }).round(2)
             
             logger.info("按城市汇总:")

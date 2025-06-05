@@ -395,21 +395,4 @@ class SpatialJoin:
             self.logger.info(f"结果已保存到数据库表: {table_name}")
         except Exception as e:
             self.logger.error(f"保存到数据库失败: {str(e)}")
-            raise
-
-    def _has_aggregate_functions(self, select_fields: Optional[Dict]) -> bool:
-        """检测字段选择中是否包含聚合函数"""
-        if not select_fields:
-            return False
-        
-        for field_spec in select_fields.values():
-            if isinstance(field_spec, SummaryMethod):
-                if field_spec in [SummaryMethod.COUNT, SummaryMethod.SUM, 
-                                SummaryMethod.MEAN, SummaryMethod.MAX, SummaryMethod.MIN]:
-                    return True
-            elif isinstance(field_spec, str) and "|" in field_spec:
-                _, method = field_spec.split("|")
-                if method.lower() in ["count", "sum", "avg", "mean", "max", "min"]:
-                    return True
-        
-        return False 
+            raise 
