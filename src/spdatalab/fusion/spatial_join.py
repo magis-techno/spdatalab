@@ -252,16 +252,13 @@ class SpatialJoin:
         where_sql = f"WHERE {' AND '.join(where_conditions)}"
         
         sql = text(f"""
-            SELECT scene_token, city_id, 
-                   ST_AsText(geometry) as geometry_wkt,
-                   geometry
+            SELECT scene_token, city_id, geometry
             FROM {table_name} 
             {where_sql}
             ORDER BY scene_token
         """)
         
         try:
-            # 使用WKT格式确保几何数据兼容性
             result_gdf = gpd.read_postgis(sql, self.engine, geom_col='geometry')
             
             # 确保几何数据有效
@@ -276,14 +273,7 @@ class SpatialJoin:
             
         except Exception as e:
             self.logger.error(f"获取城市{city_id}数据失败: {str(e)}")
-            # 如果上面的方法失败，尝试简单方式
-            simple_sql = text(f"""
-                SELECT scene_token, city_id, geometry
-                FROM {table_name} 
-                {where_sql}
-                ORDER BY scene_token
-            """)
-            return gpd.read_postgis(simple_sql, self.engine, geom_col='geometry')
+            raise
     
     def _push_batch_to_remote(self, batch_gdf: gpd.GeoDataFrame, temp_table_name: str):
         """推送批次数据到远端临时表"""

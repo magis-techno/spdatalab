@@ -52,7 +52,11 @@ def debug_test():
         local_batch = joiner._fetch_local_batch_by_city("clips_bbox", test_city, None)
         print(f"✅ 获取到 {len(local_batch)} 条本地数据")
         print(f"数据列: {local_batch.columns.tolist()}")
-        print(f"示例数据：\n{local_batch.head(2)}")
+        print(f"几何列类型: {type(local_batch['geometry'].iloc[0])}")
+        print(f"示例数据：")
+        print(f"  scene_token: {local_batch['scene_token'].iloc[0]}")
+        print(f"  city_id: {local_batch['city_id'].iloc[0]}")
+        print(f"  geometry: {str(local_batch['geometry'].iloc[0])[:100]}...")
         
         # 手动推送到远端
         print("🚀 推送数据到远端...")
