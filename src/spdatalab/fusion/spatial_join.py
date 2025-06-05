@@ -13,6 +13,7 @@ import geopandas as gpd
 from sqlalchemy import create_engine, text
 from enum import Enum
 import uuid
+import time
 from datetime import datetime
 
 # 数据库连接配置
@@ -175,17 +176,19 @@ class SpatialJoin:
                 
                 try:
                     # 步骤3：在远端执行空间连接
+                    query_start_time = time.time()
                     batch_result = self._execute_remote_spatial_join(
                         temp_table_name, remote_table,
                         spatial_relation, distance_meters,
                         fields_to_add, summarize, summary_fields
                     )
+                    query_time = time.time() - query_start_time
                     
                     if not batch_result.empty:
                         all_results.append(batch_result)
-                        self.logger.info(f"城市{city_id}完成，返回{len(batch_result)}条结果")
+                        self.logger.info(f"城市{city_id}完成，返回{len(batch_result)}条结果，查询耗时{query_time:.2f}秒")
                     else:
-                        self.logger.info(f"城市{city_id}无匹配结果")
+                        self.logger.info(f"城市{city_id}无匹配结果，查询耗时{query_time:.2f}秒")
                     
                 finally:
                     # 步骤4：清理远端临时表
@@ -276,19 +279,19 @@ class SpatialJoin:
             raise
     
     def _push_batch_to_remote(self, batch_gdf: gpd.GeoDataFrame, temp_table_name: str):
-        """推送批次数据到远端临时表"""
+        """推送批次数据到远端临时表 - 性能优化版本"""
         try:
-            # 确保几何列格式正确
-            batch_copy = batch_gdf.copy()
+            # 只选择必要的列，减少数据传输
+            essential_columns = ['scene_token', 'city_id', 'geometry']
+            batch_copy = batch_gdf[essential_columns].copy()
             
-            # 确保几何列是正确的格式
+            # 快速检查几何有效性
             if 'geometry' in batch_copy.columns:
-                # 确保几何列是有效的几何对象
-                batch_copy['geometry'] = batch_copy['geometry'].apply(
-                    lambda geom: geom if geom is not None and hasattr(geom, 'wkt') else None
-                )
                 # 移除无效几何的行
-                batch_copy = batch_copy.dropna(subset=['geometry'])
+                valid_mask = batch_copy['geometry'].notna()
+                if not valid_mask.all():
+                    batch_copy = batch_copy[valid_mask]
+                    self.logger.debug(f"过滤了{(~valid_mask).sum()}条无效几何记录")
             
             if batch_copy.empty:
                 self.logger.warning(f"批次数据在清理后为空，跳过推送到 {temp_table_name}")
@@ -298,20 +301,23 @@ class SpatialJoin:
             self._cleanup_remote_temp_table(temp_table_name)
             
             # 推送到远端作为临时表
+            start_time = time.time()
             batch_copy.to_postgis(
                 temp_table_name,
                 self.remote_engine,
                 if_exists='replace',
                 index=False
             )
+            transfer_time = time.time() - start_time
+            self.logger.debug(f"数据传输耗时: {transfer_time:.2f}秒")
             
             self.logger.debug(f"已推送{len(batch_copy)}条记录到远端临时表: {temp_table_name}")
             
             # 验证表是否真的创建成功
             if self._verify_table_exists(temp_table_name):
                 self.logger.debug(f"确认临时表创建成功: {temp_table_name}")
-                # 暂时跳过索引创建，避免旧版PostgreSQL的兼容性问题
-                # self._create_spatial_index_safe(temp_table_name)
+                # 创建空间索引以提升查询性能（即使失败也继续）
+                self._create_spatial_index_safe(temp_table_name)
             else:
                 raise Exception(f"临时表创建失败: {temp_table_name}")
             
@@ -777,9 +783,10 @@ class SpatialJoin:
         right_geom: str, 
         distance: Optional[float]
     ) -> str:
-        """构建空间条件SQL"""
+        """构建空间条件SQL - 优化版本"""
         if relation == "intersects":
-            return f"ST_Intersects({left_geom}, {right_geom})"
+            # 先用边界框过滤，再精确相交判断（性能优化）
+            return f"ST_Intersects({left_geom}, {right_geom}) AND {left_geom} && {right_geom}"
         elif relation == "within":
             return f"ST_Within({left_geom}, {right_geom})"
         elif relation == "contains":
@@ -793,13 +800,12 @@ class SpatialJoin:
         elif relation == "dwithin":
             if distance is None:
                 raise ValueError("distance_meters is required for DWITHIN relation")
-            # 使用geography类型直接在WGS84坐标系进行米单位的距离计算
-            # 避免坐标系转换，更准确且高效
-            return f"""ST_DWithin(
-                {left_geom}::geography,
-                {right_geom}::geography,
-                {distance}
-            )"""
+            # 对于较小距离，直接使用几何计算更快
+            if distance <= 1000:  # 1km以下用几何计算
+                return f"ST_DWithin({left_geom}, {right_geom}, {distance/111319.9})"  # 转换为度
+            else:
+                # 大距离用geography类型
+                return f"ST_DWithin({left_geom}::geography, {right_geom}::geography, {distance})"
         else:
             raise ValueError(f"Unsupported spatial relation: {relation}")
     
