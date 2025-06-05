@@ -113,9 +113,7 @@ class TestIntegration:
     def test_iter_scenes_from_obs_file(self, scene_list_generator):
         """集成测试：实际读取OBS上的shrink文件，验证能否正常读取内容。"""
         obs_paths = [
-            "obs://yw-ads-training-gy1/data/god/autoscenes-prod/index/god/GOD_E2E_golden_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59/train_god_god_E2E_0419_7_6_0_9_20250518112117_1323_32968_duplicate_61858_guiyang_f_pkg2_2frames.jsonl.shrink",
-            "obs://yw-ads-training-gy1/data/god/autoscenes-prod/index/god/GOD_E2E_golden_stuck_veh_sub_ddi_2773412e2e_2025_05_18_10_37_48/train_god_god_E2E_0419_7_6_0_9_20250518104817_839_21601_duplicate_26431_guiyang_f_pkg2_2frames.jsonl.shrink",
-            "obs://yw-ads-training-gy1/data/god/autoscenes-prod/index/god/GOD_E2E_golden_vru_avoid_obstacle_data_sub_ddi_2773412e2e_2025_05_18_10_10_41/train_god_god_E2E_0419_7_6_0_9_20250518104658_6844_218135_duplicate_441684_guiyang_f_pkg2_2frames.jsonl.shrink"
+            "obs://bucket/file.shrink@duplicate10",
         ]
         for path in obs_paths:
             scenes = list(scene_list_generator.iter_scenes_from_file(path))
@@ -127,7 +125,7 @@ class TestIntegration:
     def test_open_obs_file_env(self):
         """集成测试：验证 open_file 在打开 OBS 文件时是否正确初始化 moxing 环境。"""
         from spdatalab.common.file_utils import open_file
-        obs_path = "obs://yw-ads-training-gy1/data/god/autoscenes-prod/index/god/GOD_E2E_golden_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59/train_god_god_E2E_0419_7_6_0_9_20250518112117_1323_32968_duplicate_61858_guiyang_f_pkg2_2frames.jsonl.shrink"
+        obs_path = ""
         try:
             with open_file(obs_path, 'r') as f:
                 scenes = list(f)
@@ -141,7 +139,7 @@ class TestIntegration:
         """集成测试：逐行读取 OBS 上的 jsonl.shrink 文件，并用 decode_shrink_line 解码。"""
         from spdatalab.common.decoder import decode_shrink_line
         from spdatalab.common.file_utils import open_file
-        obs_path = "obs://yw-ads-training-gy1/data/god/autoscenes-prod/index/god/GOD_E2E_golden_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59/train_god_god_E2E_0419_7_6_0_9_20250518112117_1323_32968_duplicate_61858_guiyang_f_pkg2_2frames.jsonl.shrink"
+        obs_path = ""
         try:
             with open_file(obs_path, 'r') as f:
                 count = 0
