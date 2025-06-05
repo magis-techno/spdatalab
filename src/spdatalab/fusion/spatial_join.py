@@ -312,13 +312,19 @@ class SpatialJoin:
                 index=False
             )
             
-            # 在远端创建空间索引（兼容旧版PostgreSQL）
-            self._create_spatial_index_safe(temp_table_name)
-            
             self.logger.debug(f"已推送{len(batch_copy)}条记录到远端临时表: {temp_table_name}")
+            
+            # 在单独的事务中创建空间索引（避免事务回滚影响表创建）
+            self._create_spatial_index_safe(temp_table_name)
             
         except Exception as e:
             self.logger.error(f"推送数据到远端失败: {str(e)}")
+            # 如果表创建失败，尝试清理
+            try:
+                self._cleanup_remote_temp_table(temp_table_name)
+            except:
+                pass
+            
             # 提供更详细的错误信息
             if "unexpected keyword argument" in str(e):
                 self.logger.error("提示：请检查GeoPandas版本，某些参数可能不被支持")
@@ -434,36 +440,50 @@ class SpatialJoin:
         """安全地创建空间索引（兼容不同PostgreSQL版本）"""
         index_name = f"idx_{temp_table_name}_geom"
         
-        with self.remote_engine.connect() as conn:
-            try:
-                # 方法1：尝试现代语法 (PostgreSQL 9.5+)
-                conn.execute(text(f"CREATE INDEX IF NOT EXISTS {index_name} ON {temp_table_name} USING GIST (geometry)"))
-                self.logger.debug(f"使用IF NOT EXISTS语法创建索引: {index_name}")
-            except Exception as e:
-                if "syntax error" in str(e) and "IF NOT EXISTS" in str(e):
-                    # 方法2：检查索引是否存在，不存在则创建
-                    try:
-                        # 检查索引是否存在
-                        result = conn.execute(text(f"""
-                            SELECT 1 FROM pg_indexes 
-                            WHERE tablename = '{temp_table_name}' 
-                            AND indexname = '{index_name}'
-                        """)).fetchone()
-                        
-                        if not result:
-                            # 索引不存在，创建它
+        # 使用独立的连接和事务
+        try:
+            with self.remote_engine.connect() as conn:
+                # 首先检查表是否存在
+                table_exists = conn.execute(text(f"""
+                    SELECT 1 FROM information_schema.tables 
+                    WHERE table_name = '{temp_table_name.lower()}'
+                """)).fetchone()
+                
+                if not table_exists:
+                    self.logger.warning(f"表{temp_table_name}不存在，跳过索引创建")
+                    return
+                
+                try:
+                    # 方法1：尝试现代语法 (PostgreSQL 9.5+)
+                    conn.execute(text(f"CREATE INDEX IF NOT EXISTS {index_name} ON {temp_table_name} USING GIST (geometry)"))
+                    conn.commit()
+                    self.logger.debug(f"使用IF NOT EXISTS语法创建索引: {index_name}")
+                    
+                except Exception as e:
+                    # 回滚任何失败的事务
+                    conn.rollback()
+                    
+                    if "syntax error" in str(e) and "IF NOT EXISTS" in str(e):
+                        # 方法2：对于旧版PostgreSQL，直接尝试创建索引
+                        try:
                             conn.execute(text(f"CREATE INDEX {index_name} ON {temp_table_name} USING GIST (geometry)"))
+                            conn.commit()
                             self.logger.debug(f"使用传统语法创建索引: {index_name}")
-                        else:
-                            self.logger.debug(f"索引已存在，跳过创建: {index_name}")
                             
-                    except Exception as e2:
-                        # 如果还是失败，记录警告但不中断流程
-                        self.logger.warning(f"创建空间索引失败，继续处理: {str(e2)}")
-                else:
-                    # 其他类型的错误，重新抛出
-                    raise e
-            conn.commit()
+                        except Exception as e2:
+                            conn.rollback()
+                            if "already exists" in str(e2):
+                                self.logger.debug(f"索引已存在: {index_name}")
+                            else:
+                                # 索引创建失败，但不影响主流程
+                                self.logger.warning(f"创建空间索引失败，继续处理: {str(e2)}")
+                    else:
+                        # 其他类型的错误，记录警告但不中断流程
+                        self.logger.warning(f"创建空间索引失败，继续处理: {str(e)}")
+                        
+        except Exception as e:
+            # 连接级别的错误
+            self.logger.warning(f"连接远端数据库创建索引失败: {str(e)}")
 
     def _cleanup_remote_temp_table(self, temp_table_name: str):
         """清理远端临时表"""

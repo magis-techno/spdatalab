@@ -19,18 +19,18 @@ def main():
     print("=== 空间连接远端计算示例 ===\n")
     
     # 示例1：基本的路口相交分析
-    print("1. 基本相交分析（前2批次测试）")
+    print("1. 基本相交分析（前1个城市测试）")
     try:
         result1 = joiner.batch_spatial_join_with_remote(
             left_table="clips_bbox",
             remote_table="full_intersection", 
             batch_by_city=True,
             spatial_relation=SpatialRelation.INTERSECTS,
-            limit_batches=2,  # 只处理前2个城市用于测试
+            limit_batches=1,  # 只处理前1个城市用于测试
             summarize=True,
             summary_fields={
-                "intersection_count": "count",
-                "nearest_distance": "distance"
+                "intersection_count": "count"
+                # 暂时移除distance计算，先确保基本功能正常
             },
             output_table="bbox_intersection_summary_test"
         )
