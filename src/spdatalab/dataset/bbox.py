@@ -231,36 +231,71 @@ class LightweightProgressTracker:
         self._flush_failed_buffer()
 
 def create_table_if_not_exists(eng, table_name='clips_bbox'):
-    """如果表不存在则创建表"""
-    create_sql = text(f"""
-        CREATE TABLE IF NOT EXISTS {table_name} (
-            scene_token VARCHAR(255),
-            data_name VARCHAR(255),
-            event_id VARCHAR(255),
-            city_id VARCHAR(255),
-            timestamp BIGINT,
-            all_good BOOLEAN,
-            geometry GEOMETRY(GEOMETRY, 4326)
+    """如果表不存在则创建表 - 与cleanup_clips_bbox.sql保持一致"""
+    # 检查表是否已存在
+    check_table_sql = text(f"""
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables 
+            WHERE table_schema = 'public' 
+            AND table_name = '{table_name}'
         );
-        
-        -- 创建索引以提高查询性能
-        CREATE INDEX IF NOT EXISTS idx_{table_name}_scene_token ON {table_name}(scene_token);
-        CREATE INDEX IF NOT EXISTS idx_{table_name}_data_name ON {table_name}(data_name);
-        CREATE INDEX IF NOT EXISTS idx_{table_name}_geometry ON {table_name} USING GIST(geometry);
-        
-        -- 添加唯一约束防止重复插入
-        ALTER TABLE {table_name} ADD CONSTRAINT IF NOT EXISTS uq_{table_name}_scene_token 
-        UNIQUE (scene_token) ON CONFLICT DO NOTHING;
     """)
     
     try:
         with eng.connect() as conn:
+            result = conn.execute(check_table_sql)
+            table_exists = result.scalar()
+            
+            if table_exists:
+                print(f"表 {table_name} 已存在，跳过创建")
+                return True
+                
+            print(f"表 {table_name} 不存在，开始创建...")
+            
+            # 与cleanup_clips_bbox.sql保持一致的表结构
+            create_sql = text(f"""
+                CREATE TABLE {table_name}(
+                    id serial PRIMARY KEY,
+                    scene_token text,
+                    data_name text UNIQUE,
+                    event_id text,
+                    city_id text,
+                    "timestamp" bigint,
+                    all_good boolean
+                );
+            """)
+            
+            # 使用PostGIS添加几何列
+            add_geom_sql = text(f"""
+                SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'POLYGON', 2);
+            """)
+            
+            # 添加几何约束
+            constraint_sql = text(f"""
+                ALTER TABLE {table_name} ADD CONSTRAINT check_geom_type 
+                    CHECK (ST_GeometryType(geometry) IN ('ST_Polygon', 'ST_Point'));
+            """)
+            
+            # 创建索引
+            index_sql = text(f"""
+                CREATE INDEX idx_{table_name}_geometry ON {table_name} USING GIST(geometry);
+                CREATE INDEX idx_{table_name}_data_name ON {table_name}(data_name);
+                CREATE INDEX idx_{table_name}_scene_token ON {table_name}(scene_token);
+            """)
+            
+            # 执行所有SQL语句
             conn.execute(create_sql)
+            conn.execute(add_geom_sql)
+            conn.execute(constraint_sql)
+            conn.execute(index_sql)
             conn.commit()
-            print(f"确保表 {table_name} 存在并已创建必要索引")
+            
+            print(f"成功创建表 {table_name} 及相关索引")
             return True
+            
     except Exception as e:
         print(f"创建表时出错: {str(e)}")
+        print("建议：如果表已通过cleanup_clips_bbox.sql创建，请使用 --no-create-table 选项")
         return False
 
 def check_existing_records(eng, scene_tokens, table_name='clips_bbox'):
@@ -429,7 +464,7 @@ def batch_insert_to_postgis(gdf, eng, table_name='clips_bbox', batch_size=1000, 
     
     return inserted_rows
 
-def run(input_path, batch=1000, insert_batch=1000, create_table=True, retry_failed=False, work_dir="./bbox_import_logs", show_stats=False):
+def run(input_path, batch=1000, insert_batch=1000, create_table=False, retry_failed=False, work_dir="./bbox_import_logs", show_stats=False):
     """主运行函数
     
     Args:
@@ -655,7 +690,7 @@ if __name__ == '__main__':
     ap.add_argument('--input', required=True, help='输入文件路径（支持JSON/Parquet/文本格式）')
     ap.add_argument('--batch', type=int, default=1000, help='处理批次大小')
     ap.add_argument('--insert-batch', type=int, default=1000, help='插入批次大小')
-    ap.add_argument('--create-table', action='store_true', default=True, help='是否创建表（如果不存在）')
+    ap.add_argument('--create-table', action='store_true', help='创建表（如果不存在）。默认假设表已通过SQL脚本创建')
     ap.add_argument('--retry-failed', action='store_true', help='是否只重试失败的数据')
     ap.add_argument('--work-dir', default='./bbox_import_logs', help='工作目录，用于存储日志和进度文件')
     ap.add_argument('--show-stats', action='store_true', help='显示处理统计信息并退出')
