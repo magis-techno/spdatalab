@@ -27,7 +27,7 @@ SELECT AddGeometryColumn('public', 'clips_bbox', 'geometry', 4326, 'POLYGON', 2)
 ALTER TABLE clips_bbox ADD CONSTRAINT check_geom_type 
     CHECK (ST_GeometryType(geometry) IN ('ST_Polygon', 'ST_Point'));
 
-CREATE INDEX idx_clips_bbox_geom ON clips_bbox USING GIST(geometry);
+CREATE INDEX idx_clips_bbox_geometry ON clips_bbox USING GIST(geometry);
 CREATE INDEX idx_clips_bbox_data_name ON clips_bbox(data_name);
 CREATE INDEX idx_clips_bbox_scene_token ON clips_bbox(scene_token);
 
