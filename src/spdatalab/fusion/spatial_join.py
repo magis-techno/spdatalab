@@ -65,7 +65,15 @@ class SpatialJoin:
             self.engine = engine
         
         if remote_engine is None:
-            self.remote_engine = create_engine(REMOTE_DSN, future=True)
+            # 添加编码和连接参数
+            self.remote_engine = create_engine(
+                REMOTE_DSN, 
+                future=True,
+                connect_args={
+                    "client_encoding": "utf8",
+                    "application_name": "spdatalab_spatial_join"
+                }
+            )
         else:
             self.remote_engine = remote_engine
             
@@ -241,19 +249,60 @@ class SpatialJoin:
         where_sql = f"WHERE {' AND '.join(where_conditions)}"
         
         sql = text(f"""
-            SELECT scene_token, city_id, geometry
+            SELECT scene_token, city_id, 
+                   ST_AsText(geometry) as geometry_wkt,
+                   geometry
             FROM {table_name} 
             {where_sql}
             ORDER BY scene_token
         """)
         
-        return gpd.read_postgis(sql, self.engine, geom_col='geometry')
+        try:
+            # 使用WKT格式确保几何数据兼容性
+            result_gdf = gpd.read_postgis(sql, self.engine, geom_col='geometry')
+            
+            # 确保几何数据有效
+            if not result_gdf.empty:
+                # 验证几何数据
+                valid_mask = result_gdf['geometry'].notna()
+                if valid_mask.sum() < len(result_gdf):
+                    self.logger.warning(f"城市{city_id}有{(~valid_mask).sum()}条无效几何记录被过滤")
+                    result_gdf = result_gdf[valid_mask]
+            
+            return result_gdf
+            
+        except Exception as e:
+            self.logger.error(f"获取城市{city_id}数据失败: {str(e)}")
+            # 如果上面的方法失败，尝试简单方式
+            simple_sql = text(f"""
+                SELECT scene_token, city_id, geometry
+                FROM {table_name} 
+                {where_sql}
+                ORDER BY scene_token
+            """)
+            return gpd.read_postgis(simple_sql, self.engine, geom_col='geometry')
     
     def _push_batch_to_remote(self, batch_gdf: gpd.GeoDataFrame, temp_table_name: str):
         """推送批次数据到远端临时表"""
         try:
+            # 确保几何列格式正确
+            batch_copy = batch_gdf.copy()
+            
+            # 确保几何列是正确的格式
+            if 'geometry' in batch_copy.columns:
+                # 确保几何列是有效的几何对象
+                batch_copy['geometry'] = batch_copy['geometry'].apply(
+                    lambda geom: geom if geom is not None and hasattr(geom, 'wkt') else None
+                )
+                # 移除无效几何的行
+                batch_copy = batch_copy.dropna(subset=['geometry'])
+            
+            if batch_copy.empty:
+                self.logger.warning(f"批次数据在清理后为空，跳过推送到 {temp_table_name}")
+                return
+            
             # 推送到远端作为临时表
-            batch_gdf.to_postgis(
+            batch_copy.to_postgis(
                 temp_table_name,
                 self.remote_engine,
                 if_exists='replace',
@@ -265,13 +314,17 @@ class SpatialJoin:
                 conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_{temp_table_name}_geom ON {temp_table_name} USING GIST (geometry)"))
                 conn.commit()
             
-            self.logger.debug(f"已推送{len(batch_gdf)}条记录到远端临时表: {temp_table_name}")
+            self.logger.debug(f"已推送{len(batch_copy)}条记录到远端临时表: {temp_table_name}")
             
         except Exception as e:
             self.logger.error(f"推送数据到远端失败: {str(e)}")
             # 提供更详细的错误信息
             if "unexpected keyword argument" in str(e):
                 self.logger.error("提示：请检查GeoPandas版本，某些参数可能不被支持")
+            elif "string pattern on a byte-like object" in str(e):
+                self.logger.error("提示：几何数据格式问题，可能是WKB/WKT转换错误")
+            elif "encoding" in str(e).lower():
+                self.logger.error("提示：字符编码问题，检查数据库连接配置")
             raise
     
     def _execute_remote_spatial_join(
