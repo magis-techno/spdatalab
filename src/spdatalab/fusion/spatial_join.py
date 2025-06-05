@@ -65,11 +65,19 @@ class SpatialJoin:
         left_table: str,
         right_table: str,
         spatial_relation: Union[SpatialRelation, str] = SpatialRelation.INTERSECTS,
-        join_type: Union[JoinType, str] = JoinType.LEFT,
         left_geom_col: str = "geometry",
         right_geom_col: str = "geometry",
         distance_meters: Optional[float] = None,
-        select_fields: Optional[Dict[str, Union[str, SummaryMethod]]] = None,
+        
+        # QGIS风格的参数
+        fields_to_add: Optional[List[str]] = None,  # 要添加的右表字段，None表示添加所有
+        discard_nonmatching: bool = False,          # 是否丢弃未匹配的记录 (INNER vs LEFT JOIN)
+        
+        # 统计选项
+        summarize: bool = False,                    # 是否进行统计汇总
+        summary_fields: Optional[Dict[str, str]] = None,  # 统计字段和方法 {"field_name": "method"}
+        
+        # 其他选项  
         where_clause: Optional[str] = None,
         output_table: Optional[str] = None
     ) -> gpd.GeoDataFrame:
@@ -80,22 +88,51 @@ class SpatialJoin:
             left_table: 左表名（如clips_bbox）
             right_table: 右表名（如intersections）
             spatial_relation: 空间关系
-            join_type: 连接类型
             left_geom_col: 左表几何列名
-            right_geom_col: 右表几何列名
+            right_geom_col: 右表几何列名  
             distance_meters: 距离阈值（仅用于DWITHIN关系）
-            select_fields: 要选择的字段及汇总方式，格式: {"new_field_name": "source_field" 或 SummaryMethod}
+            
+            # QGIS风格参数
+            fields_to_add: 要添加的右表字段列表，None表示添加所有字段
+            discard_nonmatching: True=INNER JOIN (丢弃未匹配), False=LEFT JOIN (保留所有左表记录)
+            
+            # 统计选项
+            summarize: 是否对连接结果进行统计汇总
+            summary_fields: 统计字段和方法，格式: {"field_name": "method"}
+                          支持的方法: "count", "sum", "mean", "max", "min", "first"
+                          特殊字段: "distance" - 计算到最近要素的距离
+            
             where_clause: 额外的WHERE条件
             output_table: 输出表名
             
         Returns:
             连接结果的GeoDataFrame
+            
+        Examples:
+            # 简单连接，添加所有字段
+            result = joiner.join_attributes_by_location("clips_bbox", "intersections")
+            
+            # 只添加指定字段
+            result = joiner.join_attributes_by_location(
+                "clips_bbox", "intersections", 
+                fields_to_add=["road_type", "intersection_id"]
+            )
+            
+            # 统计分析
+            result = joiner.join_attributes_by_location(
+                "clips_bbox", "intersections",
+                spatial_relation="dwithin", distance_meters=50,
+                summarize=True,
+                summary_fields={
+                    "intersection_count": "count",
+                    "nearest_distance": "distance",
+                    "avg_road_width": "mean"  # 假设intersections表有road_width字段
+                }
+            )
         """
         # 转换枚举为字符串
         if isinstance(spatial_relation, SpatialRelation):
             spatial_relation = spatial_relation.value
-        if isinstance(join_type, JoinType):
-            join_type = join_type.value
             
         # 构建空间条件
         spatial_condition = self._build_spatial_condition(
@@ -103,10 +140,19 @@ class SpatialJoin:
         )
         
         # 构建连接类型
-        join_clause = self._build_join_clause(join_type)
+        join_clause = "JOIN" if discard_nonmatching else "LEFT JOIN"
         
         # 构建字段选择
-        field_selection = self._build_field_selection(select_fields)
+        if summarize and summary_fields:
+            # 统计模式
+            field_selection = self._build_summary_fields(summary_fields)
+            select_left_part = "l.scene_token, l.geometry"
+            group_by_clause = "GROUP BY l.scene_token, l.geometry"
+        else:
+            # 普通连接模式
+            field_selection = self._build_field_selection_qgis_style(fields_to_add)
+            select_left_part = "l.*"
+            group_by_clause = ""
         
         # 构建WHERE条件
         where_condition = ""
@@ -115,11 +161,12 @@ class SpatialJoin:
         
         sql = text(f"""
             SELECT 
-                l.*,
+                {select_left_part},
                 {field_selection}
             FROM {left_table} l
             {join_clause} {right_table} r ON {spatial_condition}
             {where_condition}
+            {group_by_clause}
             ORDER BY l.scene_token
         """)
         
@@ -133,9 +180,12 @@ class SpatialJoin:
             if output_table:
                 self._save_to_database(result_gdf, output_table)
                 
+            join_type_desc = "INNER" if discard_nonmatching else "LEFT"
+            mode_desc = "统计汇总" if summarize else "字段连接"
+            
             self.logger.info(
-                f"空间连接完成: {left_table} {join_type} {right_table} "
-                f"({spatial_relation}), 结果: {len(result_gdf)} 条记录"
+                f"空间连接完成: {left_table} {join_type_desc} JOIN {right_table} "
+                f"({spatial_relation}, {mode_desc}), 结果: {len(result_gdf)} 条记录"
             )
             return result_gdf
             
@@ -158,28 +208,18 @@ class SpatialJoin:
             feature_table: 要素表名（应使用标准化的表名，如 intersections）
             feature_type: 要素类型描述（用于日志）
             buffer_meters: 缓冲区半径
-            summary_fields: 要汇总的字段，格式: {"new_name": "field|method"}
+            summary_fields: 要汇总的字段，格式: {"new_name": "method"}
             output_table: 输出表名
             
         Returns:
             相交分析结果
         """
-        # 默认汇总字段
+        # 默认统计字段
         if summary_fields is None:
             summary_fields = {
                 f"{feature_type}_count": "count",
-                f"nearest_{feature_type}_distance": "min_distance"
+                f"nearest_{feature_type}_distance": "distance"
             }
-        
-        # 构建字段选择
-        select_fields = {}
-        for new_name, field_method in summary_fields.items():
-            if field_method == "count":
-                select_fields[new_name] = SummaryMethod.COUNT
-            elif field_method == "min_distance":
-                select_fields[new_name] = "distance_meters|min"
-            else:
-                select_fields[new_name] = field_method
         
         # 如果有缓冲区，使用DWITHIN关系
         spatial_relation = SpatialRelation.DWITHIN if buffer_meters > 0 else SpatialRelation.INTERSECTS
@@ -189,7 +229,8 @@ class SpatialJoin:
             right_table=feature_table,
             spatial_relation=spatial_relation,
             distance_meters=buffer_meters if buffer_meters > 0 else None,
-            select_fields=select_fields,
+            summarize=True,
+            summary_fields=summary_fields,
             output_table=output_table
         )
     
@@ -294,36 +335,54 @@ class SpatialJoin:
         else:
             raise ValueError(f"Unsupported join type: {join_type}")
     
-    def _build_field_selection(self, select_fields: Optional[Dict]) -> str:
-        """构建字段选择SQL"""
-        if not select_fields:
+    def _build_field_selection_qgis_style(self, fields_to_add: Optional[List[str]]) -> str:
+        """构建QGIS风格的字段选择SQL"""
+        if not fields_to_add:
+            # None表示添加所有字段
             return "r.*"
         
-        selections = []
-        for new_name, field_spec in select_fields.items():
-            if isinstance(field_spec, SummaryMethod):
-                if field_spec == SummaryMethod.COUNT:
-                    selections.append(f"COUNT(r.*) AS {new_name}")
-                elif field_spec == SummaryMethod.FIRST:
-                    selections.append(f"FIRST(r.*) AS {new_name}")
-                # 可以添加更多汇总方法
-            elif isinstance(field_spec, str):
-                if "|" in field_spec:
-                    field, method = field_spec.split("|")
-                    if method == "min" and field == "distance_meters":
-                        selections.append(f"""
-                            MIN(ST_Distance(
-                                l.geometry::geography,
-                                r.geometry::geography
-                            )) AS {new_name}
-                        """)
-                    else:
-                        selections.append(f"{method.upper()}(r.{field}) AS {new_name}")
-                else:
-                    selections.append(f"r.{field_spec} AS {new_name}")
-        
-        return ", ".join(selections) if selections else "r.*"
+        # 指定特定字段
+        field_list = [f"r.{field}" for field in fields_to_add]
+        return ", ".join(field_list)
     
+    def _build_summary_fields(self, summary_fields: Dict[str, str]) -> str:
+        """构建统计字段SQL"""
+        selections = []
+        
+        for new_name, method in summary_fields.items():
+            method = method.lower()
+            
+            if method == "count":
+                selections.append(f"COUNT(r.*) AS {new_name}")
+            elif method == "distance":
+                # 特殊处理：计算最近距离
+                selections.append(f"""
+                    MIN(ST_Distance(
+                        l.geometry::geography,
+                        r.geometry::geography
+                    )) AS {new_name}
+                """)
+            elif method in ["sum", "mean", "avg", "max", "min"]:
+                # 对于数值统计，假设字段名就是要统计的字段
+                # 这里需要用户在字段名中指定，如 "road_width_sum": "sum"
+                # 我们从new_name中推断字段名
+                if "_" in new_name:
+                    # 尝试从new_name推断原字段名，如 "road_width_sum" -> "road_width"
+                    base_field = "_".join(new_name.split("_")[:-1])
+                    sql_method = "AVG" if method in ["mean", "avg"] else method.upper()
+                    selections.append(f"{sql_method}(r.{base_field}) AS {new_name}")
+                else:
+                    # 如果无法推断，使用COUNT作为默认
+                    selections.append(f"COUNT(r.*) AS {new_name}")
+            elif method == "first":
+                # 获取第一个匹配的记录
+                selections.append(f"(array_agg(r.* ORDER BY ST_Distance(l.geometry, r.geometry)))[1] AS {new_name}")
+            else:
+                # 未知方法，默认为COUNT
+                selections.append(f"COUNT(r.*) AS {new_name}")
+        
+        return ", ".join(selections) if selections else "COUNT(r.*) AS feature_count"
+
     def _save_to_database(self, gdf: gpd.GeoDataFrame, table_name: str):
         """保存到数据库"""
         try:
@@ -336,4 +395,21 @@ class SpatialJoin:
             self.logger.info(f"结果已保存到数据库表: {table_name}")
         except Exception as e:
             self.logger.error(f"保存到数据库失败: {str(e)}")
-            raise 
+            raise
+
+    def _has_aggregate_functions(self, select_fields: Optional[Dict]) -> bool:
+        """检测字段选择中是否包含聚合函数"""
+        if not select_fields:
+            return False
+        
+        for field_spec in select_fields.values():
+            if isinstance(field_spec, SummaryMethod):
+                if field_spec in [SummaryMethod.COUNT, SummaryMethod.SUM, 
+                                SummaryMethod.MEAN, SummaryMethod.MAX, SummaryMethod.MIN]:
+                    return True
+            elif isinstance(field_spec, str) and "|" in field_spec:
+                _, method = field_spec.split("|")
+                if method.lower() in ["count", "sum", "avg", "mean", "max", "min"]:
+                    return True
+        
+        return False 
