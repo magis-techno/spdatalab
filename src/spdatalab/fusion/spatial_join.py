@@ -304,6 +304,9 @@ class SpatialJoin:
                 self.logger.warning(f"批次数据在清理后为空，跳过推送到 {temp_table_name}")
                 return
             
+            # 首先删除可能存在的同名表
+            self._cleanup_remote_temp_table(temp_table_name)
+            
             # 推送到远端作为临时表
             batch_copy.to_postgis(
                 temp_table_name,
@@ -314,8 +317,13 @@ class SpatialJoin:
             
             self.logger.debug(f"已推送{len(batch_copy)}条记录到远端临时表: {temp_table_name}")
             
-            # 在单独的事务中创建空间索引（避免事务回滚影响表创建）
-            self._create_spatial_index_safe(temp_table_name)
+            # 验证表是否真的创建成功
+            if self._verify_table_exists(temp_table_name):
+                self.logger.debug(f"确认临时表创建成功: {temp_table_name}")
+                # 暂时跳过索引创建，避免旧版PostgreSQL的兼容性问题
+                # self._create_spatial_index_safe(temp_table_name)
+            else:
+                raise Exception(f"临时表创建失败: {temp_table_name}")
             
         except Exception as e:
             self.logger.error(f"推送数据到远端失败: {str(e)}")
@@ -418,6 +426,21 @@ class SpatialJoin:
         
         return ", ".join(selections) if selections else "COUNT(r.*) AS feature_count"
     
+    def _verify_table_exists(self, temp_table_name: str) -> bool:
+        """验证远端临时表是否存在"""
+        try:
+            with self.remote_engine.connect() as conn:
+                # 使用更简单的方式检查表是否存在
+                result = conn.execute(text(f"SELECT 1 FROM {temp_table_name} LIMIT 1")).fetchone()
+                return True
+        except Exception as e:
+            if "does not exist" in str(e) or "relation" in str(e):
+                return False
+            else:
+                # 其他错误，记录但假设表存在
+                self.logger.warning(f"验证表存在时出错，假设表存在: {str(e)}")
+                return True
+
     def _check_remote_db_version(self):
         """检查远端数据库版本"""
         try:
@@ -501,10 +524,13 @@ class SpatialJoin:
                         conn.commit()
                     self.logger.debug(f"已清理远端临时表: {temp_table_name}")
                 except Exception as e2:
-                    if "does not exist" not in str(e2):
+                    if "does not exist" not in str(e2) and "relation" not in str(e2):
                         self.logger.warning(f"清理远端临时表失败: {str(e2)}")
+                    # 如果表不存在，那就不需要清理，这是正常的
             else:
-                self.logger.warning(f"清理远端临时表失败: {str(e)}")
+                if "does not exist" not in str(e) and "relation" not in str(e):
+                    self.logger.warning(f"清理远端临时表失败: {str(e)}")
+                # 如果表不存在，那就不需要清理，这是正常的
 
     def join_attributes_by_location(
         self,
