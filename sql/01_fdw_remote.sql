@@ -49,7 +49,7 @@ CREATE VIEW intersections AS
 SELECT 
     *,
     -- 确保几何列统一命名为 geom
-    geom as geometry
+    wkb_geometry as geometry
 FROM full_intersection;
 
 -- 标准轨迹点表 (trajectory_points) 
@@ -93,24 +93,11 @@ FROM external_regions_table;
 */
 
 -- =============================================================================
--- 性能优化索引
+-- 性能优化说明
 -- =============================================================================
 
--- 为标准化视图创建索引（如果原表没有的话）
--- 注意：视图上的索引实际上是在基础表上创建的
-
--- 检查并创建路口表的空间索引
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_indexes 
-        WHERE tablename = 'full_intersection' 
-        AND indexname LIKE '%geom%'
-    ) THEN
-        CREATE INDEX idx_full_intersection_geom 
-        ON full_intersection USING GIST(geom);
-    END IF;
-END $$;
+-- 注意：外部表(Foreign Tables)依赖源数据库的索引来提升查询性能
+-- 本地无需创建索引，源数据库通常已经有相应的空间索引
 
 -- =============================================================================
 -- 元数据视图：提供可用图层信息

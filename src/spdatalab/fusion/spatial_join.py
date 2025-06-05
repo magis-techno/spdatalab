@@ -67,7 +67,7 @@ class SpatialJoin:
         spatial_relation: Union[SpatialRelation, str] = SpatialRelation.INTERSECTS,
         join_type: Union[JoinType, str] = JoinType.LEFT,
         left_geom_col: str = "geometry",
-        right_geom_col: str = "geom",
+        right_geom_col: str = "geometry",
         distance_meters: Optional[float] = None,
         select_fields: Optional[Dict[str, Union[str, SummaryMethod]]] = None,
         where_clause: Optional[str] = None,
@@ -99,7 +99,7 @@ class SpatialJoin:
             
         # 构建空间条件
         spatial_condition = self._build_spatial_condition(
-            spatial_relation, left_geom_col, right_geom_col, distance_meters
+            spatial_relation, f"l.{left_geom_col}", f"r.{right_geom_col}", distance_meters
         )
         
         # 构建连接类型
@@ -273,9 +273,11 @@ class SpatialJoin:
         elif relation == "dwithin":
             if distance is None:
                 raise ValueError("distance_meters is required for DWITHIN relation")
+            # 使用geography类型直接在WGS84坐标系进行米单位的距离计算
+            # 避免坐标系转换，更准确且高效
             return f"""ST_DWithin(
-                ST_Transform({left_geom}, 3857),
-                ST_Transform({right_geom}, 3857),
+                {left_geom}::geography,
+                {right_geom}::geography,
                 {distance}
             )"""
         else:
@@ -311,8 +313,8 @@ class SpatialJoin:
                     if method == "min" and field == "distance_meters":
                         selections.append(f"""
                             MIN(ST_Distance(
-                                ST_Transform(l.geometry, 3857),
-                                ST_Transform(r.geom, 3857)
+                                l.geometry::geography,
+                                r.geometry::geography
                             )) AS {new_name}
                         """)
                     else:
