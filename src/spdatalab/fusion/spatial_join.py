@@ -257,8 +257,7 @@ class SpatialJoin:
                 temp_table_name,
                 self.remote_engine,
                 if_exists='replace',
-                index=False,
-                method='multi'  # 使用批量插入优化性能
+                index=False
             )
             
             # 在远端创建空间索引
@@ -270,6 +269,9 @@ class SpatialJoin:
             
         except Exception as e:
             self.logger.error(f"推送数据到远端失败: {str(e)}")
+            # 提供更详细的错误信息
+            if "unexpected keyword argument" in str(e):
+                self.logger.error("提示：请检查GeoPandas版本，某些参数可能不被支持")
             raise
     
     def _execute_remote_spatial_join(
