@@ -133,6 +133,9 @@ class SpatialJoin:
         """
         self.logger.info(f"开始分批空间连接: {left_table} -> 远端{remote_table}")
         
+        # 检查远端数据库版本
+        self._check_remote_db_version()
+        
         # 转换枚举为字符串
         if isinstance(spatial_relation, SpatialRelation):
             spatial_relation = spatial_relation.value
@@ -309,10 +312,8 @@ class SpatialJoin:
                 index=False
             )
             
-            # 在远端创建空间索引
-            with self.remote_engine.connect() as conn:
-                conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_{temp_table_name}_geom ON {temp_table_name} USING GIST (geometry)"))
-                conn.commit()
+            # 在远端创建空间索引（兼容旧版PostgreSQL）
+            self._create_spatial_index_safe(temp_table_name)
             
             self.logger.debug(f"已推送{len(batch_copy)}条记录到远端临时表: {temp_table_name}")
             
@@ -411,6 +412,59 @@ class SpatialJoin:
         
         return ", ".join(selections) if selections else "COUNT(r.*) AS feature_count"
     
+    def _check_remote_db_version(self):
+        """检查远端数据库版本"""
+        try:
+            with self.remote_engine.connect() as conn:
+                result = conn.execute(text("SELECT version()")).scalar()
+                version_info = result.split()[1] if result else "unknown"
+                self.logger.info(f"远端PostgreSQL版本: {version_info}")
+                
+                # 检查是否支持现代语法
+                version_parts = version_info.split('.')
+                if len(version_parts) >= 2:
+                    major = int(version_parts[0])
+                    minor = int(version_parts[1])
+                    if major < 9 or (major == 9 and minor < 5):
+                        self.logger.warning(f"远端数据库版本较旧({version_info})，将使用兼容性语法")
+        except Exception as e:
+            self.logger.warning(f"无法获取远端数据库版本: {str(e)}")
+
+    def _create_spatial_index_safe(self, temp_table_name: str):
+        """安全地创建空间索引（兼容不同PostgreSQL版本）"""
+        index_name = f"idx_{temp_table_name}_geom"
+        
+        with self.remote_engine.connect() as conn:
+            try:
+                # 方法1：尝试现代语法 (PostgreSQL 9.5+)
+                conn.execute(text(f"CREATE INDEX IF NOT EXISTS {index_name} ON {temp_table_name} USING GIST (geometry)"))
+                self.logger.debug(f"使用IF NOT EXISTS语法创建索引: {index_name}")
+            except Exception as e:
+                if "syntax error" in str(e) and "IF NOT EXISTS" in str(e):
+                    # 方法2：检查索引是否存在，不存在则创建
+                    try:
+                        # 检查索引是否存在
+                        result = conn.execute(text(f"""
+                            SELECT 1 FROM pg_indexes 
+                            WHERE tablename = '{temp_table_name}' 
+                            AND indexname = '{index_name}'
+                        """)).fetchone()
+                        
+                        if not result:
+                            # 索引不存在，创建它
+                            conn.execute(text(f"CREATE INDEX {index_name} ON {temp_table_name} USING GIST (geometry)"))
+                            self.logger.debug(f"使用传统语法创建索引: {index_name}")
+                        else:
+                            self.logger.debug(f"索引已存在，跳过创建: {index_name}")
+                            
+                    except Exception as e2:
+                        # 如果还是失败，记录警告但不中断流程
+                        self.logger.warning(f"创建空间索引失败，继续处理: {str(e2)}")
+                else:
+                    # 其他类型的错误，重新抛出
+                    raise e
+            conn.commit()
+
     def _cleanup_remote_temp_table(self, temp_table_name: str):
         """清理远端临时表"""
         try:
@@ -419,7 +473,18 @@ class SpatialJoin:
                 conn.commit()
             self.logger.debug(f"已清理远端临时表: {temp_table_name}")
         except Exception as e:
-            self.logger.warning(f"清理远端临时表失败: {str(e)}")
+            # 如果远端数据库不支持DROP TABLE IF EXISTS，尝试直接删除
+            if "syntax error" in str(e) and "IF EXISTS" in str(e):
+                try:
+                    with self.remote_engine.connect() as conn:
+                        conn.execute(text(f"DROP TABLE {temp_table_name}"))
+                        conn.commit()
+                    self.logger.debug(f"已清理远端临时表: {temp_table_name}")
+                except Exception as e2:
+                    if "does not exist" not in str(e2):
+                        self.logger.warning(f"清理远端临时表失败: {str(e2)}")
+            else:
+                self.logger.warning(f"清理远端临时表失败: {str(e)}")
 
     def join_attributes_by_location(
         self,
