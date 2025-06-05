@@ -414,8 +414,7 @@ def batch_insert_to_postgis(gdf, eng, table_name='clips_bbox', batch_size=1000, 
                 table_name, 
                 eng, 
                 if_exists='append', 
-                index=False,
-                method='multi'
+                index=False
             )
             inserted_rows += len(batch_gdf)
             successful_tokens.extend(batch_tokens)
