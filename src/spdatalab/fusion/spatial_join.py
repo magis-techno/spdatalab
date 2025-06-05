@@ -2,6 +2,7 @@
 空间连接模块 - 类似QGIS的"join attributes by location"
 
 提供简洁的空间连接功能，支持bbox与各种要素的空间叠置分析
+支持分批推送到远端计算的高效模式
 """
 
 import logging
@@ -11,9 +12,13 @@ import pandas as pd
 import geopandas as gpd
 from sqlalchemy import create_engine, text
 from enum import Enum
+import uuid
+from datetime import datetime
 
 # 数据库连接配置
 LOCAL_DSN = "postgresql+psycopg://postgres:postgres@local_pg:5432/postgres"
+# 远端数据库连接配置（rcdatalake_gy1）
+REMOTE_DSN = "postgresql+psycopg://**:**@10.170.30.193:9001/rcdatalake_gy1"
 
 logger = logging.getLogger(__name__)
 
@@ -46,20 +51,321 @@ class SummaryMethod(Enum):
 class SpatialJoin:
     """空间连接分析器 - 类似QGIS的join attributes by location"""
     
-    def __init__(self, engine=None):
+    def __init__(self, engine=None, remote_engine=None):
         """
         初始化空间连接器
         
         Args:
-            engine: SQLAlchemy引擎，如果为None则创建默认引擎
+            engine: 本地SQLAlchemy引擎，如果为None则创建默认引擎
+            remote_engine: 远端SQLAlchemy引擎，如果为None则创建默认引擎
         """
         if engine is None:
             self.engine = create_engine(LOCAL_DSN, future=True)
         else:
             self.engine = engine
+        
+        if remote_engine is None:
+            self.remote_engine = create_engine(REMOTE_DSN, future=True)
+        else:
+            self.remote_engine = remote_engine
             
         self.logger = logging.getLogger(__name__)
     
+    def batch_spatial_join_with_remote(
+        self,
+        left_table: str = "clips_bbox",
+        remote_table: str = "full_intersection",
+        batch_by_city: bool = True,
+        spatial_relation: Union[SpatialRelation, str] = SpatialRelation.INTERSECTS,
+        distance_meters: Optional[float] = None,
+        
+        # 字段和统计选项
+        fields_to_add: Optional[List[str]] = None,
+        summarize: bool = True,
+        summary_fields: Optional[Dict[str, str]] = None,
+        
+        # 分批控制
+        limit_batches: Optional[int] = None,  # 限制处理的批次数量（用于测试）
+        city_ids: Optional[List[str]] = None,  # 指定要处理的城市ID列表
+        where_clause: Optional[str] = None,   # 本地表的过滤条件
+        
+        # 输出选项
+        output_table: Optional[str] = None,
+        temp_table_prefix: str = "temp_bbox_batch"
+    ) -> gpd.GeoDataFrame:
+        """
+        分批推送到远端进行空间连接计算
+        
+        这个方法解决了FDW远程计算效率低的问题，通过以下策略：
+        1. 从本地clips_bbox表按城市ID分批获取数据
+        2. 将每批数据推送到远端作为临时表
+        3. 在远端与full_intersection进行空间连接
+        4. 返回结果并合并
+        
+        Args:
+            left_table: 本地左表名（通常是clips_bbox）
+            remote_table: 远端右表名（通常是full_intersection）
+            batch_by_city: 是否按城市ID分批（推荐，默认True）
+            spatial_relation: 空间关系
+            distance_meters: 距离阈值（仅用于DWITHIN关系）
+            
+            fields_to_add: 要添加的远端表字段列表
+            summarize: 是否进行统计汇总
+            summary_fields: 统计字段和方法
+            
+            limit_batches: 限制处理的批次数量（用于测试）
+            city_ids: 指定要处理的城市ID列表，None表示处理所有城市
+            where_clause: 本地表的过滤条件
+            
+            output_table: 输出表名
+            temp_table_prefix: 远端临时表前缀
+            
+        Returns:
+            空间连接结果的GeoDataFrame
+        """
+        self.logger.info(f"开始分批空间连接: {left_table} -> 远端{remote_table}")
+        
+        # 转换枚举为字符串
+        if isinstance(spatial_relation, SpatialRelation):
+            spatial_relation = spatial_relation.value
+        
+        # 设置默认统计字段
+        if summarize and summary_fields is None:
+            summary_fields = {
+                "intersection_count": "count",
+                "nearest_distance": "distance"
+            }
+        
+        # 获取本地数据的城市ID列表和分批信息
+        total_count, city_batches = self._get_city_batch_info(left_table, city_ids, where_clause)
+        
+        if limit_batches:
+            city_batches = city_batches[:limit_batches]
+            self.logger.info(f"限制测试：只处理前{limit_batches}个城市")
+        
+        self.logger.info(f"总计{total_count}条记录，涉及{len(city_batches)}个城市")
+        
+        # 存储所有批次的结果
+        all_results = []
+        
+        try:
+            for batch_num, (city_id, city_count) in enumerate(city_batches, 1):
+                self.logger.info(f"处理城市 {batch_num}/{len(city_batches)}: {city_id} ({city_count}条记录)")
+                
+                # 步骤1：获取本地数据批次（按城市ID）
+                local_batch = self._fetch_local_batch_by_city(left_table, city_id, where_clause)
+                if local_batch.empty:
+                    self.logger.warning(f"城市{city_id}数据为空，跳过")
+                    continue
+                
+                # 步骤2：推送到远端临时表
+                temp_table_name = f"{temp_table_prefix}_{city_id}_{uuid.uuid4().hex[:8]}"
+                self._push_batch_to_remote(local_batch, temp_table_name)
+                
+                try:
+                    # 步骤3：在远端执行空间连接
+                    batch_result = self._execute_remote_spatial_join(
+                        temp_table_name, remote_table,
+                        spatial_relation, distance_meters,
+                        fields_to_add, summarize, summary_fields
+                    )
+                    
+                    if not batch_result.empty:
+                        all_results.append(batch_result)
+                        self.logger.info(f"城市{city_id}完成，返回{len(batch_result)}条结果")
+                    else:
+                        self.logger.info(f"城市{city_id}无匹配结果")
+                    
+                finally:
+                    # 步骤4：清理远端临时表
+                    self._cleanup_remote_temp_table(temp_table_name)
+        
+        except Exception as e:
+            self.logger.error(f"分批空间连接失败: {str(e)}")
+            raise
+        
+        # 合并所有结果
+        if all_results:
+            final_result = pd.concat(all_results, ignore_index=True)
+            # 转换为GeoDataFrame
+            final_gdf = gpd.GeoDataFrame(final_result, geometry='geometry', crs=4326)
+            
+            self.logger.info(f"分批空间连接完成，总计{len(final_gdf)}条结果")
+            
+            # 保存到输出表
+            if output_table:
+                self._save_to_database(final_gdf, output_table)
+            
+            return final_gdf
+        else:
+            self.logger.info("所有批次均无匹配结果，返回空结果")
+            return gpd.GeoDataFrame()
+    
+    def _get_city_batch_info(self, table_name: str, city_ids: Optional[List[str]] = None, where_clause: Optional[str] = None) -> Tuple[int, List[Tuple[str, int]]]:
+        """获取城市分批信息"""
+        # 构建WHERE条件
+        where_conditions = []
+        if where_clause:
+            where_conditions.append(where_clause)
+        if city_ids:
+            city_list = "', '".join(city_ids)
+            where_conditions.append(f"city_id IN ('{city_list}')")
+        
+        where_sql = f"WHERE {' AND '.join(where_conditions)}" if where_conditions else ""
+        
+        # 获取每个城市的记录数
+        sql = text(f"""
+            SELECT city_id, COUNT(*) as count
+            FROM {table_name} 
+            {where_sql}
+            GROUP BY city_id
+            ORDER BY city_id
+        """)
+        
+        with self.engine.connect() as conn:
+            result = conn.execute(sql).fetchall()
+        
+        # 转换为列表格式 [(city_id, count), ...]
+        city_batches = [(row[0], row[1]) for row in result]
+        total_count = sum(count for _, count in city_batches)
+        
+        return total_count, city_batches
+    
+    def _fetch_local_batch_by_city(self, table_name: str, city_id: str, where_clause: Optional[str] = None) -> gpd.GeoDataFrame:
+        """按城市ID获取本地数据批次"""
+        # 构建WHERE条件
+        where_conditions = [f"city_id = '{city_id}'"]
+        if where_clause:
+            where_conditions.append(where_clause)
+        
+        where_sql = f"WHERE {' AND '.join(where_conditions)}"
+        
+        sql = text(f"""
+            SELECT scene_token, city_id, geometry
+            FROM {table_name} 
+            {where_sql}
+            ORDER BY scene_token
+        """)
+        
+        return gpd.read_postgis(sql, self.engine, geom_col='geometry')
+    
+    def _push_batch_to_remote(self, batch_gdf: gpd.GeoDataFrame, temp_table_name: str):
+        """推送批次数据到远端临时表"""
+        try:
+            # 推送到远端作为临时表
+            batch_gdf.to_postgis(
+                temp_table_name,
+                self.remote_engine,
+                if_exists='replace',
+                index=False,
+                method='multi'  # 使用批量插入优化性能
+            )
+            
+            # 在远端创建空间索引
+            with self.remote_engine.connect() as conn:
+                conn.execute(text(f"CREATE INDEX IF NOT EXISTS idx_{temp_table_name}_geom ON {temp_table_name} USING GIST (geometry)"))
+                conn.commit()
+            
+            self.logger.debug(f"已推送{len(batch_gdf)}条记录到远端临时表: {temp_table_name}")
+            
+        except Exception as e:
+            self.logger.error(f"推送数据到远端失败: {str(e)}")
+            raise
+    
+    def _execute_remote_spatial_join(
+        self,
+        temp_table_name: str,
+        remote_table: str,
+        spatial_relation: str,
+        distance_meters: Optional[float],
+        fields_to_add: Optional[List[str]],
+        summarize: bool,
+        summary_fields: Optional[Dict[str, str]]
+    ) -> pd.DataFrame:
+        """在远端执行空间连接"""
+        
+        # 构建空间条件
+        spatial_condition = self._build_spatial_condition(
+            spatial_relation, f"t.geometry", f"r.wkb_geometry", distance_meters
+        )
+        
+        if summarize and summary_fields:
+            # 统计模式
+            field_selection = self._build_summary_fields_remote(summary_fields)
+            select_part = "t.scene_token, t.geometry"
+            group_by_clause = "GROUP BY t.scene_token, t.geometry"
+        else:
+            # 普通连接模式
+            field_selection = self._build_field_selection_remote(fields_to_add)
+            select_part = "t.*"
+            group_by_clause = ""
+        
+        sql = text(f"""
+            SELECT 
+                {select_part},
+                {field_selection}
+            FROM {temp_table_name} t
+            LEFT JOIN {remote_table} r ON {spatial_condition}
+            {group_by_clause}
+            ORDER BY t.scene_token
+        """)
+        
+        try:
+            # 在远端执行查询并返回结果
+            return pd.read_sql(sql, self.remote_engine)
+        except Exception as e:
+            self.logger.error(f"远端空间连接执行失败: {str(e)}")
+            raise
+    
+    def _build_field_selection_remote(self, fields_to_add: Optional[List[str]]) -> str:
+        """构建远端字段选择SQL"""
+        if not fields_to_add:
+            # 添加一些默认的有用字段
+            return "r.intersection_id, r.road_type"
+        
+        field_list = [f"r.{field}" for field in fields_to_add]
+        return ", ".join(field_list)
+    
+    def _build_summary_fields_remote(self, summary_fields: Dict[str, str]) -> str:
+        """构建远端统计字段SQL"""
+        selections = []
+        
+        for new_name, method in summary_fields.items():
+            method = method.lower()
+            
+            if method == "count":
+                selections.append(f"COUNT(r.*) AS {new_name}")
+            elif method == "distance":
+                # 计算最近距离（使用geography类型获得米单位）
+                selections.append(f"""
+                    MIN(ST_Distance(
+                        t.geometry::geography,
+                        r.wkb_geometry::geography
+                    )) AS {new_name}
+                """)
+            elif method in ["sum", "mean", "avg", "max", "min"]:
+                # 对于数值统计，从字段名推断原字段
+                if "_" in new_name:
+                    base_field = "_".join(new_name.split("_")[:-1])
+                    sql_method = "AVG" if method in ["mean", "avg"] else method.upper()
+                    selections.append(f"{sql_method}(r.{base_field}) AS {new_name}")
+                else:
+                    selections.append(f"COUNT(r.*) AS {new_name}")
+            else:
+                selections.append(f"COUNT(r.*) AS {new_name}")
+        
+        return ", ".join(selections) if selections else "COUNT(r.*) AS feature_count"
+    
+    def _cleanup_remote_temp_table(self, temp_table_name: str):
+        """清理远端临时表"""
+        try:
+            with self.remote_engine.connect() as conn:
+                conn.execute(text(f"DROP TABLE IF EXISTS {temp_table_name}"))
+                conn.commit()
+            self.logger.debug(f"已清理远端临时表: {temp_table_name}")
+        except Exception as e:
+            self.logger.warning(f"清理远端临时表失败: {str(e)}")
+
     def join_attributes_by_location(
         self,
         left_table: str,
@@ -83,6 +389,9 @@ class SpatialJoin:
     ) -> gpd.GeoDataFrame:
         """
         根据位置连接属性 - 类似QGIS的join attributes by location
+        
+        注意：此方法基于FDW，对于复杂空间计算效率较低。
+        建议使用 batch_spatial_join_with_remote 方法进行高效的远端计算。
         
         Args:
             left_table: 左表名（如clips_bbox）
@@ -130,6 +439,12 @@ class SpatialJoin:
                 }
             )
         """
+        # 发出弃用警告
+        self.logger.warning(
+            "join_attributes_by_location 方法基于FDW，性能较低。"
+            "建议使用 batch_spatial_join_with_remote 方法进行高效计算。"
+        )
+        
         # 转换枚举为字符串
         if isinstance(spatial_relation, SpatialRelation):
             spatial_relation = spatial_relation.value
