@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class SubDataset:
     """子数据集信息。"""
-    name: str  # 子数据集名称，如 GOD_E2E_golden_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59
+    name: str  # 子数据集名称，如 lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59
     obs_path: str  # OBS路径
     duplication_factor: int  # 倍增因子
     scene_count: int = 0  # 场景数量
@@ -80,7 +80,7 @@ class DatasetManager:
         """从OBS路径中提取子数据集名称。
         
         Args:
-            obs_path: OBS路径，如 obs://yw-ads-training-gy1/data/god/autoscenes-prod/index/god/GOD_E2E_golden_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59/train_god_god_E2E_0419_7_6_0_9_20250518112117_1323_32968_duplicate_61858_guiyang_f_pkg2_2frames.jsonl.shrink
+            obs_path: OBS路径
             
         Returns:
             子数据集名称

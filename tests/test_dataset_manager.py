@@ -9,9 +9,9 @@ from unittest.mock import patch, mock_open
 from spdatalab.dataset.dataset_manager import DatasetManager, Dataset, SubDataset
 
 # 测试数据
-SAMPLE_INDEX_CONTENT = """obs://yw-ads-training-gy1/data/god/autoscenes-prod/index/god/GOD_E2E_golden_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59/train_god_god_E2E_0419_7_6_0_9_20250518112117_1323_32968_duplicate_61858_guiyang_f_pkg2_2frames.jsonl.shrink@duplicate20
-obs://yw-ads-training-gy1/data/god/autoscenes-prod/index/god/GOD_E2E_golden_stuck_veh_sub_ddi_2773412e2e_2025_05_18_10_37_48/train_god_god_E2E_0419_7_6_0_9_20250518104817_839_21601_duplicate_26431_guiyang_f_pkg2_2frames.jsonl.shrink@duplicate10
-obs://yw-ads-training-gy1/data/god/autoscenes-prod/index/god/GOD_E2E_golden_vru_avoid_obstacle_data_sub_ddi_2773412e2e_2025_05_18_10_10_41/train_god_god_E2E_0419_7_6_0_9_20250518104658_6844_218135_duplicate_441684_guiyang_f_pkg2_2frames.jsonl.shrink@duplicate5"""
+SAMPLE_INDEX_CONTENT = """obs://test/index/dataset_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59/train_0419_7_6_0_9_20250518112117_1323_32968_duplicate_61858_guiyang_f_pkg2_2frames.jsonl.shrink@duplicate20
+obs://test/index/dataset_stuck_veh_sub_ddi_2773412e2e_2025_05_18_10_37_48/train_0419_7_6_0_9_20250518104817_839_21601_duplicate_26431_guiyang_f_pkg2_2frames.jsonl.shrink@duplicate10
+obs://test/index/dataset_vru_avoid_obstacle_data_sub_ddi_2773412e2e_2025_05_18_10_10_41/train_0419_7_6_0_9_20250518104658_6844_218135_duplicate_441684_guiyang_f_pkg2_2frames.jsonl.shrink@duplicate5"""
 
 SAMPLE_SCENE_DATA = [
     {"scene_id": "scene_001", "other_data": "test1"},
@@ -26,7 +26,7 @@ def dataset_manager():
 @pytest.fixture
 def sample_dataset():
     subdataset1 = SubDataset(
-        name="GOD_E2E_golden_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59",
+        name="lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59",
         obs_path="obs://path1/file1.shrink",
         duplication_factor=20,
         scene_count=2,
@@ -34,7 +34,7 @@ def sample_dataset():
     )
     
     subdataset2 = SubDataset(
-        name="GOD_E2E_golden_stuck_veh_sub_ddi_2773412e2e_2025_05_18_10_37_48",
+        name="stuck_veh_sub_ddi_2773412e2e_2025_05_18_10_37_48",
         obs_path="obs://path2/file2.shrink",
         duplication_factor=10,
         scene_count=1,
@@ -58,12 +58,12 @@ class TestDatasetManager:
         """测试子数据集名称提取。"""
         test_cases = [
             (
-                "obs://yw-ads-training-gy1/data/god/autoscenes-prod/index/god/GOD_E2E_golden_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59/train_god_god_E2E_0419_7_6_0_9_20250518112117_1323_32968_duplicate_61858_guiyang_f_pkg2_2frames.jsonl.shrink",
-                "GOD_E2E_golden_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59"
+                "obs://test/index/dataset_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59/train_0419_7_6_0_9_20250518112117_1323_32968_duplicate_61858_guiyang_f_pkg2_2frames.jsonl.shrink",
+                "lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59"
             ),
             (
-                "obs://yw-ads-training-gy1/data/god/autoscenes-prod/index/god/GOD_E2E_golden_stuck_veh_sub_ddi_2773412e2e_2025_05_18_10_37_48/train_god_god_E2E_0419_7_6_0_9_20250518104817_839_21601_duplicate_26431_guiyang_f_pkg2_2frames.jsonl.shrink",
-                "GOD_E2E_golden_stuck_veh_sub_ddi_2773412e2e_2025_05_18_10_37_48"
+                "obs://test/index/dataset_stuck_veh_sub_ddi_2773412e2e_2025_05_18_10_37_48/train_0419_7_6_0_9_20250518104817_839_21601_duplicate_26431_guiyang_f_pkg2_2frames.jsonl.shrink",
+                "stuck_veh_sub_ddi_2773412e2e_2025_05_18_10_37_48"
             )
         ]
         
@@ -113,13 +113,13 @@ class TestDatasetManager:
         mock_generator = mock_generator_class.return_value
         # 为每个文件返回不同的场景数据
         scene_data_map = {
-            "obs://yw-ads-training-gy1/data/god/autoscenes-prod/index/god/GOD_E2E_golden_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59/train_god_god_E2E_0419_7_6_0_9_20250518112117_1323_32968_duplicate_61858_guiyang_f_pkg2_2frames.jsonl.shrink": [
+            "obs://test/index/dataset_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59/train_0419_7_6_0_9_20250518112117_1323_32968_duplicate_61858_guiyang_f_pkg2_2frames.jsonl.shrink": [
                 {"scene_id": "scene_001"}, {"scene_id": "scene_002"}
             ],
-            "obs://yw-ads-training-gy1/data/god/autoscenes-prod/index/god/GOD_E2E_golden_stuck_veh_sub_ddi_2773412e2e_2025_05_18_10_37_48/train_god_god_E2E_0419_7_6_0_9_20250518104817_839_21601_duplicate_26431_guiyang_f_pkg2_2frames.jsonl.shrink": [
+            "obs://test/index/dataset_stuck_veh_sub_ddi_2773412e2e_2025_05_18_10_37_48/train_0419_7_6_0_9_20250518104817_839_21601_duplicate_26431_guiyang_f_pkg2_2frames.jsonl.shrink": [
                 {"scene_id": "scene_003"}
             ],
-            "obs://yw-ads-training-gy1/data/god/autoscenes-prod/index/god/GOD_E2E_golden_vru_avoid_obstacle_data_sub_ddi_2773412e2e_2025_05_18_10_10_41/train_god_god_E2E_0419_7_6_0_9_20250518104658_6844_218135_duplicate_441684_guiyang_f_pkg2_2frames.jsonl.shrink": [
+            "obs://test/index/dataset_vru_avoid_obstacle_data_sub_ddi_2773412e2e_2025_05_18_10_10_41/train_0419_7_6_0_9_20250518104658_6844_218135_duplicate_441684_guiyang_f_pkg2_2frames.jsonl.shrink": [
                 {"scene_id": "scene_004"}, {"scene_id": "scene_005"}
             ]
         }
@@ -146,9 +146,9 @@ class TestDatasetManager:
         # 验证子数据集
         subdataset_names = [sub.name for sub in dataset.subdatasets]
         expected_names = [
-            "GOD_E2E_golden_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59",
-            "GOD_E2E_golden_stuck_veh_sub_ddi_2773412e2e_2025_05_18_10_37_48",
-            "GOD_E2E_golden_vru_avoid_obstacle_data_sub_ddi_2773412e2e_2025_05_18_10_10_41"
+            "lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59",
+            "stuck_veh_sub_ddi_2773412e2e_2025_05_18_10_37_48",
+            "vru_avoid_obstacle_data_sub_ddi_2773412e2e_2025_05_18_10_10_41"
         ]
         assert subdataset_names == expected_names
     
@@ -188,10 +188,10 @@ class TestDatasetManager:
         # 存在的子数据集
         subdataset = dataset_manager.get_subdataset_info(
             sample_dataset, 
-            "GOD_E2E_golden_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59"
+            "lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59"
         )
         assert subdataset is not None
-        assert subdataset.name == "GOD_E2E_golden_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59"
+        assert subdataset.name == "lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59"
         assert subdataset.scene_count == 2
         
         # 不存在的子数据集
@@ -208,7 +208,7 @@ class TestDatasetManager:
         # 列出特定子数据集的场景ID
         subdataset_scene_ids = dataset_manager.list_scene_ids(
             sample_dataset, 
-            "GOD_E2E_golden_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59"
+            "lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59"
         )
         expected_subdataset = ["scene_001", "scene_002"]
         assert subdataset_scene_ids == expected_subdataset
@@ -238,7 +238,7 @@ class TestDatasetManager:
         # 生成特定子数据集的倍增场景ID
         subdataset_duplicated = list(dataset_manager.generate_scene_list_with_duplication(
             sample_dataset, 
-            "GOD_E2E_golden_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59"
+            "lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59"
         ))
         
         assert len(subdataset_duplicated) == 40  # 2*20

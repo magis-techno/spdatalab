@@ -87,16 +87,16 @@ obs://path/to/subdataset3/file.shrink@duplicate5
 # 构建数据集 - JSON格式（默认）
 python -m spdatalab.cli build-dataset \
     --index-file data/index.txt \
-    --dataset-name "GOD_E2E_Dataset" \
+    --dataset-name "Dataset" \
     --description "GOD E2E training dataset" \
-    --output datasets/god_e2e_dataset.json
+    --output datasets/dataset.json
 
 # 构建数据集 - Parquet格式（推荐用于大数据集）
 python -m spdatalab.cli build-dataset \
     --index-file data/index.txt \
-    --dataset-name "GOD_E2E_Dataset" \
+    --dataset-name "Dataset" \
     --description "GOD E2E training dataset" \
-    --output datasets/god_e2e_dataset.parquet \
+    --output datasets/dataset.parquet \
     --format parquet
 ```
 
@@ -107,31 +107,31 @@ from spdatalab.dataset.dataset_manager import DatasetManager
 manager = DatasetManager()
 dataset = manager.build_dataset_from_index(
     "data/index.txt",
-    "GOD_E2E_Dataset", 
+    "Dataset", 
     "GOD E2E training dataset"
 )
 
 # 保存为JSON格式
-manager.save_dataset(dataset, "datasets/god_e2e_dataset.json", format='json')
+manager.save_dataset(dataset, "datasets/dataset.json", format='json')
 
 # 保存为Parquet格式（推荐用于大数据集）
-manager.save_dataset(dataset, "datasets/god_e2e_dataset.parquet", format='parquet')
+manager.save_dataset(dataset, "datasets/dataset.parquet", format='parquet')
 ```
 
 ### 2. 查看数据集信息
 
 ```bash
 # 显示数据集详细信息（自动检测格式）
-python -m spdatalab.cli dataset-info --dataset-file datasets/god_e2e_dataset.parquet
+python -m spdatalab.cli dataset-info --dataset-file datasets/dataset.parquet
 
 # 获取统计信息
-python -m spdatalab.cli dataset-stats --dataset-file datasets/god_e2e_dataset.parquet
+python -m spdatalab.cli dataset-stats --dataset-file datasets/dataset.parquet
 ```
 
 输出示例：
 ```
 数据集信息:
-  名称: GOD_E2E_Dataset
+  名称: Dataset
   描述: GOD E2E training dataset
   创建时间: 2025-01-27T10:30:00
   子数据集数量: 3
@@ -139,7 +139,7 @@ python -m spdatalab.cli dataset-stats --dataset-file datasets/god_e2e_dataset.pa
   总场景数(含倍增): 60000000
 
 子数据集详情:
-  1. GOD_E2E_golden_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59
+  1. lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59
      - OBS路径: obs://yw-ads-training-gy1/data/god/.../file.shrink
      - 场景数: 2000000
      - 倍增因子: 20
@@ -152,18 +152,18 @@ python -m spdatalab.cli dataset-stats --dataset-file datasets/god_e2e_dataset.pa
 ```bash
 # 列出所有场景ID（不含倍增）
 python -m spdatalab.cli list-scenes \
-    --dataset-file datasets/god_e2e_dataset.parquet \
+    --dataset-file datasets/dataset.parquet \
     --output scene_ids.txt
 
 # 列出特定子数据集的场景ID
 python -m spdatalab.cli list-scenes \
-    --dataset-file datasets/god_e2e_dataset.parquet \
-    --subdataset "GOD_E2E_golden_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59" \
+    --dataset-file datasets/dataset.parquet \
+    --subdataset "lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59" \
     --output lane_change_scenes.txt
 
 # 直接在控制台显示
 python -m spdatalab.cli list-scenes \
-    --dataset-file datasets/god_e2e_dataset.parquet
+    --dataset-file datasets/dataset.parquet
 ```
 
 ### 4. 导出场景ID为Parquet格式
@@ -171,12 +171,12 @@ python -m spdatalab.cli list-scenes \
 ```bash
 # 导出唯一场景ID（不含倍增）
 python -m spdatalab.cli export-scene-ids \
-    --dataset-file datasets/god_e2e_dataset.parquet \
+    --dataset-file datasets/dataset.parquet \
     --output scene_ids_unique.parquet
 
 # 导出包含倍增的完整场景ID列表
 python -m spdatalab.cli export-scene-ids \
-    --dataset-file datasets/god_e2e_dataset.parquet \
+    --dataset-file datasets/dataset.parquet \
     --output scene_ids_full.parquet \
     --include-duplicates
 ```
@@ -186,22 +186,22 @@ python -m spdatalab.cli export-scene-ids \
 ```bash
 # 查询所有数据
 python -m spdatalab.cli query-parquet \
-    --parquet-file datasets/god_e2e_dataset.parquet
+    --parquet-file datasets/dataset.parquet
 
 # 按子数据集过滤
 python -m spdatalab.cli query-parquet \
-    --parquet-file datasets/god_e2e_dataset.parquet \
-    --subdataset "GOD_E2E_golden_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59"
+    --parquet-file datasets/dataset.parquet \
+    --subdataset "lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59"
 
 # 按倍增因子过滤
 python -m spdatalab.cli query-parquet \
-    --parquet-file datasets/god_e2e_dataset.parquet \
+    --parquet-file datasets/dataset.parquet \
     --duplication-factor 20
 
 # 保存查询结果
 python -m spdatalab.cli query-parquet \
-    --parquet-file datasets/god_e2e_dataset.parquet \
-    --subdataset "GOD_E2E_golden_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59" \
+    --parquet-file datasets/dataset.parquet \
+    --subdataset "lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59" \
     --output filtered_results.parquet
 ```
 
@@ -214,10 +214,10 @@ from spdatalab.dataset.dataset_manager import DatasetManager
 manager = DatasetManager()
 
 # 加载数据集（自动检测格式）
-dataset = manager.load_dataset("datasets/god_e2e_dataset.parquet")
+dataset = manager.load_dataset("datasets/dataset.parquet")
 
 # 获取子数据集信息
-subdataset = manager.get_subdataset_info(dataset, "GOD_E2E_golden_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59")
+subdataset = manager.get_subdataset_info(dataset, "lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59")
 if subdataset:
     print(f"子数据集: {subdataset.name}")
     print(f"场景数: {subdataset.scene_count}")
@@ -228,7 +228,7 @@ all_scene_ids = manager.list_scene_ids(dataset)
 print(f"总场景数: {len(all_scene_ids)}")
 
 # 列出特定子数据集的场景ID
-subset_scene_ids = manager.list_scene_ids(dataset, "GOD_E2E_golden_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59")
+subset_scene_ids = manager.list_scene_ids(dataset, "lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59")
 print(f"子数据集场景数: {len(subset_scene_ids)}")
 
 # 生成包含倍增的场景ID
@@ -236,7 +236,7 @@ duplicated_scenes = list(manager.generate_scene_list_with_duplication(dataset))
 print(f"倍增后总场景数: {len(duplicated_scenes)}")
 
 # 查询Parquet数据（仅当数据集为parquet格式时可用）
-df = manager.query_scenes_parquet("datasets/god_e2e_dataset.parquet", duplication_factor=20)
+df = manager.query_scenes_parquet("datasets/dataset.parquet", duplication_factor=20)
 print(f"倍增因子为20的场景数: {len(df)}")
 
 # 导出场景ID为Parquet格式
@@ -255,7 +255,7 @@ manager.save_dataset(dataset, "datasets/updated_dataset.parquet", format='parque
 ### JSON格式
 ```json
 {
-  "name": "GOD_E2E_Dataset",
+  "name": "Dataset",
   "description": "GOD E2E training dataset",
   "created_at": "2025-01-27T10:30:00.123456",
   "total_scenes": 15000,
@@ -263,7 +263,7 @@ manager.save_dataset(dataset, "datasets/updated_dataset.parquet", format='parque
   "metadata": {},
   "subdatasets": [
     {
-      "name": "GOD_E2E_golden_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59",
+      "name": "lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59",
       "obs_path": "obs://yw-ads-training-gy1/data/god/.../file.shrink",
       "duplication_factor": 20,
       "scene_count": 500,
@@ -279,8 +279,8 @@ Parquet格式将数据存储为表格结构，每行代表一个场景ID：
 
 | dataset_name | dataset_description | subdataset_name | obs_path | duplication_factor | scene_id | metadata |
 |--------------|---------------------|-----------------|----------|-------------------|----------|----------|
-| GOD_E2E_Dataset | GOD E2E training... | GOD_E2E_golden... | obs://... | 20 | scene_001 | {...} |
-| GOD_E2E_Dataset | GOD E2E training... | GOD_E2E_golden... | obs://... | 20 | scene_002 | {...} |
+| Dataset | GOD E2E training... | golden... | obs://... | 20 | scene_001 | {...} |
+| Dataset | GOD E2E training... | golden... | obs://... | 20 | scene_002 | {...} |
 
 同时会生成一个 `.meta.json` 文件保存数据集元信息。
 

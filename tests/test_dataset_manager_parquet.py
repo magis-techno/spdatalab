@@ -18,7 +18,7 @@ def dataset_manager():
 @pytest.fixture
 def sample_dataset():
     subdataset1 = SubDataset(
-        name="GOD_E2E_golden_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59",
+        name="lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59",
         obs_path="obs://path1/file1.shrink",
         duplication_factor=3,
         scene_count=2,
@@ -26,7 +26,7 @@ def sample_dataset():
     )
     
     subdataset2 = SubDataset(
-        name="GOD_E2E_golden_stuck_veh_sub_ddi_2773412e2e_2025_05_18_10_37_48",
+        name="stuck_veh_sub_ddi_2773412e2e_2025_05_18_10_37_48",
         obs_path="obs://path2/file2.shrink",
         duplication_factor=2,
         scene_count=1,
@@ -121,7 +121,7 @@ class TestParquetFormat:
             # 测试按子数据集过滤
             df_filtered = dataset_manager.query_scenes_parquet(
                 str(parquet_file),
-                subdataset_name="GOD_E2E_golden_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59"
+                subdataset_name="lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59"
             )
             assert len(df_filtered) == 2  # 该子数据集有2个scene_id
             assert set(df_filtered['scene_id'].tolist()) == {'scene_001', 'scene_002'}
@@ -136,7 +136,7 @@ class TestParquetFormat:
             # 测试多个过滤条件
             df_multi = dataset_manager.query_scenes_parquet(
                 str(parquet_file),
-                subdataset_name="GOD_E2E_golden_stuck_veh_sub_ddi_2773412e2e_2025_05_18_10_37_48",
+                subdataset_name="stuck_veh_sub_ddi_2773412e2e_2025_05_18_10_37_48",
                 duplication_factor=2
             )
             assert len(df_multi) == 1  # 应该只有scene_003
@@ -154,13 +154,13 @@ class TestParquetFormat:
         
         # 验证子数据集统计信息
         sub1_stats = stats['subdatasets'][0]
-        assert sub1_stats['name'] == "GOD_E2E_golden_lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59"
+        assert sub1_stats['name'] == "lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59"
         assert sub1_stats['scene_count'] == 2
         assert sub1_stats['duplication_factor'] == 3
         assert sub1_stats['total_scenes_with_duplicates'] == 6
         
         sub2_stats = stats['subdatasets'][1]
-        assert sub2_stats['name'] == "GOD_E2E_golden_stuck_veh_sub_ddi_2773412e2e_2025_05_18_10_37_48"
+        assert sub2_stats['name'] == "stuck_veh_sub_ddi_2773412e2e_2025_05_18_10_37_48"
         assert sub2_stats['scene_count'] == 1
         assert sub2_stats['duplication_factor'] == 2
         assert sub2_stats['total_scenes_with_duplicates'] == 2

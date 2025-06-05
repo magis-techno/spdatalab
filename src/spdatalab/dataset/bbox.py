@@ -4,6 +4,7 @@ import json
 import signal
 import sys
 from pathlib import Path
+from datetime import datetime
 import geopandas as gpd, pandas as pd
 from sqlalchemy import text, create_engine
 from spdatalab.common.io_hive import hive_cursor
@@ -34,6 +35,201 @@ def setup_signal_handlers():
     signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
     signal.signal(signal.SIGTERM, signal_handler)  # 终止信号
 
+class LightweightProgressTracker:
+    """轻量级进度跟踪器，使用Parquet文件存储状态，针对大规模数据优化"""
+    
+    def __init__(self, work_dir="./bbox_import_logs"):
+        self.work_dir = Path(work_dir)
+        self.work_dir.mkdir(exist_ok=True)
+        
+        # 状态文件路径
+        self.success_file = self.work_dir / "successful_tokens.parquet"
+        self.failed_file = self.work_dir / "failed_tokens.parquet"
+        self.progress_file = self.work_dir / "progress.json"
+        
+        # 内存缓存（用于批量操作）
+        self._success_cache = self._load_success_cache()
+        self._failed_buffer = []  # 失败记录缓冲区
+        self._success_buffer = []  # 成功记录缓冲区
+        self._buffer_size = 1000  # 缓冲区大小
+        
+    def _load_success_cache(self):
+        """加载成功token的缓存"""
+        if self.success_file.exists() and PARQUET_AVAILABLE:
+            try:
+                df = pd.read_parquet(self.success_file)
+                cache = set(df['scene_token'].tolist())
+                print(f"已加载 {len(cache)} 个成功处理的scene_token")
+                return cache
+            except Exception as e:
+                print(f"加载成功记录失败: {e}，将创建新文件")
+                return set()
+        else:
+            return set()
+    
+    def save_successful_batch(self, scene_tokens, batch_num=None):
+        """批量保存成功处理的token（使用缓冲区优化）"""
+        if not scene_tokens:
+            return
+            
+        # 添加到缓冲区
+        timestamp = datetime.now()
+        for token in scene_tokens:
+            if token not in self._success_cache:
+                self._success_buffer.append({
+                    'scene_token': token,
+                    'processed_at': timestamp,
+                    'batch_num': batch_num
+                })
+                self._success_cache.add(token)
+        
+        # 如果缓冲区达到阈值，则写入文件
+        if len(self._success_buffer) >= self._buffer_size:
+            self._flush_success_buffer()
+    
+    def _flush_success_buffer(self):
+        """将成功记录缓冲区写入文件"""
+        if not self._success_buffer or not PARQUET_AVAILABLE:
+            return
+            
+        new_df = pd.DataFrame(self._success_buffer)
+        
+        try:
+            if self.success_file.exists():
+                # 追加到现有文件
+                existing_df = pd.read_parquet(self.success_file)
+                combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+                # 去重（以防万一）
+                combined_df = combined_df.drop_duplicates(subset=['scene_token'], keep='last')
+            else:
+                combined_df = new_df
+            
+            # 写入文件
+            combined_df.to_parquet(self.success_file, index=False)
+            print(f"已保存 {len(self._success_buffer)} 个成功记录到文件")
+            
+        except Exception as e:
+            print(f"保存成功记录失败: {e}")
+        
+        # 清空缓冲区
+        self._success_buffer = []
+    
+    def save_failed_record(self, scene_token, error_msg, batch_num=None, step="unknown"):
+        """保存失败记录（使用缓冲区优化）"""
+        self._failed_buffer.append({
+            'scene_token': scene_token,
+            'error_msg': str(error_msg),
+            'batch_num': batch_num,
+            'step': step,
+            'failed_at': datetime.now()
+        })
+        
+        # 如果缓冲区达到阈值，则写入文件
+        if len(self._failed_buffer) >= self._buffer_size:
+            self._flush_failed_buffer()
+    
+    def _flush_failed_buffer(self):
+        """将失败记录缓冲区写入文件"""
+        if not self._failed_buffer or not PARQUET_AVAILABLE:
+            return
+            
+        new_df = pd.DataFrame(self._failed_buffer)
+        
+        try:
+            if self.failed_file.exists():
+                # 追加到现有文件
+                existing_df = pd.read_parquet(self.failed_file)
+                combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+            else:
+                combined_df = new_df
+            
+            # 写入文件
+            combined_df.to_parquet(self.failed_file, index=False)
+            print(f"已保存 {len(self._failed_buffer)} 个失败记录到文件")
+            
+        except Exception as e:
+            print(f"保存失败记录失败: {e}")
+        
+        # 清空缓冲区
+        self._failed_buffer = []
+    
+    def get_remaining_tokens(self, all_tokens):
+        """获取还需要处理的token"""
+        remaining = [token for token in all_tokens if token not in self._success_cache]
+        print(f"总计 {len(all_tokens)} 个场景，已成功处理 {len(self._success_cache)} 个，剩余 {len(remaining)} 个")
+        return remaining
+    
+    def check_tokens_exist(self, tokens):
+        """批量检查tokens是否已存在"""
+        return set(tokens) & self._success_cache
+    
+    def load_failed_tokens(self):
+        """加载失败的tokens，用于重试"""
+        if not self.failed_file.exists() or not PARQUET_AVAILABLE:
+            return []
+        
+        try:
+            failed_df = pd.read_parquet(self.failed_file)
+            # 排除已成功处理的tokens
+            failed_tokens = failed_df[~failed_df['scene_token'].isin(self._success_cache)]['scene_token'].unique().tolist()
+            print(f"加载了 {len(failed_tokens)} 个失败的scene_token")
+            return failed_tokens
+        except Exception as e:
+            print(f"加载失败记录失败: {e}")
+            return []
+    
+    def save_progress(self, total_scenes, processed_scenes, inserted_records, current_batch):
+        """保存总体进度"""
+        progress = {
+            "total_scenes": total_scenes,
+            "processed_scenes": processed_scenes,
+            "inserted_records": inserted_records,
+            "current_batch": current_batch,
+            "timestamp": datetime.now().isoformat(),
+            "successful_count": len(self._success_cache),
+            "failed_count": len(self._failed_buffer) + (
+                len(pd.read_parquet(self.failed_file)) if self.failed_file.exists() and PARQUET_AVAILABLE else 0
+            )
+        }
+        
+        try:
+            with open(self.progress_file, 'w', encoding='utf-8') as f:
+                json.dump(progress, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"保存进度失败: {e}")
+    
+    def get_statistics(self):
+        """获取统计信息"""
+        success_count = len(self._success_cache)
+        
+        failed_count = 0
+        failed_by_step = {}
+        
+        if self.failed_file.exists() and PARQUET_AVAILABLE:
+            try:
+                failed_df = pd.read_parquet(self.failed_file)
+                # 排除已成功处理的
+                active_failed = failed_df[~failed_df['scene_token'].isin(self._success_cache)]
+                failed_count = len(active_failed['scene_token'].unique())
+                
+                # 按步骤统计
+                if not active_failed.empty:
+                    failed_by_step = active_failed['step'].value_counts().to_dict()
+                    
+            except Exception as e:
+                print(f"统计失败记录时出错: {e}")
+        
+        return {
+            'success_count': success_count,
+            'failed_count': failed_count,
+            'failed_by_step': failed_by_step
+        }
+    
+    def finalize(self):
+        """完成处理，刷新所有缓冲区"""
+        self._flush_success_buffer()
+        self._flush_failed_buffer()
+
 def create_table_if_not_exists(eng, table_name='clips_bbox'):
     """如果表不存在则创建表"""
     create_sql = text(f"""
@@ -51,6 +247,10 @@ def create_table_if_not_exists(eng, table_name='clips_bbox'):
         CREATE INDEX IF NOT EXISTS idx_{table_name}_scene_token ON {table_name}(scene_token);
         CREATE INDEX IF NOT EXISTS idx_{table_name}_data_name ON {table_name}(data_name);
         CREATE INDEX IF NOT EXISTS idx_{table_name}_geometry ON {table_name} USING GIST(geometry);
+        
+        -- 添加唯一约束防止重复插入
+        ALTER TABLE {table_name} ADD CONSTRAINT IF NOT EXISTS uq_{table_name}_scene_token 
+        UNIQUE (scene_token) ON CONFLICT DO NOTHING;
     """)
     
     try:
@@ -62,6 +262,29 @@ def create_table_if_not_exists(eng, table_name='clips_bbox'):
     except Exception as e:
         print(f"创建表时出错: {str(e)}")
         return False
+
+def check_existing_records(eng, scene_tokens, table_name='clips_bbox'):
+    """检查数据库中已存在的记录"""
+    if not scene_tokens:
+        return set()
+    
+    # 批量查询，避免SQL注入
+    placeholders = ','.join(['%s'] * len(scene_tokens))
+    sql_query = text(f"""
+        SELECT scene_token FROM {table_name} 
+        WHERE scene_token IN ({placeholders})
+    """)
+    
+    try:
+        with eng.connect() as conn:
+            result = conn.execute(sql_query, scene_tokens)
+            existing = {row[0] for row in result}
+            if existing:
+                print(f"发现 {len(existing)} 个scene_token已存在于数据库中，将跳过")
+            return existing
+    except Exception as e:
+        print(f"检查已存在记录时出错: {str(e)}")
+        return set()
 
 def chunk(lst, n):
     """将列表分块处理"""
@@ -155,29 +378,35 @@ def fetch_bbox_with_geometry(names, eng):
         geom_col='geometry'
     )
 
-def batch_insert_to_postgis(gdf, eng, table_name='clips_bbox', batch_size=1000):
-    """批量插入到PostGIS，提高插入效率"""
+def batch_insert_to_postgis(gdf, eng, table_name='clips_bbox', batch_size=1000, tracker=None, batch_num=None):
+    """批量插入到PostGIS，提高插入效率，并记录失败信息"""
     total_rows = len(gdf)
     inserted_rows = 0
+    successful_tokens = []
     
     # 分批插入
     for i in range(0, total_rows, batch_size):
         batch_gdf = gdf.iloc[i:i+batch_size]
+        batch_tokens = batch_gdf['scene_token'].tolist()
         
         try:
+            # 使用 ON CONFLICT DO NOTHING 处理重复数据
             batch_gdf.to_postgis(
                 table_name, 
                 eng, 
                 if_exists='append', 
-                index=False
+                index=False,
+                method='multi'
             )
             inserted_rows += len(batch_gdf)
+            successful_tokens.extend(batch_tokens)
             print(f'[批量插入] 已插入: {inserted_rows}/{total_rows} 行')
             
         except Exception as e:
             print(f'[批量插入错误] 批次 {i//batch_size + 1}: {str(e)}')
             # 如果批量失败，尝试逐行插入
-            for _, row in batch_gdf.iterrows():
+            for idx, row in batch_gdf.iterrows():
+                scene_token = row['scene_token']
                 try:
                     # 创建单行GeoDataFrame，确保几何列名正确
                     single_gdf = gpd.GeoDataFrame(
@@ -187,12 +416,20 @@ def batch_insert_to_postgis(gdf, eng, table_name='clips_bbox', batch_size=1000):
                     )
                     single_gdf.to_postgis(table_name, eng, if_exists='append', index=False)
                     inserted_rows += 1
+                    successful_tokens.append(scene_token)
                 except Exception as row_e:
-                    print(f'[逐行插入错误] scene_token: {row.get("scene_token", "unknown")}: {str(row_e)}')
+                    error_msg = f'插入失败: {str(row_e)}'
+                    print(f'[逐行插入错误] scene_token: {scene_token}: {error_msg}')
+                    if tracker:
+                        tracker.save_failed_record(scene_token, error_msg, batch_num, "database_insert")
+    
+    # 批量保存成功的tokens
+    if tracker and successful_tokens:
+        tracker.save_successful_batch(successful_tokens, batch_num)
     
     return inserted_rows
 
-def run(input_path, batch=1000, insert_batch=1000, create_table=True):
+def run(input_path, batch=1000, insert_batch=1000, create_table=True, retry_failed=False, work_dir="./bbox_import_logs", show_stats=False):
     """主运行函数
     
     Args:
@@ -200,23 +437,53 @@ def run(input_path, batch=1000, insert_batch=1000, create_table=True):
         batch: 处理批次大小
         insert_batch: 插入批次大小
         create_table: 是否创建表（如果不存在）
+        retry_failed: 是否只重试失败的数据
+        work_dir: 工作目录，用于存储日志和进度文件
+        show_stats: 是否显示统计信息并退出
     """
     global interrupted
     
     # 设置信号处理器
     setup_signal_handlers()
     
+    # 检查Parquet支持
+    if not PARQUET_AVAILABLE:
+        print("警告: 未安装pyarrow，将使用降级的文本文件模式")
+    
+    # 初始化进度跟踪器
+    tracker = LightweightProgressTracker(work_dir)
+    
+    # 如果只是查看统计信息
+    if show_stats:
+        stats = tracker.get_statistics()
+        print("\n=== 处理统计信息 ===")
+        print(f"成功处理: {stats['success_count']} 个场景")
+        print(f"失败场景: {stats['failed_count']} 个")
+        
+        if stats['failed_by_step']:
+            print("\n按步骤分类的失败统计:")
+            for step, count in stats['failed_by_step'].items():
+                print(f"  {step}: {count} 个")
+        
+        return
+    
     print(f"开始处理输入文件: {input_path}")
+    print(f"工作目录: {work_dir}")
     
     # 智能加载scene_id列表
     try:
-        scene_ids = load_scene_ids(input_path)
+        if retry_failed:
+            scene_ids = tracker.load_failed_tokens()
+            print(f"重试模式：加载了 {len(scene_ids)} 个失败的scene_id")
+        else:
+            all_scene_ids = load_scene_ids(input_path)
+            scene_ids = tracker.get_remaining_tokens(all_scene_ids)
     except Exception as e:
         print(f"加载输入文件失败: {str(e)}")
         return
     
     if not scene_ids:
-        print("没有找到有效的scene_id")
+        print("没有找到需要处理的scene_id")
         return
     
     eng = create_engine(LOCAL_DSN, future=True)
@@ -242,17 +509,36 @@ def run(input_path, batch=1000, insert_batch=1000, create_table=True):
                 
             print(f"[批次 {batch_num}] 处理 {len(token_batch)} 个场景")
             
+            # 使用高效的批量检查已存在的记录
+            existing_in_progress = tracker.check_tokens_exist(token_batch)
+            existing_in_db = check_existing_records(eng, token_batch)
+            all_existing = existing_in_progress | existing_in_db
+            
+            token_batch = [token for token in token_batch if token not in all_existing]
+            
+            if not token_batch:
+                print(f"[批次 {batch_num}] 所有数据已存在，跳过")
+                continue
+            
+            if all_existing:
+                print(f"[批次 {batch_num}] 跳过 {len(all_existing)} 个已存在的记录")
+            
             # 获取元数据
             try:
                 meta = fetch_meta(token_batch)
                 if meta.empty:
                     print(f"[批次 {batch_num}] 没有找到元数据，跳过")
+                    # 记录获取元数据失败的tokens
+                    for token in token_batch:
+                        tracker.save_failed_record(token, "无法获取元数据", batch_num, "fetch_meta")
                     continue
                     
                 print(f"[批次 {batch_num}] 获取到 {len(meta)} 条元数据")
                 
             except Exception as e:
                 print(f"[批次 {batch_num}] 获取元数据失败: {str(e)}")
+                for token in token_batch:
+                    tracker.save_failed_record(token, f"获取元数据异常: {str(e)}", batch_num, "fetch_meta")
                 continue
             
             # 检查中断信号
@@ -265,12 +551,17 @@ def run(input_path, batch=1000, insert_batch=1000, create_table=True):
                 bbox_gdf = fetch_bbox_with_geometry(meta.data_name.tolist(), eng)
                 if bbox_gdf.empty:
                     print(f"[批次 {batch_num}] 没有找到边界框数据，跳过")
+                    # 记录获取边界框失败的tokens
+                    for token in meta.scene_token:
+                        tracker.save_failed_record(token, "无法获取边界框数据", batch_num, "fetch_bbox")
                     continue
                     
                 print(f"[批次 {batch_num}] 获取到 {len(bbox_gdf)} 条边界框数据")
                 
             except Exception as e:
                 print(f"[批次 {batch_num}] 获取边界框失败: {str(e)}")
+                for token in meta.scene_token:
+                    tracker.save_failed_record(token, f"获取边界框异常: {str(e)}", batch_num, "fetch_bbox")
                 continue
             
             # 检查中断信号
@@ -283,6 +574,9 @@ def run(input_path, batch=1000, insert_batch=1000, create_table=True):
                 merged = meta.merge(bbox_gdf, left_on='data_name', right_on='dataset_name', how='inner')
                 if merged.empty:
                     print(f"[批次 {batch_num}] 合并后数据为空，跳过")
+                    # 记录合并失败的tokens
+                    for token in meta.scene_token:
+                        tracker.save_failed_record(token, "元数据与边界框数据无法匹配", batch_num, "data_merge")
                     continue
                     
                 print(f"[批次 {batch_num}] 合并后得到 {len(merged)} 条记录")
@@ -296,6 +590,8 @@ def run(input_path, batch=1000, insert_batch=1000, create_table=True):
                 
             except Exception as e:
                 print(f"[批次 {batch_num}] 数据合并失败: {str(e)}")
+                for token in meta.scene_token:
+                    tracker.save_failed_record(token, f"数据合并异常: {str(e)}", batch_num, "data_merge")
                 continue
             
             # 检查中断信号
@@ -305,15 +601,26 @@ def run(input_path, batch=1000, insert_batch=1000, create_table=True):
             
             # 批量插入数据库
             try:
-                batch_inserted = batch_insert_to_postgis(final_gdf, eng, batch_size=insert_batch)
+                batch_inserted = batch_insert_to_postgis(
+                    final_gdf, eng, 
+                    batch_size=insert_batch, 
+                    tracker=tracker, 
+                    batch_num=batch_num
+                )
                 total_inserted += batch_inserted
                 total_processed += len(final_gdf)
                 
                 print(f"[批次 {batch_num}] 完成，插入 {batch_inserted} 条记录")
                 print(f"[累计进度] 已处理: {total_processed}, 已插入: {total_inserted}")
                 
+                # 每10个批次保存一次进度
+                if batch_num % 10 == 0:
+                    tracker.save_progress(len(scene_ids), total_processed, total_inserted, batch_num)
+                
             except Exception as e:
                 print(f"[批次 {batch_num}] 插入数据库失败: {str(e)}")
+                for token in final_gdf.scene_token:
+                    tracker.save_failed_record(token, f"批量插入异常: {str(e)}", batch_num, "batch_insert")
                 continue
                 
     except KeyboardInterrupt:
@@ -322,10 +629,26 @@ def run(input_path, batch=1000, insert_batch=1000, create_table=True):
     except Exception as e:
         print(f"\n程序遇到未预期的错误: {str(e)}")
     finally:
+        # 最终保存进度和刷新缓冲区
+        tracker.finalize()
+        tracker.save_progress(len(scene_ids), total_processed, total_inserted, batch_num if 'batch_num' in locals() else 0)
+        
+        # 显示最终统计
+        stats = tracker.get_statistics()
+        
         if interrupted:
             print(f"程序优雅退出！已处理: {total_processed} 条记录，成功插入: {total_inserted} 条记录")
         else:
             print(f"处理完成！总计处理: {total_processed} 条记录，成功插入: {total_inserted} 条记录")
+        
+        print(f"\n=== 最终统计 ===")
+        print(f"成功处理: {stats['success_count']} 个场景")
+        print(f"失败场景: {stats['failed_count']} 个")
+        
+        print(f"\n状态文件位置:")
+        print(f"- 成功记录: {tracker.success_file}")
+        print(f"- 失败记录: {tracker.failed_file}")
+        print(f"- 进度文件: {tracker.progress_file}")
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(description='从数据集文件生成边界框数据')
@@ -333,6 +656,9 @@ if __name__ == '__main__':
     ap.add_argument('--batch', type=int, default=1000, help='处理批次大小')
     ap.add_argument('--insert-batch', type=int, default=1000, help='插入批次大小')
     ap.add_argument('--create-table', action='store_true', default=True, help='是否创建表（如果不存在）')
+    ap.add_argument('--retry-failed', action='store_true', help='是否只重试失败的数据')
+    ap.add_argument('--work-dir', default='./bbox_import_logs', help='工作目录，用于存储日志和进度文件')
+    ap.add_argument('--show-stats', action='store_true', help='显示处理统计信息并退出')
     
     args = ap.parse_args()
-    run(args.input, args.batch, args.insert_batch, args.create_table)
+    run(args.input, args.batch, args.insert_batch, args.create_table, args.retry_failed, args.work_dir, args.show_stats)
