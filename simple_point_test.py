@@ -6,6 +6,9 @@
 
 import time
 import logging
+import random
+import math
+import statistics
 from sqlalchemy import create_engine, text
 
 # 配置日志
@@ -14,6 +17,43 @@ logger = logging.getLogger(__name__)
 
 # 远端数据库连接
 REMOTE_DSN = "postgresql+psycopg://**:**@10.170.30.193:9001/rcdatalake_gy1"
+
+def generate_random_points_around(center_lon, center_lat, radius_km=1.0, num_points=10):
+    """
+    在指定中心点周围生成随机点
+    
+    Args:
+        center_lon: 中心点经度
+        center_lat: 中心点纬度  
+        radius_km: 半径（公里）
+        num_points: 生成点的数量
+    
+    Returns:
+        List of (lon, lat) tuples
+    """
+    points = []
+    
+    # 将公里转换为大约的度数
+    # 1度纬度 ≈ 111km
+    # 1度经度 ≈ 111km * cos(latitude)
+    lat_range = radius_km / 111.0  # 纬度范围
+    lon_range = radius_km / (111.0 * math.cos(math.radians(center_lat)))  # 经度范围
+    
+    for _ in range(num_points):
+        # 在圆形范围内生成随机点
+        angle = random.uniform(0, 2 * math.pi)
+        distance_ratio = math.sqrt(random.uniform(0, 1))  # 开平方保证均匀分布
+        
+        # 计算随机点坐标
+        lon_offset = lon_range * distance_ratio * math.cos(angle)
+        lat_offset = lat_range * distance_ratio * math.sin(angle)
+        
+        new_lon = center_lon + lon_offset
+        new_lat = center_lat + lat_offset
+        
+        points.append((new_lon, new_lat))
+    
+    return points
 
 def test_single_point_intersection():
     """测试单个点与 full_intersection 的相交查询"""
@@ -168,5 +208,195 @@ def test_single_point_intersection():
         logger.error(f"测试失败: {str(e)}")
         raise
 
+def test_multiple_points_performance():
+    """测试多个随机点的查询性能"""
+    
+    # 中心点坐标
+    center_lon = 121.62530652
+    center_lat = 31.26092271
+    
+    logger.info("=== 开始多点性能测试 ===")
+    logger.info(f"中心点坐标: ({center_lon}, {center_lat})")
+    
+    try:
+        # 连接远端数据库
+        engine = create_engine(
+            REMOTE_DSN, 
+            future=True,
+            connect_args={"client_encoding": "utf8"}
+        )
+        
+        # 生成不同数量的随机点进行测试
+        test_cases = [
+            {"num_points": 5, "radius_km": 1.0, "description": "5个点 (1km范围)"},
+            {"num_points": 10, "radius_km": 1.0, "description": "10个点 (1km范围)"},
+            {"num_points": 20, "radius_km": 1.0, "description": "20个点 (1km范围)"},
+            {"num_points": 10, "radius_km": 2.0, "description": "10个点 (2km范围)"},
+        ]
+        
+        performance_results = []
+        
+        with engine.connect() as conn:
+            for test_case in test_cases:
+                logger.info(f"\n=== 测试案例: {test_case['description']} ===")
+                
+                # 生成随机点
+                random_points = generate_random_points_around(
+                    center_lon, center_lat, 
+                    test_case['radius_km'], 
+                    test_case['num_points']
+                )
+                
+                logger.info(f"生成了{len(random_points)}个随机点")
+                for i, (lon, lat) in enumerate(random_points[:3], 1):  # 只显示前3个
+                    logger.info(f"  点{i}: ({lon:.6f}, {lat:.6f})")
+                if len(random_points) > 3:
+                    logger.info(f"  ... 还有{len(random_points)-3}个点")
+                
+                # 方法1: 逐个点查询
+                logger.info("方法1: 逐个点查询")
+                individual_times = []
+                individual_results = []
+                
+                start_time = time.time()
+                for i, (lon, lat) in enumerate(random_points):
+                    point_start = time.time()
+                    
+                    buffer_degrees = test_case['radius_km'] / 111.0 * 0.1  # 小的查询范围
+                    sql = text(f"""
+                        SELECT COUNT(*) as count_in_bbox
+                        FROM full_intersection 
+                        WHERE wkb_geometry && ST_MakeEnvelope(
+                            {lon - buffer_degrees}, 
+                            {lat - buffer_degrees},
+                            {lon + buffer_degrees}, 
+                            {lat + buffer_degrees}, 
+                            4326
+                        )
+                    """)
+                    
+                    result = conn.execute(sql).fetchone()
+                    point_time = time.time() - point_start
+                    
+                    individual_times.append(point_time)
+                    individual_results.append(result[0])
+                
+                total_individual_time = time.time() - start_time
+                
+                logger.info(f"逐个查询总耗时: {total_individual_time:.2f}秒")
+                logger.info(f"平均每点耗时: {statistics.mean(individual_times):.3f}秒")
+                logger.info(f"最快/最慢: {min(individual_times):.3f}s / {max(individual_times):.3f}s")
+                logger.info(f"找到要素总数: {sum(individual_results)}")
+                
+                # 方法2: 批量查询（使用UNION ALL）
+                logger.info("方法2: 批量查询 (UNION ALL)")
+                
+                start_time = time.time()
+                
+                # 构建批量查询SQL
+                union_queries = []
+                buffer_degrees = test_case['radius_km'] / 111.0 * 0.1
+                
+                for i, (lon, lat) in enumerate(random_points):
+                    union_queries.append(f"""
+                        SELECT {i} as point_id, COUNT(*) as count_in_bbox
+                        FROM full_intersection 
+                        WHERE wkb_geometry && ST_MakeEnvelope(
+                            {lon - buffer_degrees}, 
+                            {lat - buffer_degrees},
+                            {lon + buffer_degrees}, 
+                            {lat + buffer_degrees}, 
+                            4326
+                        )
+                    """)
+                
+                batch_sql = text(" UNION ALL ".join(union_queries))
+                batch_results = conn.execute(batch_sql).fetchall()
+                batch_time = time.time() - start_time
+                
+                batch_total_features = sum(row[1] for row in batch_results)
+                
+                logger.info(f"批量查询总耗时: {batch_time:.2f}秒")
+                logger.info(f"平均每点耗时: {batch_time/len(random_points):.3f}秒")
+                logger.info(f"找到要素总数: {batch_total_features}")
+                
+                # 方法3: 单一复杂查询（使用多个点的组合边界框）
+                logger.info("方法3: 组合边界框查询")
+                
+                start_time = time.time()
+                
+                # 计算所有点的外包矩形
+                all_lons = [p[0] for p in random_points]
+                all_lats = [p[1] for p in random_points]
+                
+                min_lon = min(all_lons) - buffer_degrees
+                max_lon = max(all_lons) + buffer_degrees
+                min_lat = min(all_lats) - buffer_degrees
+                max_lat = max(all_lats) + buffer_degrees
+                
+                combined_sql = text(f"""
+                    SELECT COUNT(*) as total_in_combined_bbox
+                    FROM full_intersection 
+                    WHERE wkb_geometry && ST_MakeEnvelope(
+                        {min_lon}, {min_lat}, {max_lon}, {max_lat}, 4326
+                    )
+                """)
+                
+                combined_result = conn.execute(combined_sql).fetchone()
+                combined_time = time.time() - start_time
+                
+                logger.info(f"组合查询耗时: {combined_time:.2f}秒")  
+                logger.info(f"组合边界框内要素: {combined_result[0]}")
+                
+                # 记录性能结果
+                performance_results.append({
+                    'description': test_case['description'],
+                    'num_points': test_case['num_points'],
+                    'individual_total_time': total_individual_time,
+                    'individual_avg_time': statistics.mean(individual_times),
+                    'batch_time': batch_time,
+                    'batch_avg_time': batch_time/len(random_points),
+                    'combined_time': combined_time,
+                    'speedup_batch': total_individual_time / batch_time if batch_time > 0 else 0,
+                    'speedup_combined': total_individual_time / combined_time if combined_time > 0 else 0
+                })
+        
+        # 性能汇总
+        logger.info("\n=== 性能测试汇总 ===")
+        for result in performance_results:
+            logger.info(f"\n{result['description']}:")
+            logger.info(f"  逐个查询: {result['individual_total_time']:.2f}s (平均{result['individual_avg_time']:.3f}s/点)")
+            logger.info(f"  批量查询: {result['batch_time']:.2f}s (平均{result['batch_avg_time']:.3f}s/点)")
+            logger.info(f"  组合查询: {result['combined_time']:.2f}s")
+            logger.info(f"  批量加速比: {result['speedup_batch']:.1f}x")
+            logger.info(f"  组合加速比: {result['speedup_combined']:.1f}x")
+        
+        # 性能建议
+        logger.info("\n=== 性能建议 ===")
+        avg_individual_time = statistics.mean([r['individual_avg_time'] for r in performance_results])
+        avg_batch_time = statistics.mean([r['batch_avg_time'] for r in performance_results])
+        
+        logger.info(f"平均单点查询时间: {avg_individual_time:.3f}秒")
+        logger.info(f"平均批量查询时间: {avg_batch_time:.3f}秒")
+        
+        if avg_individual_time > 0.1:
+            logger.warning("单点查询超过0.1秒，建议优化空间索引")
+        if avg_batch_time < avg_individual_time:
+            logger.info("批量查询性能更优，建议在实际应用中使用批量模式")
+        else:
+            logger.info("批量查询未显示明显优势，可能需要进一步优化")
+                
+    except Exception as e:
+        logger.error(f"多点性能测试失败: {str(e)}")
+        raise
+
 if __name__ == "__main__":
-    test_single_point_intersection() 
+    # 运行单点测试
+    logger.info("开始单点测试...")
+    test_single_point_intersection()
+    
+    logger.info("\n" + "="*50)
+    
+    # 运行多点性能测试
+    logger.info("开始多点性能测试...")
+    test_multiple_points_performance() 
