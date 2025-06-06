@@ -25,30 +25,18 @@ from .spatial_join_production import (
 # 配置模块
 from .config import DatabaseConfig
 
-# 向后兼容（如果需要旧版本）
-try:
-    from .archive.spatial_join import SpatialJoin, SpatialRelation, JoinType, SummaryMethod
-except ImportError:
-    # 如果archive不存在，提供占位符
-    class SpatialJoin:
-        def __init__(self, *args, **kwargs):
-            raise ImportError("旧版SpatialJoin已归档，请使用ProductionSpatialJoin")
-    
-    SpatialRelation = JoinType = SummaryMethod = None
-
 __all__ = [
     # 生产级API
     'ProductionSpatialJoin',
     'SpatialJoinConfig',
     'quick_spatial_join',
     'DatabaseConfig',
-    
-    # 向后兼容
-    'SpatialJoin',
-    'SpatialRelation', 
-    'JoinType',
-    'SummaryMethod'
+    # 兼容性别名
+    'SpatialJoin'
 ]
+
+# 为了兼容现有代码，提供别名
+SpatialJoin = ProductionSpatialJoin
 
 # 版本信息
 __version__ = "2.0.0"

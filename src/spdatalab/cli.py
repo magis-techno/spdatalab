@@ -1,9 +1,6 @@
 """命令行接口模块。"""
 
 import click
-from spdatalab.common.db import get_conn
-import argparse
-import json
 import logging
 from pathlib import Path
 
@@ -17,33 +14,6 @@ def cli():
     """Spatial-Data-Lab 工具集。"""
     pass
 
-@cli.command()
-@click.option('--name', required=True)
-@click.option('--desc', default='')
-@click.option('--jsonl', type=click.Path(exists=True), required=True, help='Path to JSONL containing scene_token')
-def create(name, desc, jsonl):
-    """Create a new scene set from JSONL file"""
-    import json
-    conn = get_conn()
-    with conn, conn.cursor() as cur:
-        cur.execute(
-            'INSERT INTO scene_sets(name, description) VALUES(%s,%s) RETURNING set_id',
-            (name, desc)
-        )
-        set_id = cur.fetchone()[0]
-        rows = []
-        with open(jsonl, 'r', encoding='utf-8') as fh:
-            for line in fh:
-                try:
-                    token = json.loads(line)['scene_token']
-                    rows.append((set_id, token))
-                except (KeyError, json.JSONDecodeError):
-                    continue
-        cur.executemany(
-            'INSERT INTO scene_set_members(set_id, scene_token) VALUES(%s,%s) ON CONFLICT DO NOTHING',
-            rows
-        )
-    click.echo(f'✅ Created set {set_id} with {len(rows)} scenes')
 
 @cli.command()
 @click.option('--index-file', required=True, help='索引文件路径')
@@ -482,7 +452,7 @@ def spatial_join(left_table: str, right_table: str, spatial_relation: str,
     setup_logging()
     
     try:
-        from .fusion import SpatialJoin, SpatialRelation
+        from .fusion import SpatialJoin
         
         click.echo(f"执行空间连接:")
         click.echo(f"  - 左表: {left_table}")
@@ -513,59 +483,53 @@ def spatial_join(left_table: str, right_table: str, spatial_relation: str,
                 else:
                     parsed_summary_fields[field_spec.strip()] = "count"
         
-        # 执行空间连接
+        # 注意：当前版本主要支持polygon相交查询
+        # 其他空间关系和字段选择功能正在开发中
+        
+        click.echo("⚠️  当前版本专注于高性能polygon相交查询")
+        click.echo("   复杂的空间关系和字段选择功能将在后续版本提供")
+        
+        # 使用生产级空间连接
         spatial_joiner = SpatialJoin()
         
         try:
-            if buffer_meters > 0:
-                # 使用简化接口
-                result = spatial_joiner.bbox_intersect_features(
-                    feature_table=right_table,
-                    feature_type=right_table.replace('s', ''),  # 简单复数转单数
-                    buffer_meters=buffer_meters,
-                    summary_fields=parsed_summary_fields,
-                    output_table=output_table
-                )
+            # 当前版本只支持基本的polygon相交
+            result, stats = spatial_joiner.polygon_intersect(
+                num_bbox=1000,  # 可以根据需要调整
+                city_filter=None  # 暂不支持表级过滤
+            )
+            
+            # 将结果转换为DataFrame格式（兼容性）
+            if len(result) > 0:
+                # 为了兼容后续处理，确保有scene_token列
+                result = result.rename(columns={'scene_token': 'scene_token'})
             else:
-                # 使用完整接口
-                result = spatial_joiner.join_attributes_by_location(
-                    left_table=left_table,
-                    right_table=right_table,
-                    spatial_relation=spatial_relation,
-                    distance_meters=distance_meters,
-                    fields_to_add=parsed_fields_to_add,
-                    discard_nonmatching=discard_nonmatching,
-                    summarize=summarize,
-                    summary_fields=parsed_summary_fields,
-                    output_table=output_table
-                )
+                import pandas as pd
+                result = pd.DataFrame()
         except Exception as join_error:
             # 提供更友好的错误信息和建议
             error_msg = str(join_error)
             if "does not exist" in error_msg and "relation" in error_msg:
                 click.echo(f"❌ 表 '{right_table}' 不存在")
                 click.echo("\n💡 请检查以下事项:")
-                click.echo("1. 确保已正确配置FDW远程数据源:")
-                click.echo("   psql -h local_pg -U postgres -f sql/01_fdw_remote.sql")
-                click.echo("\n2. 使用标准化的表名:")
-                click.echo("   - intersections    (路口数据)")
-                click.echo("   - trajectory_points (轨迹点数据)")
-                click.echo("   - roads            (道路数据，如果已配置)")
-                click.echo("   - pois             (POI数据，如果已配置)")
-                click.echo("\n3. 查看可用的图层:")
-                click.echo("   SELECT * FROM available_layers;")
-                click.echo("\n4. 检查数据库中的表:")
-                click.echo("   SELECT table_name FROM information_schema.tables WHERE table_schema='public';")
+                click.echo("1. 确保数据库连接正常:")
+                click.echo("   make psql")
+                click.echo("\n2. 检查clips_bbox表是否存在:")
+                click.echo("   SELECT count(*) FROM clips_bbox;")
+                click.echo("\n3. 检查远端数据库连接:")
+                click.echo("   当前版本使用内置的远端连接配置")
+                click.echo("\n4. 如需处理其他表，请使用完整的API接口:")
             raise
         
         click.echo(f"✅ 空间连接完成，共 {len(result)} 条记录")
+        click.echo(f"  - 使用策略: {stats['strategy']}")
+        click.echo(f"  - 处理速度: {stats['speed_bbox_per_sec']:.1f} bbox/秒")
+        click.echo(f"  - 总耗时: {stats['total_time']:.2f}秒")
         
         # 显示基础统计
         if len(result) > 0:
             if 'scene_token' in result.columns:
                 click.echo(f"  - 唯一场景数: {result['scene_token'].nunique()}")
-            if 'city_id' in result.columns:
-                click.echo(f"  - 涉及城市数: {result['city_id'].nunique()}")
         
         # 导出文件
         if output_file and len(result) > 0:
@@ -587,16 +551,37 @@ def list_layers():
     setup_logging()
     
     try:
-        from .fusion import SpatialJoin
-        spatial_joiner = SpatialJoin()
+        click.echo("⚠️  当前版本主要专注于polygon相交查询")
+        click.echo("图层管理功能将在后续版本提供")
+        click.echo()
+        
+        click.echo("📋 当前支持的功能:")
+        click.echo("  - clips_bbox 与 full_intersection 的高性能相交查询")
+        click.echo("  - 自动策略选择（批量查询 vs 分块查询）")
+        click.echo("  - 详细的性能统计")
+        click.echo()
+        
+        click.echo("💡 使用示例:")
+        click.echo("  # Python API")
+        click.echo("  from spdatalab.fusion import quick_spatial_join")
+        click.echo("  result, stats = quick_spatial_join(num_bbox=100)")
+        click.echo()
+        click.echo("  # 命令行（基础功能）")
+        click.echo("  spdatalab spatial-join --right-table intersections")
+        
+        return
+        
+        # 以下代码保留以便将来启用
+        # from .fusion import SpatialJoin
+        # spatial_joiner = SpatialJoin()
         
         # 查询可用图层信息
         try:
             import pandas as pd
-            layers_df = pd.read_sql(
-                "SELECT * FROM available_layers ORDER BY layer_name",
-                spatial_joiner.engine
-            )
+            # layers_df = pd.read_sql(
+            #     "SELECT * FROM available_layers ORDER BY layer_name",
+            #     spatial_joiner.engine
+            # )
             
             if len(layers_df) == 0:
                 click.echo("❌ 没有找到可用的图层")

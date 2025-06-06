@@ -1,15 +1,12 @@
--- Enable PostGIS extension
-CREATE EXTENSION IF NOT EXISTS postgis;
+-- 表清理脚本
+-- 用途：清理并重建clips_bbox表
 
--- Drop existing for clean state
+\echo '清理clips_bbox表...'
+
+-- 删除表
 DROP TABLE IF EXISTS clips_bbox CASCADE;
-DROP TABLE IF EXISTS clip_filter CASCADE;
 
-CREATE TABLE clip_filter(
-    scene_token text PRIMARY KEY,
-    dataset_name text
-);
-
+-- 重新创建表
 CREATE TABLE clips_bbox(
     id serial PRIMARY KEY,
     scene_token text,
@@ -20,16 +17,16 @@ CREATE TABLE clips_bbox(
     all_good boolean
 );
 
--- Add geometry column using PostGIS function to ensure proper SRID registration
+-- 添加PostGIS几何列
 SELECT AddGeometryColumn('public', 'clips_bbox', 'geometry', 4326, 'POLYGON', 2);
 
--- Alternatively support POINT geometry for single point data
+-- 添加几何约束
 ALTER TABLE clips_bbox ADD CONSTRAINT check_geom_type 
     CHECK (ST_GeometryType(geometry) IN ('ST_Polygon', 'ST_Point'));
 
+-- 创建索引
 CREATE INDEX idx_clips_bbox_geometry ON clips_bbox USING GIST(geometry);
 CREATE INDEX idx_clips_bbox_data_name ON clips_bbox(data_name);
 CREATE INDEX idx_clips_bbox_scene_token ON clips_bbox(scene_token);
 
--- Verify the geometry column registration
-SELECT * FROM geometry_columns WHERE f_table_name = 'clips_bbox';
+\echo '表重建完成' 

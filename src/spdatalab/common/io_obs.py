@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from spdatalab.common.config import getenv
 
 def init_moxing():
     # 先设置环境变量和取消代理

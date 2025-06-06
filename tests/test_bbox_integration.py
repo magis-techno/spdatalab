@@ -124,7 +124,7 @@ class TestBboxIntegration(unittest.TestCase):
         self.assertEqual(scene_ids_text, scene_ids_list)
     
     @patch('spdatalab.dataset.bbox.fetch_meta')
-    @patch('spdatalab.dataset.bbox.fetch_bbox')
+    @patch('spdatalab.dataset.bbox.fetch_bbox_with_geometry')
     @patch('spdatalab.dataset.bbox.batch_insert_to_postgis')
     def test_bbox_run_with_json(self, mock_insert, mock_fetch_bbox, mock_fetch_meta):
         """测试使用JSON文件运行bbox处理"""

@@ -125,7 +125,7 @@ class TestIntegration:
     def test_open_obs_file_env(self):
         """集成测试：验证 open_file 在打开 OBS 文件时是否正确初始化 moxing 环境。"""
         from spdatalab.common.file_utils import open_file
-        obs_path = ""
+        obs_path = "obs://test-bucket/test-file.shrink"
         try:
             with open_file(obs_path, 'r') as f:
                 scenes = list(f)
@@ -139,7 +139,7 @@ class TestIntegration:
         """集成测试：逐行读取 OBS 上的 jsonl.shrink 文件，并用 decode_shrink_line 解码。"""
         from spdatalab.common.decoder import decode_shrink_line
         from spdatalab.common.file_utils import open_file
-        obs_path = ""
+        obs_path = "obs://test-bucket/test-file.jsonl.shrink"
         try:
             with open_file(obs_path, 'r') as f:
                 count = 0
@@ -160,7 +160,7 @@ class TestIntegration:
     def test_local_shrink_file(self):
         """集成测试：验证本地 shrink 文件的读取，确保场景数大于 0。"""
         from spdatalab.common.file_utils import open_file
-        local_path = "path/to/your/local/file.shrink"  # 替换为实际的本地文件路径
+        local_path = "data/sample.shrink"  # 示例本地文件路径
         try:
             with open_file(local_path, 'r') as f:
                 scenes = list(f)
@@ -168,7 +168,4 @@ class TestIntegration:
         except FileNotFoundError:
             pytest.skip("本地文件不存在，跳过测试")
 
-# 添加命令行参数
-def pytest_addoption(parser):
-    parser.addoption("--run-obs-tests", action="store_true", help="运行OBS相关的集成测试")
-    parser.addoption("--run-local-tests", action="store_true", help="运行本地文件相关的集成测试") 
+ 
