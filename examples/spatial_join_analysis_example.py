@@ -51,8 +51,8 @@ def demo_cache_workflow():
     print("\n📊 第1步：构建相交关系缓存")
     print("-" * 40)
     
-    city = "boston"  # 可以换成你的城市
-    num_bbox = 100   # 处理的bbox数量
+    city = None      # 先不使用城市过滤，避免数据不存在问题
+    num_bbox = 20    # 减少数量，方便调试
     
     try:
         cached_count, build_stats = spatial_join.build_intersection_cache(
@@ -181,8 +181,8 @@ def demo_performance_comparison():
     config = SpatialJoinConfig(enable_cache_table=True)
     spatial_join = ProductionSpatialJoin(config)
     
-    city = "boston"
-    num_bbox = 50
+    city = None  # 不使用城市过滤，避免数据不存在的问题
+    num_bbox = 10  # 减少数量，加快测试
     
     # 1. 构建缓存并测量时间
     print("📊 构建缓存...")
@@ -246,7 +246,7 @@ def demo_advanced_analysis():
     print("=" * 60)
     
     spatial_join = ProductionSpatialJoin()
-    city = "boston"
+    city = None  # 不使用城市过滤
     
     # 分析场景1：路口热度分析
     print("🔥 场景1：路口热度分析")
