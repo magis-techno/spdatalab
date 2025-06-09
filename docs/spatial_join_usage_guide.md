@@ -42,7 +42,7 @@ overall = analyze_cached_intersections(city_filter="boston")
 # 按路口类型分组统计
 by_type = analyze_cached_intersections(
     city_filter="boston",
-    group_by=["intersection_type"]
+    group_by=["intersectiontype"]
 )
 
 # 按场景分组统计
@@ -84,8 +84,8 @@ spatial_join = ProductionSpatialJoin()
 # 1. 特定路口类型分析
 result = spatial_join.analyze_intersections(
     city_filter="boston",
-    intersection_types=["4-way", "3-way"],  # 只分析这些类型
-    group_by=["intersection_type"]
+    intersection_types=[1, 2, 3],  # 路口类型是整数值
+    group_by=["intersectiontype"]
 )
 
 # 2. 特定场景分析
@@ -266,7 +266,7 @@ CREATE TABLE bbox_intersection_cache (
     scene_token VARCHAR(255) NOT NULL,
     city_id VARCHAR(100),
     intersection_id BIGINT NOT NULL,
-    intersection_type VARCHAR(100),
+    intersectiontype INTEGER,
     intersection_geometry TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT unique_scene_intersection UNIQUE (scene_token, intersection_id)
@@ -275,7 +275,7 @@ CREATE TABLE bbox_intersection_cache (
 -- 创建索引
 CREATE INDEX idx_scene_token ON bbox_intersection_cache (scene_token);
 CREATE INDEX idx_city_id ON bbox_intersection_cache (city_id);
-CREATE INDEX idx_intersection_type ON bbox_intersection_cache (intersection_type);
+CREATE INDEX idx_intersectiontype ON bbox_intersection_cache (intersectiontype);
 CREATE INDEX idx_intersection_id ON bbox_intersection_cache (intersection_id);
 ```
 

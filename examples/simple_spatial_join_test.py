@@ -251,7 +251,7 @@ def test_simple_intersection_query(bbox_data):
             detail_sql = text(f"""
                 SELECT 
                     id as intersection_id,
-                    intersection_type
+                    intersectiontype
                 FROM full_intersection 
                 WHERE ST_Intersects(wkb_geometry, ST_GeomFromText('{bbox_wkt}', 4326))
                 LIMIT 5
@@ -263,7 +263,7 @@ def test_simple_intersection_query(bbox_data):
             
             print(f"\n📋 相交路口详情 (前5个):")
             for _, row in details.iterrows():
-                print(f"  - 路口ID: {row['intersection_id']}, 类型: {row['intersection_type']}")
+                print(f"  - 路口ID: {row['intersection_id']}, 类型: {row['intersectiontype']}")
         
         return count > 0
         

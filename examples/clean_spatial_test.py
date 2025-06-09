@@ -105,14 +105,14 @@ def test_cache_functionality():
         
         # 3. 测试分组查询
         print("  🎯 测试分组查询...")
-        type_analysis = analyze_cached_intersections(group_by=["intersection_type"])
+        type_analysis = analyze_cached_intersections(group_by=["intersectiontype"])
         
         if not type_analysis.empty:
             print(f"✅ 分组查询成功")
             print(f"  - 路口类型数: {len(type_analysis)}")
             print("  - 前3个类型:")
             for _, row in type_analysis.head(3).iterrows():
-                print(f"    * {row['intersection_type']}: {row['intersection_count']}个相交")
+                print(f"    * 类型{row['intersectiontype']}: {row['intersection_count']}个相交")
         
         return True
         

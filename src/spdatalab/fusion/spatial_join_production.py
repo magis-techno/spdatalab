@@ -76,7 +76,7 @@ class ProductionSpatialJoin:
                 scene_token VARCHAR(255) NOT NULL,
                 city_id VARCHAR(100),
                 intersection_id BIGINT NOT NULL,
-                intersection_type VARCHAR(100),
+                intersectiontype INTEGER,
                 intersection_geometry TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 CONSTRAINT unique_scene_intersection UNIQUE (scene_token, intersection_id)
@@ -87,7 +87,7 @@ class ProductionSpatialJoin:
         create_indexes_sql = [
             text(f"CREATE INDEX IF NOT EXISTS idx_scene_token ON {self.config.intersection_table} (scene_token)"),
             text(f"CREATE INDEX IF NOT EXISTS idx_city_id ON {self.config.intersection_table} (city_id)"),
-            text(f"CREATE INDEX IF NOT EXISTS idx_intersection_type ON {self.config.intersection_table} (intersection_type)"),
+            text(f"CREATE INDEX IF NOT EXISTS idx_intersectiontype ON {self.config.intersection_table} (intersectiontype)"),
             text(f"CREATE INDEX IF NOT EXISTS idx_intersection_id ON {self.config.intersection_table} (intersection_id)")
         ]
         
@@ -186,7 +186,7 @@ class ProductionSpatialJoin:
                     '{scene_token}' as scene_token,
                     {f"'{city_id}'" if city_id != 'NULL' else 'NULL'} as city_id,
                     id as intersection_id,
-                    intersection_type,
+                    intersectiontype,
                     ST_AsText(wkb_geometry) as intersection_geometry
                 FROM full_intersection 
                 WHERE ST_Intersects(wkb_geometry, ST_GeomFromText('{bbox_wkt}', 4326))
@@ -231,7 +231,7 @@ class ProductionSpatialJoin:
         self,
         scene_tokens: Optional[List[str]] = None,
         city_filter: Optional[str] = None,
-        intersection_types: Optional[List[str]] = None,
+        intersection_types: Optional[List[int]] = None,
         group_by: Optional[List[str]] = None
     ) -> pd.DataFrame:
         """
@@ -260,8 +260,8 @@ class ProductionSpatialJoin:
             where_conditions.append(f"city_id = '{city_filter}'")
         
         if intersection_types:
-            types_str = "', '".join(intersection_types)
-            where_conditions.append(f"intersection_type IN ('{types_str}')")
+            types_str = ", ".join(str(t) for t in intersection_types)
+            where_conditions.append(f"intersectiontype IN ({types_str})")
         
         where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
         
@@ -292,7 +292,7 @@ class ProductionSpatialJoin:
         self,
         scene_tokens: Optional[List[str]] = None,
         city_filter: Optional[str] = None,
-        intersection_types: Optional[List[str]] = None,
+        intersection_types: Optional[List[int]] = None,
         limit: Optional[int] = None
     ) -> pd.DataFrame:
         """
@@ -321,8 +321,8 @@ class ProductionSpatialJoin:
             where_conditions.append(f"city_id = '{city_filter}'")
         
         if intersection_types:
-            types_str = "', '".join(intersection_types)
-            where_conditions.append(f"intersection_type IN ('{types_str}')")
+            types_str = ", ".join(str(t) for t in intersection_types)
+            where_conditions.append(f"intersectiontype IN ({types_str})")
         
         where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
         limit_clause = f"LIMIT {limit}" if limit else ""
@@ -333,7 +333,7 @@ class ProductionSpatialJoin:
                 scene_token,
                 city_id,
                 intersection_id,
-                intersection_type,
+                intersectiontype,
                 intersection_geometry,
                 created_at
             FROM {self.config.intersection_table}
@@ -576,7 +576,7 @@ def build_cache(
 def analyze_cached_intersections(
     scene_tokens: Optional[List[str]] = None,
     city_filter: Optional[str] = None,
-    intersection_types: Optional[List[str]] = None,
+    intersection_types: Optional[List[int]] = None,
     group_by: Optional[List[str]] = None,
     config: Optional[SpatialJoinConfig] = None
 ) -> pd.DataFrame:
