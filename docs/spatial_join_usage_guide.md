@@ -260,6 +260,7 @@ def update_cache_daily():
 缓存表 `bbox_intersection_cache` 的结构：
 
 ```sql
+-- PostgreSQL 语法
 CREATE TABLE bbox_intersection_cache (
     id SERIAL PRIMARY KEY,
     scene_token VARCHAR(255) NOT NULL,
@@ -268,11 +269,14 @@ CREATE TABLE bbox_intersection_cache (
     intersection_type VARCHAR(100),
     intersection_geometry TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_scene_token (scene_token),
-    INDEX idx_city_id (city_id),
-    INDEX idx_intersection_type (intersection_type),
-    UNIQUE KEY unique_scene_intersection (scene_token, intersection_id)
+    CONSTRAINT unique_scene_intersection UNIQUE (scene_token, intersection_id)
 );
+
+-- 创建索引
+CREATE INDEX idx_scene_token ON bbox_intersection_cache (scene_token);
+CREATE INDEX idx_city_id ON bbox_intersection_cache (city_id);
+CREATE INDEX idx_intersection_type ON bbox_intersection_cache (intersection_type);
+CREATE INDEX idx_intersection_id ON bbox_intersection_cache (intersection_id);
 ```
 
 ## 常见问题

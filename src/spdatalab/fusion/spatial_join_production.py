@@ -69,6 +69,7 @@ class ProductionSpatialJoin:
     
     def _init_cache_table(self):
         """初始化缓存表"""
+        # 创建主表
         create_table_sql = text(f"""
             CREATE TABLE IF NOT EXISTS {self.config.intersection_table} (
                 id SERIAL PRIMARY KEY,
@@ -78,20 +79,35 @@ class ProductionSpatialJoin:
                 intersection_type VARCHAR(100),
                 intersection_geometry TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                INDEX idx_scene_token (scene_token),
-                INDEX idx_city_id (city_id),
-                INDEX idx_intersection_type (intersection_type),
-                UNIQUE KEY unique_scene_intersection (scene_token, intersection_id)
+                CONSTRAINT unique_scene_intersection UNIQUE (scene_token, intersection_id)
             )
         """)
         
+        # 创建索引的SQL语句
+        create_indexes_sql = [
+            text(f"CREATE INDEX IF NOT EXISTS idx_scene_token ON {self.config.intersection_table} (scene_token)"),
+            text(f"CREATE INDEX IF NOT EXISTS idx_city_id ON {self.config.intersection_table} (city_id)"),
+            text(f"CREATE INDEX IF NOT EXISTS idx_intersection_type ON {self.config.intersection_table} (intersection_type)"),
+            text(f"CREATE INDEX IF NOT EXISTS idx_intersection_id ON {self.config.intersection_table} (intersection_id)")
+        ]
+        
         try:
             with self.local_engine.connect() as conn:
+                # 创建表
                 conn.execute(create_table_sql)
+                
+                # 创建索引
+                for index_sql in create_indexes_sql:
+                    try:
+                        conn.execute(index_sql)
+                    except Exception as idx_e:
+                        logger.warning(f"索引创建失败: {idx_e}")
+                
                 conn.commit()
             logger.info(f"缓存表 {self.config.intersection_table} 初始化完成")
         except Exception as e:
             logger.warning(f"缓存表初始化失败: {e}")
+            logger.warning("请检查local_pg数据库连接和权限")
     
     def build_intersection_cache(
         self, 
