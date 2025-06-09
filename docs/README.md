@@ -32,7 +32,7 @@ python -m spdatalab.cli process-bbox \
   --batch 1000
 
 # 空间连接分析（当前版本专注于polygon相交）
-python -m spdatalab.cli spatial-join --right-table intersections
+python -m spdatalab.cli spatial-join --right-table intersections --num-bbox 2000
 ```
 
 ## 💡 使用建议

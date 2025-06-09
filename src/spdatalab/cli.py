@@ -78,9 +78,11 @@ def build_dataset(index_file: str, dataset_name: str, description: str, output: 
 @click.option('--input', required=True, help='输入文件路径（支持JSON/Parquet/文本格式）')
 @click.option('--batch', type=int, default=1000, help='处理批次大小')
 @click.option('--insert-batch', type=int, default=1000, help='插入批次大小')
-@click.option('--buffer-meters', type=int, default=50, help='缓冲区大小（米）')
-@click.option('--precise-buffer', is_flag=True, help='使用精确的米级缓冲区（需要投影转换）')
-def process_bbox(input: str, batch: int, insert_batch: int, buffer_meters: int, precise_buffer: bool):
+@click.option('--work-dir', help='工作目录，用于存储进度文件')
+@click.option('--retry-failed', is_flag=True, help='只重试失败的数据')
+@click.option('--show-stats', is_flag=True, help='显示处理统计信息并退出')
+@click.option('--create-table', is_flag=True, default=True, help='是否创建表（如果不存在）')
+def process_bbox(input: str, batch: int, insert_batch: int, work_dir: str, retry_failed: bool, show_stats: bool, create_table: bool):
     """处理边界框数据。
     
     从数据集文件中加载场景ID，获取边界框信息并插入到PostGIS数据库中。
@@ -90,27 +92,36 @@ def process_bbox(input: str, batch: int, insert_batch: int, buffer_meters: int, 
         input: 输入文件路径，支持JSON/Parquet/文本格式
         batch: 处理批次大小，每批从数据库获取多少个场景的信息
         insert_batch: 插入批次大小，每批向数据库插入多少条记录
-        buffer_meters: 缓冲区大小（米），用于点数据的边界框扩展
-        precise_buffer: 是否使用精确的米级缓冲区（通过投影转换实现）
+        work_dir: 工作目录，用于存储进度文件
+        retry_failed: 是否只重试失败的数据
+        show_stats: 是否显示统计信息并退出
+        create_table: 是否创建表（如果不存在）
     """
     setup_logging()
     
     try:
         from .dataset.bbox import run as bbox_run
         
+        if show_stats:
+            click.echo("显示处理统计信息功能暂未实现")
+            return
+        
         click.echo(f"开始处理边界框数据:")
         click.echo(f"  - 输入文件: {input}")
         click.echo(f"  - 处理批次: {batch}")
         click.echo(f"  - 插入批次: {insert_batch}")
-        click.echo(f"  - 缓冲区: {buffer_meters}米")
-        click.echo(f"  - 精确模式: {'是' if precise_buffer else '否'}")
+        if work_dir:
+            click.echo(f"  - 工作目录: {work_dir}")
+        if retry_failed:
+            click.echo(f"  - 重试模式: 仅处理失败的数据")
         
         bbox_run(
             input_path=input,
             batch=batch,
             insert_batch=insert_batch,
-            buffer_meters=buffer_meters,
-            use_precise_buffer=precise_buffer
+            work_dir=work_dir or "./bbox_import_logs",
+            retry_failed=retry_failed,
+            create_table=create_table
         )
         
         click.echo("✅ 边界框处理完成")
@@ -419,6 +430,9 @@ def dataset_stats(dataset_file: str, output_format: str):
 @cli.command()
 @click.option('--left-table', default='clips_bbox', help='左表名（如clips_bbox）')
 @click.option('--right-table', required=True, help='右表名（如intersections）')
+@click.option('--num-bbox', type=int, default=1000, help='要处理的bbox数量')
+@click.option('--city-filter', help='城市过滤条件')
+@click.option('--chunk-size', type=int, help='分块大小（用于大规模数据处理）')
 @click.option('--spatial-relation', type=click.Choice([
     'intersects', 'within', 'contains', 'touches', 'crosses', 'overlaps', 'dwithin'
 ]), default='intersects', help='空间关系')
@@ -430,8 +444,8 @@ def dataset_stats(dataset_file: str, output_format: str):
 @click.option('--discard-nonmatching', is_flag=True, help='丢弃未匹配的记录（INNER JOIN）')
 @click.option('--summarize', is_flag=True, help='开启统计汇总模式')
 @click.option('--summary-fields', help='统计字段，格式: field1:method1,field2:method2')
-def spatial_join(left_table: str, right_table: str, spatial_relation: str,
-                distance_meters: float, buffer_meters: float, output_table: str,
+def spatial_join(left_table: str, right_table: str, num_bbox: int, city_filter: str, chunk_size: int,
+                spatial_relation: str, distance_meters: float, buffer_meters: float, output_table: str,
                 output_file: str, fields_to_add: str, discard_nonmatching: bool,
                 summarize: bool, summary_fields: str):
     """执行空间连接分析 - 类似QGIS的join attributes by location。
@@ -457,6 +471,11 @@ def spatial_join(left_table: str, right_table: str, spatial_relation: str,
         click.echo(f"执行空间连接:")
         click.echo(f"  - 左表: {left_table}")
         click.echo(f"  - 右表: {right_table}")
+        click.echo(f"  - 处理数量: {num_bbox} 个bbox")
+        if city_filter:
+            click.echo(f"  - 城市过滤: {city_filter}")
+        if chunk_size:
+            click.echo(f"  - 分块大小: {chunk_size}")
         click.echo(f"  - 空间关系: {spatial_relation}")
         if distance_meters:
             click.echo(f"  - 距离阈值: {distance_meters}米")
@@ -495,8 +514,9 @@ def spatial_join(left_table: str, right_table: str, spatial_relation: str,
         try:
             # 当前版本只支持基本的polygon相交
             result, stats = spatial_joiner.polygon_intersect(
-                num_bbox=1000,  # 可以根据需要调整
-                city_filter=None  # 暂不支持表级过滤
+                num_bbox=num_bbox,
+                city_filter=city_filter,
+                chunk_size=chunk_size
             )
             
             # 将结果转换为DataFrame格式（兼容性）

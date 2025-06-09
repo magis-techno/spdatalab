@@ -30,20 +30,24 @@ result, stats = spatial_join.polygon_intersect(num_bbox=100)
 ### 命令行使用
 
 ```bash
-# 基础相交分析
+# 基础相交分析（默认1000个bbox）
 spdatalab spatial-join --right-table intersections
 
-# 距离范围内连接
-spdatalab spatial-join \
-    --right-table intersections \
-    --spatial-relation dwithin \
-    --distance-meters 50
+# 指定处理数量
+spdatalab spatial-join --right-table intersections --num-bbox 5000
 
-# 使用缓冲区
+# 城市过滤
 spdatalab spatial-join \
     --right-table intersections \
-    --buffer-meters 30 \
-    --output-table bbox_intersection_results
+    --num-bbox 2000 \
+    --city-filter "boston-seaport"
+
+# 大规模处理（自定义分块大小）
+spdatalab spatial-join \
+    --right-table intersections \
+    --num-bbox 10000 \
+    --chunk-size 100 \
+    --output-file results.csv
 ```
 
 ## 性能特性

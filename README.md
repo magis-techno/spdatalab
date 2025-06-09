@@ -142,7 +142,8 @@ python -m spdatalab.cli process-bbox \
 ```bash
 # 空间连接分析
 python -m spdatalab.cli spatial-join \
-  --right-table intersections
+  --right-table intersections \
+  --num-bbox 2000
 
 # 空间查询和处理
 # 详细功能请参考空间连接指南
