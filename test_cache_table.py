@@ -47,7 +47,7 @@ def test_cache_table_creation():
             # 检查表是否存在
             check_table_sql = text("""
                 SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
+                    SELECT 1 FROM information_schema.tables 
                     WHERE table_name = :table_name
                 );
             """)

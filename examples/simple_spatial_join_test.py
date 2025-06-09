@@ -71,7 +71,7 @@ def test_bbox_data_structure():
             # 检查表是否存在
             check_table = text("""
                 SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
+                    SELECT 1 FROM information_schema.tables 
                     WHERE table_name = 'clips_bbox'
                 );
             """)
@@ -126,7 +126,7 @@ def test_intersection_data_structure():
             # 检查表是否存在
             check_table = text("""
                 SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
+                    SELECT 1 FROM information_schema.tables 
                     WHERE table_name = 'full_intersection'
                 );
             """)
