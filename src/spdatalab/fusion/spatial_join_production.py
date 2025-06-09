@@ -178,13 +178,13 @@ class ProductionSpatialJoin:
         subqueries = []
         for _, row in bbox_data.iterrows():
             scene_token = str(row['scene_token'])
-            city_id = str(row['city_id'])
+            city_id = str(row['city_id']) if row['city_id'] is not None else 'NULL'
             bbox_wkt = str(row['bbox_wkt'])
             
             subquery = f"""
                 SELECT 
                     '{scene_token}' as scene_token,
-                    '{city_id}' as city_id,
+                    {f"'{city_id}'" if city_id != 'NULL' else 'NULL'} as city_id,
                     id as intersection_id,
                     intersection_type,
                     ST_AsText(wkb_geometry) as intersection_geometry
@@ -444,20 +444,51 @@ class ProductionSpatialJoin:
     
     def _fetch_bbox_data(self, num_bbox: int, city_filter: Optional[str]) -> pd.DataFrame:
         """获取bbox数据"""
-        where_clause = ""
-        if city_filter:
-            where_clause = f"WHERE city_id = '{city_filter}'"
+        # 检查是否有city_id字段
+        try:
+            with self.local_engine.connect() as conn:
+                check_column_sql = text("""
+                    SELECT EXISTS (
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name = 'clips_bbox' AND column_name = 'city_id'
+                    );
+                """)
+                has_city_id = conn.execute(check_column_sql).fetchone()[0]
+        except Exception:
+            has_city_id = False
         
-        sql = text(f"""
-            SELECT 
-                scene_token,
-                city_id,
-                ST_AsText(geometry) as bbox_wkt
-            FROM clips_bbox 
-            {where_clause}
-            ORDER BY scene_token
-            LIMIT {num_bbox}
-        """)
+        # 构建查询语句
+        if has_city_id:
+            # 如果有city_id字段
+            where_clause = ""
+            if city_filter:
+                where_clause = f"WHERE city_id = '{city_filter}'"
+            
+            sql = text(f"""
+                SELECT 
+                    scene_token,
+                    city_id,
+                    ST_AsText(geometry) as bbox_wkt
+                FROM clips_bbox 
+                {where_clause}
+                ORDER BY scene_token
+                LIMIT {num_bbox}
+            """)
+        else:
+            # 如果没有city_id字段
+            if city_filter:
+                logger.warning(f"clips_bbox表中没有city_id字段，忽略city_filter参数: {city_filter}")
+            
+            sql = text(f"""
+                SELECT 
+                    scene_token,
+                    NULL as city_id,
+                    ST_AsText(geometry) as bbox_wkt
+                FROM clips_bbox 
+                ORDER BY scene_token
+                LIMIT {num_bbox}
+            """)
         
         return pd.read_sql(sql, self.local_engine)
     
