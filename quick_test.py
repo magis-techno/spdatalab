@@ -24,6 +24,8 @@ def test_import():
         return True
     except Exception as e:
         print(f"❌ 导入失败: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def test_basic_query():

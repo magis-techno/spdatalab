@@ -37,14 +37,15 @@ def test_database_connection():
         
         # 测试本地数据库连接
         print("📊 测试本地数据库连接...")
+        from sqlalchemy import text
         with spatial_join.local_engine.connect() as conn:
-            result = conn.execute("SELECT 1 as test")
+            result = conn.execute(text("SELECT 1 as test"))
             print(f"✅ 本地数据库连接成功: {result.fetchone()}")
         
         # 测试远程数据库连接
         print("🌐 测试远程数据库连接...")
         with spatial_join.remote_engine.connect() as conn:
-            result = conn.execute("SELECT 1 as test")
+            result = conn.execute(text("SELECT 1 as test"))
             print(f"✅ 远程数据库连接成功: {result.fetchone()}")
         
         return spatial_join
