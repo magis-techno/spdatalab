@@ -437,12 +437,16 @@ class ProductionSpatialJoin:
         save_records = []
         
         for _, row in analysis_result.iterrows():
+            # 序列化analysis_params为JSON字符串
+            import json
+            analysis_params_json = json.dumps(analysis_params) if analysis_params else None
+            
             record = {
                 'analysis_id': analysis_id,
                 'analysis_type': analysis_type,
                 'city_filter': city_filter,
                 'group_dimension': group_dimension,
-                'analysis_params': analysis_params
+                'analysis_params': analysis_params_json
             }
             
             # 处理分组值和统计信息
@@ -452,20 +456,30 @@ class ProductionSpatialJoin:
                 
                 # 添加可读名称
                 if group_dimension == 'intersection_type':
-                    record['group_value_name'] = INTERSECTION_TYPE_MAPPING.get(group_value, 'Unknown')
+                    # 确保group_value是整数
+                    try:
+                        int_value = int(group_value) if group_value != 'unknown' else 0
+                        record['group_value_name'] = INTERSECTION_TYPE_MAPPING.get(int_value, 'Unknown')
+                    except (ValueError, TypeError):
+                        record['group_value_name'] = 'Unknown'
                 elif group_dimension == 'intersection_subtype':
-                    record['group_value_name'] = INTERSECTION_SUBTYPE_MAPPING.get(group_value, 'Unknown')
+                    # 确保group_value是整数
+                    try:
+                        int_value = int(group_value) if group_value != 'unknown' else 0
+                        record['group_value_name'] = INTERSECTION_SUBTYPE_MAPPING.get(int_value, 'Unknown')
+                    except (ValueError, TypeError):
+                        record['group_value_name'] = 'Unknown'
                 else:
                     record['group_value_name'] = str(group_value)
             else:
                 record['group_value'] = 'overall'
                 record['group_value_name'] = 'Overall Analysis'
             
-            # 统计信息
-            record['intersection_count'] = row.get('intersection_count', 0)
-            record['unique_intersections'] = row.get('unique_intersections', 0)
-            record['unique_scenes'] = row.get('unique_scenes', 0)
-            record['bbox_count'] = analysis_params.get('bbox_count', 0) if analysis_params else 0
+            # 统计信息（确保是整数类型）
+            record['intersection_count'] = int(row.get('intersection_count', 0))
+            record['unique_intersections'] = int(row.get('unique_intersections', 0))
+            record['unique_scenes'] = int(row.get('unique_scenes', 0))
+            record['bbox_count'] = int(analysis_params.get('bbox_count', 0)) if analysis_params else 0
             
             # 几何信息（如果需要）
             if include_geometry and group_dimension:
