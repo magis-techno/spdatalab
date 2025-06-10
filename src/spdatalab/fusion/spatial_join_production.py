@@ -161,7 +161,7 @@ class ProductionSpatialJoin:
         except Exception as e:
             logger.warning(f"检查/删除表时出错: {e}")
         
-        # 创建分析结果表
+        # 创建分析结果表（使用PostGIS几何类型）
         create_table_sql = text(f"""
             CREATE TABLE {self.config.analysis_results_table} (
                 id SERIAL PRIMARY KEY,
@@ -177,9 +177,13 @@ class ProductionSpatialJoin:
                 unique_scenes INTEGER,
                 bbox_count INTEGER,
                 analysis_params TEXT,
-                geometry TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+        """)
+        
+        # 添加PostGIS几何列
+        add_geom_sql = text(f"""
+            SELECT AddGeometryColumn('public', '{self.config.analysis_results_table}', 'geometry', 4326, 'GEOMETRY', 2)
         """)
         
         # 创建索引
@@ -195,6 +199,19 @@ class ProductionSpatialJoin:
             with self.local_engine.connect() as conn:
                 # 创建表
                 conn.execute(create_table_sql)
+                
+                # 添加PostGIS几何列
+                try:
+                    conn.execute(add_geom_sql)
+                except Exception as geom_e:
+                    logger.warning(f"几何列创建失败: {geom_e}")
+                    # 如果PostGIS不可用，fallback到TEXT类型
+                    fallback_geom_sql = text(f"""
+                        ALTER TABLE {self.config.analysis_results_table} 
+                        ADD COLUMN geometry TEXT
+                    """)
+                    conn.execute(fallback_geom_sql)
+                    logger.info("使用TEXT类型作为几何字段的后备方案")
                 
                 # 创建索引
                 for index_sql in create_indexes_sql:
@@ -553,13 +570,36 @@ class ProductionSpatialJoin:
                 geom_sql = text(f"""
                     SELECT intersection_geometry
                     FROM {self.config.intersection_table}
-                    WHERE {where_clause}
+                    WHERE {where_clause} AND intersection_geometry IS NOT NULL
                     LIMIT 1
                 """)
                 
                 with self.local_engine.connect() as conn:
                     result = conn.execute(geom_sql).fetchone()
-                    return result[0] if result and result[0] else None
+                    if result and result[0]:
+                        return result[0]
+                
+                # 如果没有直接的几何数据，尝试从scene_token获取bbox几何作为代表
+                fallback_sql = text(f"""
+                    SELECT c.scene_token
+                    FROM {self.config.intersection_table} ic
+                    LEFT JOIN clips_bbox c ON ic.scene_token = c.scene_token
+                    WHERE {where_clause}
+                    LIMIT 1
+                """)
+                
+                with self.local_engine.connect() as conn:
+                    scene_result = conn.execute(fallback_sql).fetchone()
+                    if scene_result and scene_result[0]:
+                        # 获取该场景的bbox几何
+                        bbox_sql = text(f"""
+                            SELECT ST_AsText(geometry) as geometry
+                            FROM clips_bbox
+                            WHERE scene_token = '{scene_result[0]}'
+                            LIMIT 1
+                        """)
+                        bbox_result = conn.execute(bbox_sql).fetchone()
+                        return bbox_result[0] if bbox_result and bbox_result[0] else None
             
             elif group_dimension == 'intersection_subtype':
                 # 获取该子类型路口的代表性几何
@@ -572,13 +612,35 @@ class ProductionSpatialJoin:
                 geom_sql = text(f"""
                     SELECT intersection_geometry
                     FROM {self.config.intersection_table}
-                    WHERE {where_clause}
+                    WHERE {where_clause} AND intersection_geometry IS NOT NULL
                     LIMIT 1
                 """)
                 
                 with self.local_engine.connect() as conn:
                     result = conn.execute(geom_sql).fetchone()
-                    return result[0] if result and result[0] else None
+                    if result and result[0]:
+                        return result[0]
+                
+                # Fallback到bbox几何
+                fallback_sql = text(f"""
+                    SELECT c.scene_token
+                    FROM {self.config.intersection_table} ic
+                    LEFT JOIN clips_bbox c ON ic.scene_token = c.scene_token
+                    WHERE {where_clause}
+                    LIMIT 1
+                """)
+                
+                with self.local_engine.connect() as conn:
+                    scene_result = conn.execute(fallback_sql).fetchone()
+                    if scene_result and scene_result[0]:
+                        bbox_sql = text(f"""
+                            SELECT ST_AsText(geometry) as geometry
+                            FROM clips_bbox
+                            WHERE scene_token = '{scene_result[0]}'
+                            LIMIT 1
+                        """)
+                        bbox_result = conn.execute(bbox_sql).fetchone()
+                        return bbox_result[0] if bbox_result and bbox_result[0] else None
             
             elif group_dimension == 'scene_token':
                 # 获取场景的bbox几何
@@ -593,10 +655,23 @@ class ProductionSpatialJoin:
                     result = conn.execute(bbox_sql).fetchone()
                     return result[0] if result and result[0] else None
             
+            elif group_dimension == 'city_id':
+                # 获取城市的代表性几何 - 所有bbox的并集的中心点
+                bbox_sql = text(f"""
+                    SELECT ST_AsText(ST_Centroid(ST_Union(geometry))) as geometry
+                    FROM clips_bbox
+                    WHERE city_id = '{group_value}'
+                    LIMIT 1
+                """)
+                
+                with self.local_engine.connect() as conn:
+                    result = conn.execute(bbox_sql).fetchone()
+                    return result[0] if result and result[0] else None
+            
             return None
             
         except Exception as e:
-            logger.warning(f"获取几何信息失败: {e}")
+            logger.warning(f"获取几何信息失败 (dimension: {group_dimension}, value: {group_value}): {e}")
             return None
     
     def get_intersection_details(
