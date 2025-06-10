@@ -585,22 +585,23 @@ class ProductionSpatialJoin:
                 fields = list(record.keys())
                 values = list(record.values())
                 
-                # 添加几何字段
+                # 添加几何字段处理
+                fields.append('geometry')
                 if geometry_wkt:
-                    fields.append('geometry')
-                    # 使用ST_GeomFromText转换WKT为PostGIS几何对象
-                    geometry_sql = f"ST_GeomFromText('{geometry_wkt}', 4326)"
+                    values.append(geometry_wkt)
+                    geometry_placeholder = "ST_GeomFromText(%s, 4326)"
                 else:
-                    fields.append('geometry')
-                    geometry_sql = "NULL"
+                    values.append(None)
+                    geometry_placeholder = "%s"
                 
                 # 构建SQL语句
                 field_names = ', '.join(fields)
-                placeholders = ', '.join(['%s'] * len(values)) + f', {geometry_sql}'
+                regular_placeholders = ', '.join(['%s'] * (len(values) - 1))
+                all_placeholders = regular_placeholders + f', {geometry_placeholder}'
                 
                 insert_sql = text(f"""
                     INSERT INTO {self.config.analysis_results_table} ({field_names})
-                    VALUES ({placeholders})
+                    VALUES ({all_placeholders})
                 """)
                 
                 # 执行插入
