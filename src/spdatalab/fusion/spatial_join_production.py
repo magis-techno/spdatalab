@@ -581,23 +581,30 @@ class ProductionSpatialJoin:
                 # 准备插入语句
                 geometry_wkt = record.pop('geometry', None)
                 
-                # 构建字段列表和值列表
-                fields = list(record.keys())
-                values = list(record.values())
-                
-                # 添加几何字段处理
-                fields.append('geometry')
-                if geometry_wkt:
-                    values.append(geometry_wkt)
-                    geometry_placeholder = "ST_GeomFromText(%s, 4326)"
-                else:
-                    values.append(None)
-                    geometry_placeholder = "%s"
+                # 分离非几何字段和几何字段
+                non_geom_fields = list(record.keys())
+                non_geom_values = list(record.values())
                 
                 # 构建SQL语句
-                field_names = ', '.join(fields)
-                regular_placeholders = ', '.join(['%s'] * (len(values) - 1))
-                all_placeholders = regular_placeholders + f', {geometry_placeholder}'
+                if geometry_wkt:
+                    # 有几何数据的情况
+                    all_fields = non_geom_fields + ['geometry']
+                    field_names = ', '.join(all_fields)
+                    non_geom_placeholders = ', '.join([':param' + str(i) for i in range(len(non_geom_values))])
+                    all_placeholders = non_geom_placeholders + ', ST_GeomFromText(:geom_wkt, 4326)'
+                    
+                    # 准备参数字典
+                    params = {f'param{i}': val for i, val in enumerate(non_geom_values)}
+                    params['geom_wkt'] = geometry_wkt
+                else:
+                    # 没有几何数据的情况
+                    all_fields = non_geom_fields + ['geometry']
+                    field_names = ', '.join(all_fields)
+                    non_geom_placeholders = ', '.join([':param' + str(i) for i in range(len(non_geom_values))])
+                    all_placeholders = non_geom_placeholders + ', NULL'
+                    
+                    # 准备参数字典
+                    params = {f'param{i}': val for i, val in enumerate(non_geom_values)}
                 
                 insert_sql = text(f"""
                     INSERT INTO {self.config.analysis_results_table} ({field_names})
@@ -605,7 +612,7 @@ class ProductionSpatialJoin:
                 """)
                 
                 # 执行插入
-                conn.execute(insert_sql, values)
+                conn.execute(insert_sql, params)
             
             conn.commit()
     
