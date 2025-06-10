@@ -25,6 +25,28 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+# 路口类型枚举映射
+INTERSECTION_TYPE_MAPPING = {
+    1: "Intersection",
+    2: "Toll Station", 
+    3: "Lane Change Area",
+    4: "T-Junction Area",
+    5: "Roundabout",
+    6: "H-Junction Area",
+    7: "Invalid",
+    8: "Toll Booth Area"
+}
+
+INTERSECTION_SUBTYPE_MAPPING = {
+    1: "Regular",
+    2: "T-Junction with Through Markings",
+    3: "Minor Junction (No Traffic Conflict)", 
+    4: "Unmarked Junction",
+    5: "Secondary Junction",
+    6: "Conservative Through Junction",
+    7: "Invalid"
+}
+
 @dataclass
 class SpatialJoinConfig:
     """空间连接配置"""
@@ -77,6 +99,7 @@ class ProductionSpatialJoin:
                 city_id VARCHAR(100),
                 intersection_id BIGINT NOT NULL,
                 intersectiontype INTEGER,
+                intersectionsubtype INTEGER,
                 intersection_geometry TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 CONSTRAINT unique_scene_intersection UNIQUE (scene_token, intersection_id)
@@ -187,6 +210,7 @@ class ProductionSpatialJoin:
                     {f"'{city_id}'" if city_id != 'NULL' else 'NULL'} as city_id,
                     id as intersection_id,
                     intersectiontype,
+                    intersectionsubtype,
                     ST_AsText(wkb_geometry) as intersection_geometry
                 FROM full_intersection 
                 WHERE ST_Intersects(wkb_geometry, ST_GeomFromText('{bbox_wkt}', 4326))
@@ -252,6 +276,7 @@ class ProductionSpatialJoin:
         # 列名映射：用户友好名称 -> 数据库实际列名
         column_mapping = {
             'intersection_type': 'intersectiontype',
+            'intersection_subtype': 'intersectionsubtype',
             'city_id': 'city_id',
             'scene_token': 'scene_token'
         }
@@ -282,9 +307,11 @@ class ProductionSpatialJoin:
                 db_field = column_mapping.get(field, field)
                 mapped_group_fields.append(db_field)
                 
-                # 为intersection_type添加别名以保持用户友好的列名
+                # 为intersection相关字段添加别名以保持用户友好的列名
                 if field == 'intersection_type':
                     display_group_fields.append(f"{db_field} as intersection_type")
+                elif field == 'intersection_subtype':
+                    display_group_fields.append(f"{db_field} as intersection_subtype")
                 else:
                     display_group_fields.append(db_field)
             
@@ -356,6 +383,7 @@ class ProductionSpatialJoin:
                 city_id,
                 intersection_id,
                 intersectiontype as intersection_type,
+                intersectionsubtype as intersection_subtype,
                 intersection_geometry,
                 created_at
             FROM {self.config.intersection_table}
@@ -629,7 +657,7 @@ def quick_spatial_join(
     
     Args:
         num_bbox: bbox数量
-        city_filter: 城市过滤
+        city_filter: 城市过滤（如"A72", "B15"等实际城市代码）
         config: 自定义配置
         
     Returns:
@@ -637,6 +665,107 @@ def quick_spatial_join(
     """
     spatial_join = ProductionSpatialJoin(config)
     return spatial_join.polygon_intersect(num_bbox, city_filter)
+
+
+def get_available_cities(config: Optional[SpatialJoinConfig] = None) -> pd.DataFrame:
+    """
+    获取可用的城市列表
+    
+    Args:
+        config: 自定义配置
+        
+    Returns:
+        包含城市信息的DataFrame
+    """
+    spatial_join = ProductionSpatialJoin(config)
+    
+    try:
+        # 检查是否有city_id字段
+        with spatial_join.local_engine.connect() as conn:
+            check_column_sql = text("""
+                SELECT EXISTS (
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'clips_bbox' AND column_name = 'city_id'
+                );
+            """)
+            has_city_id = conn.execute(check_column_sql).fetchone()[0]
+        
+        if has_city_id:
+            city_sql = text("""
+                SELECT 
+                    city_id,
+                    COUNT(*) as bbox_count
+                FROM clips_bbox 
+                WHERE city_id IS NOT NULL
+                GROUP BY city_id
+                ORDER BY bbox_count DESC
+            """)
+            return pd.read_sql(city_sql, spatial_join.local_engine)
+        else:
+            logger.warning("clips_bbox表中没有city_id字段")
+            return pd.DataFrame({'message': ['clips_bbox表中没有city_id字段']})
+    
+    except Exception as e:
+        logger.error(f"获取城市列表失败: {e}")
+        return pd.DataFrame({'error': [str(e)]})
+
+
+def explain_intersection_types() -> pd.DataFrame:
+    """
+    获取路口类型和子类型的说明
+    
+    Returns:
+        包含类型说明的DataFrame
+    """
+    type_df = pd.DataFrame([
+        {'id': k, 'type': 'intersectiontype', 'name': v} 
+        for k, v in INTERSECTION_TYPE_MAPPING.items()
+    ])
+    
+    subtype_df = pd.DataFrame([
+        {'id': k, 'type': 'intersectionsubtype', 'name': v} 
+        for k, v in INTERSECTION_SUBTYPE_MAPPING.items()
+    ])
+    
+    return pd.concat([type_df, subtype_df], ignore_index=True)
+
+
+def get_intersection_types_summary(config: Optional[SpatialJoinConfig] = None) -> pd.DataFrame:
+    """
+    获取路口类型汇总信息
+    
+    Args:
+        config: 自定义配置
+        
+    Returns:
+        包含路口类型统计的DataFrame
+    """
+    spatial_join = ProductionSpatialJoin(config)
+    
+    try:
+        type_sql = text("""
+            SELECT 
+                intersectiontype,
+                intersectionsubtype,
+                COUNT(*) as intersection_count
+            FROM full_intersection
+            GROUP BY intersectiontype, intersectionsubtype
+            ORDER BY intersection_count DESC
+            LIMIT 50
+        """)
+        result = pd.read_sql(type_sql, spatial_join.remote_engine)
+        
+        # 添加可读的描述
+        if not result.empty:
+            result['type_name'] = result['intersectiontype'].map(INTERSECTION_TYPE_MAPPING)
+            result['subtype_name'] = result['intersectionsubtype'].map(INTERSECTION_SUBTYPE_MAPPING)
+        
+        return result
+    
+    except Exception as e:
+        logger.error(f"获取路口类型失败: {e}")
+        return pd.DataFrame({'error': [str(e)]})
 
 
 if __name__ == "__main__":
@@ -648,9 +777,30 @@ if __name__ == "__main__":
     
     print("=== 空间连接缓存构建示例 ===")
     
+    # 先探索可用的数据格式
+    print("\n0. 探索数据格式...")
+    
+    # 显示路口类型说明
+    print("路口类型说明:")
+    explanation_df = explain_intersection_types()
+    print(explanation_df.to_string(index=False))
+    
+    cities_df = get_available_cities()
+    types_df = get_intersection_types_summary()
+    
+    sample_city = None
+    if not cities_df.empty and 'city_id' in cities_df.columns:
+        sample_city = cities_df.iloc[0]['city_id']
+        print(f"\n可用城市: {cities_df['city_id'].tolist()[:5]}")
+        print(f"使用示例城市: {sample_city}")
+    
+    if not types_df.empty and 'intersectiontype' in types_df.columns:
+        print(f"\n路口类型分布:")
+        print(types_df.head(10).to_string(index=False))
+    
     # 1. 构建缓存
     print("\n1. 构建相交关系缓存...")
-    cached_count, build_stats = build_cache(100, city_filter="boston")
+    cached_count, build_stats = build_cache(50, city_filter=sample_city)
     print(f"缓存了 {cached_count} 条相交关系")
     
     # 2. 基于缓存进行分析
@@ -658,7 +808,7 @@ if __name__ == "__main__":
     
     # 按路口类型分组统计
     type_analysis = analyze_cached_intersections(
-        city_filter="boston",
+        city_filter=sample_city,
         group_by=["intersection_type"]
     )
     print("按路口类型统计:")
@@ -666,7 +816,7 @@ if __name__ == "__main__":
     
     # 按场景和路口类型分组统计
     scene_type_analysis = analyze_cached_intersections(
-        city_filter="boston",
+        city_filter=sample_city,
         group_by=["scene_token", "intersection_type"]
     )
     print(f"\n按场景和路口类型统计 (前10条):")
@@ -674,5 +824,5 @@ if __name__ == "__main__":
     
     # 3. 原有功能测试
     print(f"\n3. 原有功能兼容性测试...")
-    result, stats = quick_spatial_join(10, city_filter="boston")
+    result, stats = quick_spatial_join(10, city_filter=sample_city)
     print(f"原有接口结果: {len(result)} 条记录") 

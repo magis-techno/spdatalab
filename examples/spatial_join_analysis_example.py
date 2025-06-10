@@ -24,14 +24,64 @@ from src.spdatalab.fusion.spatial_join_production import (
     ProductionSpatialJoin, 
     SpatialJoinConfig,
     build_cache,
-    analyze_cached_intersections
+    analyze_cached_intersections,
+    get_available_cities,
+    get_intersection_types_summary,
+    explain_intersection_types
 )
 
 # 设置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def demo_cache_workflow():
+def explore_data_format():
+    """探索实际的数据格式"""
+    print("🔍 数据格式探索")
+    print("=" * 40)
+    
+    try:
+        # 1. 获取可用城市列表
+        print("🏙️ 可用城市列表:")
+        cities_df = get_available_cities()
+        if not cities_df.empty and 'city_id' in cities_df.columns:
+            print(cities_df.head(10).to_string(index=False))
+            # 选择第一个城市作为示例
+            sample_city = cities_df.iloc[0]['city_id'] if len(cities_df) > 0 else None
+            print(f"\n💡 示例城市ID: {sample_city}")
+        else:
+            print(cities_df.to_string(index=False))
+            sample_city = None
+        
+        # 2. 获取路口类型说明
+        print(f"\n📖 路口类型说明:")
+        explanation_df = explain_intersection_types()
+        print(explanation_df.to_string(index=False))
+        
+        # 3. 获取路口类型汇总
+        print(f"\n🚦 路口类型汇总:")
+        types_df = get_intersection_types_summary()
+        if not types_df.empty and 'intersectiontype' in types_df.columns:
+            print(types_df.head(15).to_string(index=False))
+        else:
+            print(types_df.to_string(index=False))
+        
+        # 4. 获取bbox样本数据
+        print(f"\n📋 bbox数据样本:")
+        spatial_join = ProductionSpatialJoin()
+        sample_data = spatial_join._fetch_bbox_data(3, None)
+        if not sample_data.empty:
+            print(sample_data.to_string(index=False))
+        else:
+            print("❌ 未找到bbox数据")
+            
+        return sample_city
+            
+    except Exception as e:
+        print(f"❌ 数据探索失败: {e}")
+        return None
+
+
+def demo_cache_workflow(sample_city=None):
     """演示完整的缓存工作流程"""
     
     print("🚀 空间连接分析演示")
@@ -51,8 +101,13 @@ def demo_cache_workflow():
     print("\n📊 第1步：构建相交关系缓存")
     print("-" * 40)
     
-    city = None      # 先不使用城市过滤，避免数据不存在问题
-    num_bbox = 20    # 减少数量，方便调试
+    city = sample_city  # 使用从探索中获得的实际城市ID
+    num_bbox = 20       # 减少数量，方便调试
+    
+    if city:
+        print(f"使用城市过滤: {city}")
+    else:
+        print("不使用城市过滤")
     
     try:
         cached_count, build_stats = spatial_join.build_intersection_cache(
@@ -99,10 +154,35 @@ def demo_cache_workflow():
         # 找出最常见的路口类型
         if not type_analysis.empty:
             top_type = type_analysis.loc[type_analysis['intersection_count'].idxmax()]
-            print(f"\n💡 最常见路口类型: {top_type['intersection_type']} ({top_type['intersection_count']}个相交)")
+            from src.spdatalab.fusion.spatial_join_production import INTERSECTION_TYPE_MAPPING
+            type_name = INTERSECTION_TYPE_MAPPING.get(top_type['intersection_type'], '未知')
+            print(f"\n💡 最常见路口类型: {top_type['intersection_type']}({type_name}) - {top_type['intersection_count']}个相交")
         
     except Exception as e:
         print(f"❌ 路口类型分析失败: {e}")
+    
+    # 3.5. 按路口子类型分组分析
+    print(f"\n🏗️ 第3.5步：按路口子类型分组分析")
+    print("-" * 40)
+    
+    try:
+        subtype_analysis = spatial_join.analyze_intersections(
+            city_filter=city,
+            group_by=["intersection_subtype"]
+        )
+        
+        print("按路口子类型统计:")
+        print(subtype_analysis.to_string(index=False))
+        
+        # 找出最常见的路口子类型
+        if not subtype_analysis.empty:
+            top_subtype = subtype_analysis.loc[subtype_analysis['intersection_count'].idxmax()]
+            from src.spdatalab.fusion.spatial_join_production import INTERSECTION_SUBTYPE_MAPPING
+            subtype_name = INTERSECTION_SUBTYPE_MAPPING.get(top_subtype['intersection_subtype'], '未知')
+            print(f"\n💡 最常见路口子类型: {top_subtype['intersection_subtype']}({subtype_name}) - {top_subtype['intersection_count']}个相交")
+        
+    except Exception as e:
+        print(f"❌ 路口子类型分析失败: {e}")
     
     # 4. 按场景分组分析（展示前10个）
     print(f"\n🎬 第4步：按场景分组分析")
@@ -130,20 +210,34 @@ def demo_cache_workflow():
     print("-" * 40)
     
     try:
-        # 假设我们关心十字路口和T型路口
-        target_types = ["4-way", "3-way", "intersection"]  # 根据实际数据调整
-        
-        specific_analysis = spatial_join.analyze_intersections(
+        # 先查看实际有哪些路口类型（数字）
+        type_analysis = spatial_join.analyze_intersections(
             city_filter=city,
-            intersection_types=target_types,
-            group_by=["intersection_type", "scene_token"]
+            group_by=["intersection_type"]
         )
         
-        if not specific_analysis.empty:
+        if not type_analysis.empty:
+            print("实际的路口类型及其数量:")
+            print(type_analysis.to_string(index=False))
+            
+            # 选择前几个最常见的路口类型进行分析（使用实际的数字）
+            top_types = type_analysis.nlargest(3, 'intersection_count')['intersection_type'].tolist()
+            print(f"\n选择分析的路口类型: {top_types}")
+            
+            specific_analysis = spatial_join.analyze_intersections(
+                city_filter=city,
+                intersection_types=top_types,  # 使用实际的数字类型
+                group_by=["intersection_type", "scene_token"]
+            )
+        else:
+            print("未找到路口类型数据")
+            specific_analysis = None
+        
+        if specific_analysis is not None and not specific_analysis.empty:
             print(f"特定路口类型分析 (前15个):")
             print(specific_analysis.head(15).to_string(index=False))
-        else:
-            print("未找到指定类型的路口，请检查intersection_types参数")
+        elif specific_analysis is not None:
+            print("未找到指定类型的路口数据")
         
     except Exception as e:
         print(f"❌ 特定类型分析失败: {e}")
@@ -159,10 +253,14 @@ def demo_cache_workflow():
         )
         
         print("详细相交信息 (前5条):")
+        from src.spdatalab.fusion.spatial_join_production import INTERSECTION_TYPE_MAPPING, INTERSECTION_SUBTYPE_MAPPING
         for _, row in details.iterrows():
+            type_name = INTERSECTION_TYPE_MAPPING.get(row['intersection_type'], '未知')
+            subtype_name = INTERSECTION_SUBTYPE_MAPPING.get(row['intersection_subtype'], '未知')
             print(f"场景: {row['scene_token']}")
             print(f"  - 路口ID: {row['intersection_id']}")
-            print(f"  - 路口类型: {row['intersection_type']}")
+            print(f"  - 路口类型: {row['intersection_type']}({type_name})")
+            print(f"  - 路口子类型: {row['intersection_subtype']}({subtype_name})")
             print(f"  - 创建时间: {row['created_at']}")
             print()
         
@@ -294,8 +392,11 @@ if __name__ == "__main__":
     print("=" * 80)
     
     try:
+        # 首先探索数据格式
+        sample_city = explore_data_format()
+        
         # 主要工作流程演示
-        demo_cache_workflow()
+        demo_cache_workflow(sample_city)
         
         # 性能对比演示
         demo_performance_comparison()
