@@ -141,9 +141,29 @@ class ProductionSpatialJoin:
     
     def _init_results_table(self):
         """初始化分析结果表，专为QGIS可视化设计"""
+        
+        # 先检查表是否存在，如果存在则删除重建（避免字段类型不匹配）
+        try:
+            with self.local_engine.connect() as conn:
+                check_table_sql = text(f"""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_name = '{self.config.analysis_results_table}'
+                    );
+                """)
+                table_exists = conn.execute(check_table_sql).fetchone()[0]
+                
+                if table_exists:
+                    logger.info(f"删除现有的分析结果表 {self.config.analysis_results_table}")
+                    drop_table_sql = text(f"DROP TABLE {self.config.analysis_results_table}")
+                    conn.execute(drop_table_sql)
+                    conn.commit()
+        except Exception as e:
+            logger.warning(f"检查/删除表时出错: {e}")
+        
         # 创建分析结果表
         create_table_sql = text(f"""
-            CREATE TABLE IF NOT EXISTS {self.config.analysis_results_table} (
+            CREATE TABLE {self.config.analysis_results_table} (
                 id SERIAL PRIMARY KEY,
                 analysis_id VARCHAR(100) NOT NULL,
                 analysis_type VARCHAR(50) NOT NULL,
@@ -156,7 +176,7 @@ class ProductionSpatialJoin:
                 unique_intersections INTEGER,
                 unique_scenes INTEGER,
                 bbox_count INTEGER,
-                analysis_params JSONB,
+                analysis_params TEXT,
                 geometry GEOMETRY(GEOMETRY, 4326),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
