@@ -181,7 +181,7 @@ class ProductionSpatialJoin:
             )
         """)
         
-        # 添加PostGIS几何列
+        # 添加PostGIS几何列（2D，在保存时强制转换）
         add_geom_sql = text(f"""
             SELECT AddGeometryColumn('public', '{self.config.analysis_results_table}', 'geometry', 4326, 'GEOMETRY', 2)
         """)
@@ -591,7 +591,8 @@ class ProductionSpatialJoin:
                     all_fields = non_geom_fields + ['geometry']
                     field_names = ', '.join(all_fields)
                     non_geom_placeholders = ', '.join([':param' + str(i) for i in range(len(non_geom_values))])
-                    all_placeholders = non_geom_placeholders + ', ST_GeomFromText(:geom_wkt, 4326)'
+                    # 使用ST_Force2D强制转换为2D几何，避免Z维度问题
+                    all_placeholders = non_geom_placeholders + ', ST_Force2D(ST_GeomFromText(:geom_wkt, 4326))'
                     
                     # 准备参数字典
                     params = {f'param{i}': val for i, val in enumerate(non_geom_values)}
