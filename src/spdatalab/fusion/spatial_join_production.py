@@ -61,6 +61,8 @@ class SpatialJoinConfig:
     # 分析结果表配置
     analysis_results_table: str = "spatial_analysis_results"  # 分析结果表名
     enable_results_export: bool = True  # 是否启用结果导出
+    # 路口详细信息表配置
+    intersection_details_table: str = "intersection_details_view"  # 路口详细信息表名
 
 class ProductionSpatialJoin:
     """
@@ -95,6 +97,7 @@ class ProductionSpatialJoin:
         # 初始化分析结果表
         if self.config.enable_results_export:
             self._init_results_table()
+            self._init_intersection_details_table()
     
     def _init_cache_table(self):
         """初始化缓存表"""
@@ -142,7 +145,7 @@ class ProductionSpatialJoin:
     def _init_results_table(self):
         """初始化分析结果表，专为QGIS可视化设计"""
         
-        # 先检查表是否存在，如果存在则删除重建（避免字段类型不匹配）
+        # 检查表是否存在，如果已存在且结构正确就不重建
         try:
             with self.local_engine.connect() as conn:
                 check_table_sql = text(f"""
@@ -154,12 +157,25 @@ class ProductionSpatialJoin:
                 table_exists = conn.execute(check_table_sql).fetchone()[0]
                 
                 if table_exists:
-                    logger.info(f"删除现有的分析结果表 {self.config.analysis_results_table}")
-                    drop_table_sql = text(f"DROP TABLE {self.config.analysis_results_table}")
-                    conn.execute(drop_table_sql)
-                    conn.commit()
+                    # 检查表结构是否正确
+                    check_columns_sql = text(f"""
+                        SELECT column_name, udt_name FROM information_schema.columns
+                        WHERE table_name = '{self.config.analysis_results_table}'
+                        AND column_name IN ('geometry', 'analysis_id', 'group_dimension')
+                        ORDER BY column_name
+                    """)
+                    columns = conn.execute(check_columns_sql).fetchall()
+                    
+                    if len(columns) >= 3:  # 关键字段都存在
+                        logger.info(f"分析结果表 {self.config.analysis_results_table} 已存在且结构正确，跳过重建")
+                        return
+                    else:
+                        logger.info(f"表结构不完整，重建分析结果表 {self.config.analysis_results_table}")
+                        drop_table_sql = text(f"DROP TABLE {self.config.analysis_results_table}")
+                        conn.execute(drop_table_sql)
+                        conn.commit()
         except Exception as e:
-            logger.warning(f"检查/删除表时出错: {e}")
+            logger.warning(f"检查表结构时出错: {e}")
         
         # 创建分析结果表（使用PostGIS几何类型）
         create_table_sql = text(f"""
@@ -225,6 +241,85 @@ class ProductionSpatialJoin:
         except Exception as e:
             logger.warning(f"分析结果表初始化失败: {e}")
             logger.warning("请检查local_pg数据库连接和权限")
+    
+    def _init_intersection_details_table(self):
+        """初始化路口详细信息表，用于详细可视化"""
+        
+        # 检查表是否存在
+        try:
+            with self.local_engine.connect() as conn:
+                check_table_sql = text(f"""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_name = '{self.config.intersection_details_table}'
+                    );
+                """)
+                table_exists = conn.execute(check_table_sql).fetchone()[0]
+                
+                if table_exists:
+                    logger.info(f"路口详细信息表 {self.config.intersection_details_table} 已存在")
+                    return
+        except Exception as e:
+            logger.warning(f"检查路口详细信息表时出错: {e}")
+        
+        # 创建路口详细信息表
+        create_table_sql = text(f"""
+            CREATE TABLE {self.config.intersection_details_table} (
+                id SERIAL PRIMARY KEY,
+                export_id VARCHAR(100) NOT NULL,
+                scene_token VARCHAR(255) NOT NULL,
+                city_id VARCHAR(100),
+                intersection_id BIGINT NOT NULL,
+                intersectiontype INTEGER,
+                intersectionsubtype INTEGER,
+                type_name VARCHAR(100),
+                subtype_name VARCHAR(100),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # 添加PostGIS几何列
+        add_geom_sql = text(f"""
+            SELECT AddGeometryColumn('public', '{self.config.intersection_details_table}', 'geometry', 4326, 'GEOMETRY', 2)
+        """)
+        
+        # 创建索引
+        create_indexes_sql = [
+            text(f"CREATE INDEX IF NOT EXISTS idx_export_id_details ON {self.config.intersection_details_table} (export_id)"),
+            text(f"CREATE INDEX IF NOT EXISTS idx_scene_token_details ON {self.config.intersection_details_table} (scene_token)"),
+            text(f"CREATE INDEX IF NOT EXISTS idx_intersection_type_details ON {self.config.intersection_details_table} (intersectiontype)"),
+            text(f"CREATE INDEX IF NOT EXISTS idx_geometry_details ON {self.config.intersection_details_table} USING GIST (geometry)")
+        ]
+        
+        try:
+            with self.local_engine.connect() as conn:
+                # 创建表
+                conn.execute(create_table_sql)
+                
+                # 添加PostGIS几何列
+                try:
+                    conn.execute(add_geom_sql)
+                except Exception as geom_e:
+                    logger.warning(f"路口详细表几何列创建失败: {geom_e}")
+                    # Fallback到TEXT类型
+                    fallback_geom_sql = text(f"""
+                        ALTER TABLE {self.config.intersection_details_table} 
+                        ADD COLUMN geometry TEXT
+                    """)
+                    conn.execute(fallback_geom_sql)
+                    logger.info("路口详细表使用TEXT类型作为几何字段")
+                
+                # 创建索引
+                for index_sql in create_indexes_sql:
+                    try:
+                        conn.execute(index_sql)
+                    except Exception as idx_e:
+                        logger.warning(f"路口详细表索引创建失败: {idx_e}")
+                
+                conn.commit()
+            logger.info(f"路口详细信息表 {self.config.intersection_details_table} 初始化完成")
+        except Exception as e:
+            logger.warning(f"路口详细信息表初始化失败: {e}")
     
     def build_intersection_cache(
         self, 
@@ -558,6 +653,168 @@ class ProductionSpatialJoin:
             logger.info(f"成功保存 {len(save_records)} 条分析结果到 {self.config.analysis_results_table}")
         
         return analysis_id
+    
+    def export_intersection_details(
+        self,
+        scene_tokens: Optional[List[str]] = None,
+        city_filter: Optional[str] = None,
+        intersection_types: Optional[List[int]] = None,
+        sample_size: Optional[int] = None,
+        export_id: Optional[str] = None
+    ) -> str:
+        """
+        导出路口详细信息到可视化表
+        
+        Args:
+            scene_tokens: 场景tokens列表
+            city_filter: 城市过滤
+            intersection_types: 路口类型过滤
+            sample_size: 抽样数量
+            export_id: 导出ID
+            
+        Returns:
+            导出ID
+        """
+        if not self.config.enable_results_export:
+            raise ValueError("结果导出未启用")
+        
+        # 生成导出ID
+        if not export_id:
+            from datetime import datetime
+            export_id = f"details_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        logger.info(f"导出路口详细信息: {export_id}")
+        
+        # 构建查询条件
+        where_conditions = []
+        
+        if scene_tokens:
+            tokens_str = "', '".join(scene_tokens)
+            where_conditions.append(f"scene_token IN ('{tokens_str}')")
+        
+        if city_filter:
+            where_conditions.append(f"city_id = '{city_filter}'")
+        
+        if intersection_types:
+            types_str = ", ".join(str(t) for t in intersection_types)
+            where_conditions.append(f"intersectiontype IN ({types_str})")
+        
+        where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
+        
+        # 构建查询SQL
+        sample_clause = f"ORDER BY RANDOM() LIMIT {sample_size}" if sample_size else ""
+        
+        detail_sql = text(f"""
+            SELECT 
+                '{export_id}' as export_id,
+                scene_token,
+                city_id,
+                intersection_id,
+                intersectiontype,
+                intersectionsubtype,
+                intersection_geometry
+            FROM {self.config.intersection_table}
+            WHERE {where_clause}
+            {sample_clause}
+        """)
+        
+        # 获取详细数据
+        with self.local_engine.connect() as conn:
+            details_df = pd.read_sql(detail_sql, conn)
+        
+        if details_df.empty:
+            logger.warning("没有找到匹配的路口数据")
+            return export_id
+        
+        # 添加可读名称
+        details_df['type_name'] = details_df['intersectiontype'].map(INTERSECTION_TYPE_MAPPING)
+        details_df['subtype_name'] = details_df['intersectionsubtype'].map(INTERSECTION_SUBTYPE_MAPPING)
+        
+        # 保存到详细信息表
+        details_records = []
+        for _, row in details_df.iterrows():
+            record = {
+                'export_id': export_id,
+                'scene_token': row['scene_token'],
+                'city_id': row['city_id'],
+                'intersection_id': int(row['intersection_id']),
+                'intersectiontype': int(row['intersectiontype']) if pd.notna(row['intersectiontype']) else None,
+                'intersectionsubtype': int(row['intersectionsubtype']) if pd.notna(row['intersectionsubtype']) else None,
+                'type_name': row['type_name'],
+                'subtype_name': row['subtype_name'],
+                'geometry': row['intersection_geometry']
+            }
+            details_records.append(record)
+        
+        # 检查几何字段类型并保存
+        geometry_is_postgis = self._check_geometry_field_type_details()
+        
+        if geometry_is_postgis:
+            self._save_details_with_postgis_geometry(details_records)
+        else:
+            details_save_df = pd.DataFrame(details_records)
+            with self.local_engine.connect() as conn:
+                details_save_df.to_sql(
+                    self.config.intersection_details_table,
+                    conn,
+                    if_exists='append',
+                    index=False,
+                    method='multi'
+                )
+        
+        logger.info(f"成功导出 {len(details_records)} 个路口详细信息")
+        return export_id
+    
+    def _check_geometry_field_type_details(self) -> bool:
+        """检查路口详细表geometry字段是否为PostGIS类型"""
+        try:
+            with self.local_engine.connect() as conn:
+                check_sql = text(f"""
+                    SELECT udt_name
+                    FROM information_schema.columns
+                    WHERE table_name = '{self.config.intersection_details_table}'
+                    AND column_name = 'geometry';
+                """)
+                result = conn.execute(check_sql).fetchone()
+                return result and result[0] == 'geometry'
+        except Exception:
+            return False
+    
+    def _save_details_with_postgis_geometry(self, details_records: List[dict]):
+        """保存路口详细信息到PostGIS几何表"""
+        with self.local_engine.connect() as conn:
+            for record in details_records:
+                geometry_wkt = record.pop('geometry', None)
+                
+                # 分离非几何字段
+                non_geom_fields = list(record.keys())
+                non_geom_values = list(record.values())
+                
+                # 构建SQL
+                if geometry_wkt:
+                    all_fields = non_geom_fields + ['geometry']
+                    field_names = ', '.join(all_fields)
+                    non_geom_placeholders = ', '.join([':param' + str(i) for i in range(len(non_geom_values))])
+                    all_placeholders = non_geom_placeholders + ', ST_Force2D(ST_GeomFromText(:geom_wkt, 4326))'
+                    
+                    params = {f'param{i}': val for i, val in enumerate(non_geom_values)}
+                    params['geom_wkt'] = geometry_wkt
+                else:
+                    all_fields = non_geom_fields + ['geometry']
+                    field_names = ', '.join(all_fields)
+                    non_geom_placeholders = ', '.join([':param' + str(i) for i in range(len(non_geom_values))])
+                    all_placeholders = non_geom_placeholders + ', NULL'
+                    
+                    params = {f'param{i}': val for i, val in enumerate(non_geom_values)}
+                
+                insert_sql = text(f"""
+                    INSERT INTO {self.config.intersection_details_table} ({field_names})
+                    VALUES ({all_placeholders})
+                """)
+                
+                conn.execute(insert_sql, params)
+            
+            conn.commit()
     
     def _check_geometry_field_type(self) -> bool:
         """检查geometry字段是否为PostGIS类型"""
@@ -1232,6 +1489,72 @@ def export_analysis_to_qgis(
         analysis_params,
         include_geometry
     )
+
+
+def export_intersection_details_for_qgis(
+    scene_tokens: Optional[List[str]] = None,
+    city_filter: Optional[str] = None,
+    intersection_types: Optional[List[int]] = None,
+    sample_size: Optional[int] = 100,
+    export_id: Optional[str] = None,
+    config: Optional[SpatialJoinConfig] = None
+) -> str:
+    """
+    导出路口详细信息用于QGIS可视化
+    
+    Args:
+        scene_tokens: 场景tokens
+        city_filter: 城市过滤
+        intersection_types: 路口类型过滤
+        sample_size: 抽样数量（默认100）
+        export_id: 导出ID
+        config: 配置
+        
+    Returns:
+        导出ID
+    """
+    spatial_join = ProductionSpatialJoin(config)
+    return spatial_join.export_intersection_details(
+        scene_tokens, city_filter, intersection_types, sample_size, export_id
+    )
+
+
+def get_high_density_scenes(
+    city_filter: Optional[str] = None,
+    top_n: int = 10,
+    config: Optional[SpatialJoinConfig] = None
+) -> pd.DataFrame:
+    """
+    获取路口密度最高的场景
+    
+    Args:
+        city_filter: 城市过滤
+        top_n: 返回前N个场景
+        config: 配置
+        
+    Returns:
+        高密度场景DataFrame
+    """
+    spatial_join = ProductionSpatialJoin(config)
+    
+    # 构建查询条件
+    where_clause = f"WHERE city_id = '{city_filter}'" if city_filter else ""
+    
+    density_sql = text(f"""
+        SELECT 
+            scene_token,
+            city_id,
+            COUNT(*) as intersection_count,
+            COUNT(DISTINCT intersectiontype) as type_variety
+        FROM {spatial_join.config.intersection_table}
+        {where_clause}
+        GROUP BY scene_token, city_id
+        ORDER BY intersection_count DESC, type_variety DESC
+        LIMIT {top_n}
+    """)
+    
+    with spatial_join.local_engine.connect() as conn:
+        return pd.read_sql(density_sql, conn)
 
 
 def get_qgis_connection_info(config: Optional[SpatialJoinConfig] = None) -> dict:
