@@ -490,63 +490,27 @@ class ProductionSpatialJoin:
         
         # 保存到数据库
         if save_records:
-            try:
-                # 方法1：使用pandas to_sql，让其自动处理JSONB
-                save_df = pd.DataFrame(save_records)
-                with self.local_engine.connect() as conn:
-                    save_df.to_sql(
-                        self.config.analysis_results_table,
-                        conn,
-                        if_exists='append',
-                        index=False,
-                        method='multi'
-                    )
-                logger.info(f"成功保存 {len(save_records)} 条分析结果到 {self.config.analysis_results_table}")
-                
-            except Exception as e:
-                # 方法2：如果pandas自动处理失败，使用手动SQL插入
-                logger.warning(f"pandas to_sql 失败，尝试手动插入: {e}")
-                self._manual_insert_records(save_records)
-                logger.info(f"手动插入成功保存 {len(save_records)} 条分析结果到 {self.config.analysis_results_table}")
+            # 在保存前处理analysis_params字段
+            import json
+            for record in save_records:
+                if record.get('analysis_params'):
+                    record['analysis_params'] = json.dumps(record['analysis_params'])
+                else:
+                    record['analysis_params'] = None
+            
+            save_df = pd.DataFrame(save_records)
+            with self.local_engine.connect() as conn:
+                save_df.to_sql(
+                    self.config.analysis_results_table,
+                    conn,
+                    if_exists='append',
+                    index=False,
+                    method='multi'
+                )
+            
+            logger.info(f"成功保存 {len(save_records)} 条分析结果到 {self.config.analysis_results_table}")
         
         return analysis_id
-    
-    def _manual_insert_records(self, save_records: List[dict]):
-        """手动插入记录，处理JSONB类型"""
-        import json
-        
-        with self.local_engine.connect() as conn:
-            for record in save_records:
-                # 序列化analysis_params为JSON字符串，并在SQL中明确转换为JSONB
-                analysis_params_json = json.dumps(record['analysis_params']) if record['analysis_params'] else None
-                
-                insert_sql = text(f"""
-                    INSERT INTO {self.config.analysis_results_table} 
-                    (analysis_id, analysis_type, city_filter, group_dimension, group_value, 
-                     group_value_name, intersection_count, unique_intersections, unique_scenes, 
-                     bbox_count, analysis_params, geometry)
-                    VALUES (:analysis_id, :analysis_type, :city_filter, :group_dimension, :group_value,
-                            :group_value_name, :intersection_count, :unique_intersections, :unique_scenes,
-                            :bbox_count, :analysis_params::jsonb, 
-                            CASE WHEN :geometry IS NOT NULL THEN ST_GeomFromText(:geometry, 4326) ELSE NULL END)
-                """)
-                
-                conn.execute(insert_sql, {
-                    'analysis_id': record['analysis_id'],
-                    'analysis_type': record['analysis_type'],
-                    'city_filter': record['city_filter'],
-                    'group_dimension': record['group_dimension'],
-                    'group_value': record['group_value'],
-                    'group_value_name': record['group_value_name'],
-                    'intersection_count': record['intersection_count'],
-                    'unique_intersections': record['unique_intersections'],
-                    'unique_scenes': record['unique_scenes'],
-                    'bbox_count': record['bbox_count'],
-                    'analysis_params': analysis_params_json,
-                    'geometry': record.get('geometry')
-                })
-            
-            conn.commit()
     
     def _get_analysis_geometry(
         self, 
