@@ -58,6 +58,9 @@ class SpatialJoinConfig:
     # 新增：预存表配置
     intersection_table: str = "bbox_intersection_cache"  # 预存相交关系的表名
     enable_cache_table: bool = True  # 是否启用缓存表
+    # 分析结果表配置
+    analysis_results_table: str = "spatial_analysis_results"  # 分析结果表名
+    enable_results_export: bool = True  # 是否启用结果导出
 
 class ProductionSpatialJoin:
     """
@@ -88,6 +91,10 @@ class ProductionSpatialJoin:
         # 初始化缓存表
         if self.config.enable_cache_table:
             self._init_cache_table()
+        
+        # 初始化分析结果表
+        if self.config.enable_results_export:
+            self._init_results_table()
     
     def _init_cache_table(self):
         """初始化缓存表"""
@@ -130,6 +137,56 @@ class ProductionSpatialJoin:
             logger.info(f"缓存表 {self.config.intersection_table} 初始化完成")
         except Exception as e:
             logger.warning(f"缓存表初始化失败: {e}")
+            logger.warning("请检查local_pg数据库连接和权限")
+    
+    def _init_results_table(self):
+        """初始化分析结果表，专为QGIS可视化设计"""
+        # 创建分析结果表
+        create_table_sql = text(f"""
+            CREATE TABLE IF NOT EXISTS {self.config.analysis_results_table} (
+                id SERIAL PRIMARY KEY,
+                analysis_id VARCHAR(100) NOT NULL,
+                analysis_type VARCHAR(50) NOT NULL,
+                analysis_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                city_filter VARCHAR(100),
+                group_dimension VARCHAR(50),
+                group_value VARCHAR(200),
+                group_value_name VARCHAR(200),
+                intersection_count INTEGER,
+                unique_intersections INTEGER,
+                unique_scenes INTEGER,
+                bbox_count INTEGER,
+                analysis_params JSONB,
+                geometry GEOMETRY(GEOMETRY, 4326),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # 创建索引
+        create_indexes_sql = [
+            text(f"CREATE INDEX IF NOT EXISTS idx_analysis_id ON {self.config.analysis_results_table} (analysis_id)"),
+            text(f"CREATE INDEX IF NOT EXISTS idx_analysis_type ON {self.config.analysis_results_table} (analysis_type)"),
+            text(f"CREATE INDEX IF NOT EXISTS idx_group_dimension ON {self.config.analysis_results_table} (group_dimension)"),
+            text(f"CREATE INDEX IF NOT EXISTS idx_city_filter_results ON {self.config.analysis_results_table} (city_filter)"),
+            text(f"CREATE INDEX IF NOT EXISTS idx_geometry_results ON {self.config.analysis_results_table} USING GIST (geometry)")
+        ]
+        
+        try:
+            with self.local_engine.connect() as conn:
+                # 创建表
+                conn.execute(create_table_sql)
+                
+                # 创建索引
+                for index_sql in create_indexes_sql:
+                    try:
+                        conn.execute(index_sql)
+                    except Exception as idx_e:
+                        logger.warning(f"结果表索引创建失败: {idx_e}")
+                
+                conn.commit()
+            logger.info(f"分析结果表 {self.config.analysis_results_table} 初始化完成")
+        except Exception as e:
+            logger.warning(f"分析结果表初始化失败: {e}")
             logger.warning("请检查local_pg数据库连接和权限")
     
     def build_intersection_cache(
@@ -336,6 +393,152 @@ class ProductionSpatialJoin:
         
         with self.local_engine.connect() as conn:
             return pd.read_sql(analysis_sql, conn)
+    
+    def save_analysis_to_db(
+        self,
+        analysis_result: pd.DataFrame,
+        analysis_type: str,
+        analysis_id: Optional[str] = None,
+        city_filter: Optional[str] = None,
+        group_dimension: Optional[str] = None,
+        analysis_params: Optional[dict] = None,
+        include_geometry: bool = True
+    ) -> str:
+        """
+        将分析结果保存到数据库表中，方便QGIS可视化
+        
+        Args:
+            analysis_result: 分析结果DataFrame
+            analysis_type: 分析类型 ('intersection_type', 'scene_analysis', 'hotspot', etc.)
+            analysis_id: 分析ID（可选，自动生成）
+            city_filter: 城市过滤条件
+            group_dimension: 分组维度
+            analysis_params: 分析参数
+            include_geometry: 是否包含几何信息
+            
+        Returns:
+            生成的analysis_id
+        """
+        if not self.config.enable_results_export:
+            raise ValueError("结果导出未启用，请在配置中设置enable_results_export=True")
+        
+        if analysis_result.empty:
+            logger.warning("分析结果为空，跳过保存")
+            return ""
+        
+        # 生成分析ID
+        if not analysis_id:
+            from datetime import datetime
+            analysis_id = f"{analysis_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        logger.info(f"保存分析结果到数据库: {analysis_id}")
+        
+        # 准备保存的数据
+        save_records = []
+        
+        for _, row in analysis_result.iterrows():
+            record = {
+                'analysis_id': analysis_id,
+                'analysis_type': analysis_type,
+                'city_filter': city_filter,
+                'group_dimension': group_dimension,
+                'analysis_params': analysis_params
+            }
+            
+            # 处理分组值和统计信息
+            if group_dimension:
+                group_value = row.get(group_dimension, 'unknown')
+                record['group_value'] = str(group_value)
+                
+                # 添加可读名称
+                if group_dimension == 'intersection_type':
+                    record['group_value_name'] = INTERSECTION_TYPE_MAPPING.get(group_value, 'Unknown')
+                elif group_dimension == 'intersection_subtype':
+                    record['group_value_name'] = INTERSECTION_SUBTYPE_MAPPING.get(group_value, 'Unknown')
+                else:
+                    record['group_value_name'] = str(group_value)
+            else:
+                record['group_value'] = 'overall'
+                record['group_value_name'] = 'Overall Analysis'
+            
+            # 统计信息
+            record['intersection_count'] = row.get('intersection_count', 0)
+            record['unique_intersections'] = row.get('unique_intersections', 0)
+            record['unique_scenes'] = row.get('unique_scenes', 0)
+            record['bbox_count'] = analysis_params.get('bbox_count', 0) if analysis_params else 0
+            
+            # 几何信息（如果需要）
+            if include_geometry and group_dimension:
+                geometry_wkt = self._get_analysis_geometry(
+                    group_dimension, 
+                    record['group_value'], 
+                    city_filter
+                )
+                record['geometry'] = geometry_wkt
+            
+            save_records.append(record)
+        
+        # 保存到数据库
+        if save_records:
+            save_df = pd.DataFrame(save_records)
+            with self.local_engine.connect() as conn:
+                save_df.to_sql(
+                    self.config.analysis_results_table,
+                    conn,
+                    if_exists='append',
+                    index=False,
+                    method='multi'
+                )
+            
+            logger.info(f"成功保存 {len(save_records)} 条分析结果到 {self.config.analysis_results_table}")
+        
+        return analysis_id
+    
+    def _get_analysis_geometry(
+        self, 
+        group_dimension: str, 
+        group_value: str, 
+        city_filter: Optional[str] = None
+    ) -> Optional[str]:
+        """获取分析组的代表性几何信息"""
+        try:
+            if group_dimension == 'intersection_type':
+                # 获取该类型路口的联合几何
+                where_conditions = [f"intersectiontype = {group_value}"]
+                if city_filter:
+                    where_conditions.append(f"city_id = '{city_filter}'")
+                
+                where_clause = " AND ".join(where_conditions)
+                
+                geom_sql = text(f"""
+                    SELECT ST_AsText(ST_Union(ST_GeomFromText(intersection_geometry, 4326))) as geometry
+                    FROM {self.config.intersection_table}
+                    WHERE {where_clause}
+                    LIMIT 100
+                """)
+                
+                with self.local_engine.connect() as conn:
+                    result = conn.execute(geom_sql).fetchone()
+                    return result[0] if result and result[0] else None
+            
+            elif group_dimension == 'scene_token':
+                # 获取场景的bbox几何
+                bbox_sql = text(f"""
+                    SELECT ST_AsText(geometry) as geometry
+                    FROM clips_bbox
+                    WHERE scene_token = '{group_value}'
+                    LIMIT 1
+                """)
+                
+                with self.local_engine.connect() as conn:
+                    result = conn.execute(bbox_sql).fetchone()
+                    return result[0] if result and result[0] else None
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"获取几何信息失败: {e}")
+            return None
     
     def get_intersection_details(
         self,
@@ -766,6 +969,104 @@ def get_intersection_types_summary(config: Optional[SpatialJoinConfig] = None) -
     except Exception as e:
         logger.error(f"获取路口类型失败: {e}")
         return pd.DataFrame({'error': [str(e)]})
+
+
+def export_analysis_to_qgis(
+    analysis_type: str = "intersection_type",
+    city_filter: Optional[str] = None,
+    group_by: Optional[List[str]] = None,
+    analysis_id: Optional[str] = None,
+    config: Optional[SpatialJoinConfig] = None,
+    include_geometry: bool = True
+) -> str:
+    """
+    执行分析并导出结果到数据库，方便QGIS可视化
+    
+    Args:
+        analysis_type: 分析类型
+        city_filter: 城市过滤
+        group_by: 分组字段
+        analysis_id: 自定义分析ID
+        config: 配置
+        include_geometry: 是否包含几何信息
+        
+    Returns:
+        生成的analysis_id
+    """
+    spatial_join = ProductionSpatialJoin(config)
+    
+    # 执行分析
+    if not group_by:
+        if analysis_type == "intersection_type":
+            group_by = ["intersection_type"]
+        elif analysis_type == "intersection_subtype":
+            group_by = ["intersection_subtype"]
+        elif analysis_type == "scene_analysis":
+            group_by = ["scene_token"]
+        elif analysis_type == "city_analysis":
+            group_by = ["city_id"] 
+        else:
+            group_by = []
+    
+    result = spatial_join.analyze_intersections(
+        city_filter=city_filter,
+        group_by=group_by
+    )
+    
+    # 保存到数据库
+    analysis_params = {
+        'analysis_type': analysis_type,
+        'city_filter': city_filter,
+        'group_by': group_by,
+        'bbox_count': 0  # 从缓存中无法直接获取
+    }
+    
+    group_dimension = group_by[0] if group_by else None
+    
+    return spatial_join.save_analysis_to_db(
+        result,
+        analysis_type,
+        analysis_id,
+        city_filter,
+        group_dimension,
+        analysis_params,
+        include_geometry
+    )
+
+
+def get_qgis_connection_info(config: Optional[SpatialJoinConfig] = None) -> dict:
+    """
+    获取QGIS连接信息
+    
+    Returns:
+        QGIS连接配置字典
+    """
+    if not config:
+        config = SpatialJoinConfig()
+    
+    # 解析连接字符串
+    import re
+    pattern = r'postgresql\+psycopg://([^:]+):([^@]+)@([^:]+):(\d+)/(.+)'
+    match = re.match(pattern, config.local_dsn)
+    
+    if match:
+        username, password, host, port, database = match.groups()
+        return {
+            'host': host,
+            'port': int(port),
+            'database': database,
+            'username': username,
+            'password': password,
+            'results_table': config.analysis_results_table,
+            'cache_table': config.intersection_table,
+            'connection_string': f"host={host} port={port} dbname={database} user={username} password={password}",
+            'qgis_uri': f"host={host} port={port} dbname={database} user={username} password={password} sslmode=disable key='id' srid=4326 type=GEOMETRY table=\"{config.analysis_results_table}\" (geometry) sql="
+        }
+    else:
+        return {
+            'error': 'Unable to parse connection string',
+            'dsn': config.local_dsn
+        }
 
 
 if __name__ == "__main__":

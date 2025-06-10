@@ -27,7 +27,9 @@ from src.spdatalab.fusion.spatial_join_production import (
     analyze_cached_intersections,
     get_available_cities,
     get_intersection_types_summary,
-    explain_intersection_types
+    explain_intersection_types,
+    export_analysis_to_qgis,
+    get_qgis_connection_info
 )
 
 # 设置日志
@@ -268,6 +270,44 @@ def demo_cache_workflow(sample_city=None):
         print(f"❌ 详细信息获取失败: {e}")
     
     print("🎉 分析演示完成！")
+    
+    # 7. 导出结果到数据库供QGIS使用
+    print(f"\n📊 第7步：导出分析结果到数据库")
+    print("-" * 40)
+    
+    try:
+        # 导出路口类型分析
+        analysis_id1 = export_analysis_to_qgis(
+            analysis_type="intersection_type",
+            city_filter=city,
+            include_geometry=True
+        )
+        print(f"✅ 路口类型分析已导出: {analysis_id1}")
+        
+        # 导出路口子类型分析
+        analysis_id2 = export_analysis_to_qgis(
+            analysis_type="intersection_subtype", 
+            city_filter=city,
+            include_geometry=True
+        )
+        print(f"✅ 路口子类型分析已导出: {analysis_id2}")
+        
+        # 显示QGIS连接信息
+        print(f"\n🔗 QGIS连接信息:")
+        conn_info = get_qgis_connection_info()
+        if 'error' not in conn_info:
+            print(f"主机: {conn_info['host']}:{conn_info['port']}")
+            print(f"数据库: {conn_info['database']}")
+            print(f"用户名: {conn_info['username']}")
+            print(f"分析结果表: {conn_info['results_table']}")
+            print(f"缓存表: {conn_info['cache_table']}")
+            print(f"\n📝 QGIS连接字符串:")
+            print(conn_info['connection_string'])
+        else:
+            print(f"❌ 连接信息解析失败: {conn_info}")
+        
+    except Exception as e:
+        print(f"❌ 导出到数据库失败: {e}")
 
 
 def demo_performance_comparison():
