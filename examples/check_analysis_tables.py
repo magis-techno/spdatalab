@@ -137,17 +137,44 @@ def check_sample_data():
     
     try:
         with engine.connect() as conn:
+            # 先做一个简单的查询测试
+            try:
+                simple_sql = text(f"SELECT COUNT(*) FROM {config.analysis_results_table}")
+                count = conn.execute(simple_sql).fetchone()[0]
+                print(f"   表记录总数: {count}")
+                
+                if count == 0:
+                    print("❌ 表中没有数据")
+                    return False
+            except Exception as e:
+                print(f"❌ 无法查询表: {e}")
+                return False
+            
             # 首先检查字段是否存在
             columns_sql = text(f"""
                 SELECT column_name FROM information_schema.columns
                 WHERE table_name = '{config.analysis_results_table}'
+                ORDER BY ordinal_position
             """)
-            columns = [row[0] for row in conn.execute(columns_sql).fetchall()]
+            columns_result = conn.execute(columns_sql).fetchall()
+            columns = [row[0] for row in columns_result]
+            
+            print(f"   表字段: {columns}")
+            
+            if not columns:
+                print("❌ 表中没有字段或表不存在")
+                return False
             
             # 构建查询，只使用存在的字段
-            select_fields = ['analysis_id', 'analysis_type', 'group_value_name', 'intersection_count']
-            select_fields = [f for f in select_fields if f in columns]
+            select_fields = []
             
+            # 按优先级添加字段
+            priority_fields = ['analysis_id', 'analysis_type', 'group_value_name', 'intersection_count']
+            for field in priority_fields:
+                if field in columns:
+                    select_fields.append(field)
+            
+            # 添加几何检查
             if 'geometry' in columns:
                 select_fields.append("""
                     CASE 
@@ -156,7 +183,19 @@ def check_sample_data():
                     END as has_geometry
                 """)
             
-            order_field = 'created_at' if 'created_at' in columns else 'id'
+            # 如果没有常用字段，就选择前几个字段
+            if not select_fields:
+                select_fields = columns[:5]  # 取前5个字段
+            
+            # 确定排序字段
+            order_field = None
+            for possible_order in ['created_at', 'id', columns[0] if columns else 'analysis_id']:
+                if possible_order in columns:
+                    order_field = possible_order
+                    break
+            
+            if not order_field:
+                order_field = columns[0] if columns else 'analysis_id'
             
             sample_sql = text(f"""
                 SELECT {', '.join(select_fields)}
