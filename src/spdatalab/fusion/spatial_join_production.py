@@ -249,6 +249,13 @@ class ProductionSpatialJoin:
         if not self.config.enable_cache_table:
             raise ValueError("缓存表未启用，请使用实时查询模式")
         
+        # 列名映射：用户友好名称 -> 数据库实际列名
+        column_mapping = {
+            'intersection_type': 'intersectiontype',
+            'city_id': 'city_id',
+            'scene_token': 'scene_token'
+        }
+        
         # 构建查询条件
         where_conditions = []
         
@@ -265,12 +272,27 @@ class ProductionSpatialJoin:
         
         where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
         
-        # 构建分组字段
+        # 构建分组字段，处理列名映射
         if group_by:
-            group_fields = ", ".join(group_by)
-            select_fields = f"{group_fields}, COUNT(*) as intersection_count, COUNT(DISTINCT intersection_id) as unique_intersections"
-            group_clause = f"GROUP BY {group_fields}"
-            order_clause = f"ORDER BY {group_fields}"
+            # 映射用户友好的列名到实际的数据库列名
+            mapped_group_fields = []
+            display_group_fields = []
+            
+            for field in group_by:
+                db_field = column_mapping.get(field, field)
+                mapped_group_fields.append(db_field)
+                
+                # 为intersection_type添加别名以保持用户友好的列名
+                if field == 'intersection_type':
+                    display_group_fields.append(f"{db_field} as intersection_type")
+                else:
+                    display_group_fields.append(db_field)
+            
+            group_fields_sql = ", ".join(mapped_group_fields)
+            display_fields_sql = ", ".join(display_group_fields)
+            select_fields = f"{display_fields_sql}, COUNT(*) as intersection_count, COUNT(DISTINCT intersection_id) as unique_intersections"
+            group_clause = f"GROUP BY {group_fields_sql}"
+            order_clause = f"ORDER BY {group_fields_sql}"
         else:
             select_fields = "COUNT(*) as total_intersections, COUNT(DISTINCT intersection_id) as unique_intersections, COUNT(DISTINCT scene_token) as unique_scenes"
             group_clause = ""
@@ -333,7 +355,7 @@ class ProductionSpatialJoin:
                 scene_token,
                 city_id,
                 intersection_id,
-                intersectiontype,
+                intersectiontype as intersection_type,
                 intersection_geometry,
                 created_at
             FROM {self.config.intersection_table}
