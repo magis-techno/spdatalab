@@ -529,7 +529,7 @@ class ProductionSpatialJoin:
         
         # 保存到数据库
         if save_records:
-            # 在保存前处理analysis_params字段
+            # 在保存前处理analysis_params字段和几何字段
             import json
             for record in save_records:
                 if record.get('analysis_params'):
@@ -537,19 +537,76 @@ class ProductionSpatialJoin:
                 else:
                     record['analysis_params'] = None
             
-            save_df = pd.DataFrame(save_records)
-            with self.local_engine.connect() as conn:
-                save_df.to_sql(
-                    self.config.analysis_results_table,
-                    conn,
-                    if_exists='append',
-                    index=False,
-                    method='multi'
-                )
+            # 检查geometry字段类型并相应处理
+            geometry_is_postgis = self._check_geometry_field_type()
+            
+            if geometry_is_postgis:
+                # 使用PostGIS几何类型 - 需要特殊处理
+                self._save_with_postgis_geometry(save_records, analysis_id)
+            else:
+                # 使用TEXT类型 - 直接保存
+                save_df = pd.DataFrame(save_records)
+                with self.local_engine.connect() as conn:
+                    save_df.to_sql(
+                        self.config.analysis_results_table,
+                        conn,
+                        if_exists='append',
+                        index=False,
+                        method='multi'
+                    )
             
             logger.info(f"成功保存 {len(save_records)} 条分析结果到 {self.config.analysis_results_table}")
         
         return analysis_id
+    
+    def _check_geometry_field_type(self) -> bool:
+        """检查geometry字段是否为PostGIS类型"""
+        try:
+            with self.local_engine.connect() as conn:
+                check_sql = text(f"""
+                    SELECT udt_name
+                    FROM information_schema.columns
+                    WHERE table_name = '{self.config.analysis_results_table}'
+                    AND column_name = 'geometry';
+                """)
+                result = conn.execute(check_sql).fetchone()
+                return result and result[0] == 'geometry'
+        except Exception:
+            return False
+    
+    def _save_with_postgis_geometry(self, save_records: List[dict], analysis_id: str):
+        """使用PostGIS几何类型保存数据"""
+        with self.local_engine.connect() as conn:
+            for record in save_records:
+                # 准备插入语句
+                geometry_wkt = record.pop('geometry', None)
+                
+                # 构建字段列表和值列表
+                fields = list(record.keys())
+                values = list(record.values())
+                
+                # 添加几何字段
+                if geometry_wkt:
+                    fields.append('geometry')
+                    # 使用ST_GeomFromText转换WKT为PostGIS几何对象
+                    geometry_sql = f"ST_GeomFromText('{geometry_wkt}', 4326)"
+                else:
+                    fields.append('geometry')
+                    geometry_sql = "NULL"
+                
+                # 构建SQL语句
+                field_names = ', '.join(fields)
+                placeholders = ', '.join(['%s'] * len(values)) + f', {geometry_sql}'
+                
+                insert_sql = text(f"""
+                    INSERT INTO {self.config.analysis_results_table} ({field_names})
+                    VALUES ({placeholders})
+                """)
+                
+                # 执行插入
+                conn.execute(insert_sql, values)
+            
+            conn.commit()
     
     def _get_analysis_geometry(
         self, 
