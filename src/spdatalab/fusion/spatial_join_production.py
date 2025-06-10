@@ -177,7 +177,7 @@ class ProductionSpatialJoin:
                 unique_scenes INTEGER,
                 bbox_count INTEGER,
                 analysis_params TEXT,
-                geometry GEOMETRY(GEOMETRY, 4326),
+                geometry TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -505,6 +505,8 @@ class ProductionSpatialJoin:
                     city_filter
                 )
                 record['geometry'] = geometry_wkt
+            else:
+                record['geometry'] = None
             
             save_records.append(record)
         
@@ -541,7 +543,7 @@ class ProductionSpatialJoin:
         """获取分析组的代表性几何信息"""
         try:
             if group_dimension == 'intersection_type':
-                # 获取该类型路口的联合几何
+                # 获取该类型路口的简化代表性几何 - 取第一个路口的几何
                 where_conditions = [f"intersectiontype = {group_value}"]
                 if city_filter:
                     where_conditions.append(f"city_id = '{city_filter}'")
@@ -549,10 +551,29 @@ class ProductionSpatialJoin:
                 where_clause = " AND ".join(where_conditions)
                 
                 geom_sql = text(f"""
-                    SELECT ST_AsText(ST_Union(ST_GeomFromText(intersection_geometry, 4326))) as geometry
+                    SELECT intersection_geometry
                     FROM {self.config.intersection_table}
                     WHERE {where_clause}
-                    LIMIT 100
+                    LIMIT 1
+                """)
+                
+                with self.local_engine.connect() as conn:
+                    result = conn.execute(geom_sql).fetchone()
+                    return result[0] if result and result[0] else None
+            
+            elif group_dimension == 'intersection_subtype':
+                # 获取该子类型路口的代表性几何
+                where_conditions = [f"intersectionsubtype = {group_value}"]
+                if city_filter:
+                    where_conditions.append(f"city_id = '{city_filter}'")
+                
+                where_clause = " AND ".join(where_conditions)
+                
+                geom_sql = text(f"""
+                    SELECT intersection_geometry
+                    FROM {self.config.intersection_table}
+                    WHERE {where_clause}
+                    LIMIT 1
                 """)
                 
                 with self.local_engine.connect() as conn:
