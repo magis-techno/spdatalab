@@ -229,13 +229,32 @@ def check_geometry_data():
     
     try:
         with engine.connect() as conn:
-            geom_sql = text(f"""
-                SELECT 
-                    COUNT(*) as total_records,
-                    COUNT(geometry) as records_with_geometry,
-                    COUNT(CASE WHEN geometry IS NOT NULL AND LENGTH(geometry) > 10 THEN 1 END) as valid_geometry
-                FROM {config.analysis_results_table}
+            # 检查geometry字段类型
+            geom_type_sql = text(f"""
+                SELECT udt_name FROM information_schema.columns
+                WHERE table_name = '{config.analysis_results_table}' AND column_name = 'geometry'
             """)
+            geom_type = conn.execute(geom_type_sql).fetchone()
+            is_postgis = geom_type and geom_type[0] == 'geometry'
+            
+            if is_postgis:
+                # PostGIS几何类型
+                geom_sql = text(f"""
+                    SELECT 
+                        COUNT(*) as total_records,
+                        COUNT(geometry) as records_with_geometry,
+                        COUNT(CASE WHEN geometry IS NOT NULL AND NOT ST_IsEmpty(geometry) THEN 1 END) as valid_geometry
+                    FROM {config.analysis_results_table}
+                """)
+            else:
+                # TEXT类型
+                geom_sql = text(f"""
+                    SELECT 
+                        COUNT(*) as total_records,
+                        COUNT(geometry) as records_with_geometry,
+                        COUNT(CASE WHEN geometry IS NOT NULL AND LENGTH(geometry) > 10 THEN 1 END) as valid_geometry
+                    FROM {config.analysis_results_table}
+                """)
             
             stats = conn.execute(geom_sql).fetchone()
             
@@ -246,16 +265,30 @@ def check_geometry_data():
             
             if stats[2] > 0:
                 # 显示一个几何样本
-                sample_geom_sql = text(f"""
-                    SELECT LEFT(geometry, 100) as geometry_sample
-                    FROM {config.analysis_results_table}
-                    WHERE geometry IS NOT NULL AND LENGTH(geometry) > 10
-                    LIMIT 1
-                """)
-                
-                sample = conn.execute(sample_geom_sql).fetchone()
-                if sample:
-                    print(f"   - 几何样本: {sample[0]}...")
+                if is_postgis:
+                    # PostGIS几何类型 - 转换为WKT显示
+                    sample_geom_sql = text(f"""
+                        SELECT LEFT(ST_AsText(geometry), 100) as geometry_sample,
+                               ST_GeometryType(geometry) as geom_type
+                        FROM {config.analysis_results_table}
+                        WHERE geometry IS NOT NULL AND NOT ST_IsEmpty(geometry)
+                        LIMIT 1
+                    """)
+                    sample = conn.execute(sample_geom_sql).fetchone()
+                    if sample:
+                        print(f"   - 几何类型: {sample[1]}")
+                        print(f"   - 几何样本: {sample[0]}...")
+                else:
+                    # TEXT类型
+                    sample_geom_sql = text(f"""
+                        SELECT LEFT(geometry, 100) as geometry_sample
+                        FROM {config.analysis_results_table}
+                        WHERE geometry IS NOT NULL AND LENGTH(geometry) > 10
+                        LIMIT 1
+                    """)
+                    sample = conn.execute(sample_geom_sql).fetchone()
+                    if sample:
+                        print(f"   - 几何样本: {sample[0]}...")
             
             return stats[2] > 0
                 
