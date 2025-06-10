@@ -137,19 +137,31 @@ def check_sample_data():
     
     try:
         with engine.connect() as conn:
-            sample_sql = text(f"""
-                SELECT 
-                    analysis_id,
-                    analysis_type,
-                    group_value_name,
-                    intersection_count,
+            # 首先检查字段是否存在
+            columns_sql = text(f"""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = '{config.analysis_results_table}'
+            """)
+            columns = [row[0] for row in conn.execute(columns_sql).fetchall()]
+            
+            # 构建查询，只使用存在的字段
+            select_fields = ['analysis_id', 'analysis_type', 'group_value_name', 'intersection_count']
+            select_fields = [f for f in select_fields if f in columns]
+            
+            if 'geometry' in columns:
+                select_fields.append("""
                     CASE 
                         WHEN geometry IS NOT NULL THEN 'YES'
                         ELSE 'NO'
-                    END as has_geometry,
-                    created_at
+                    END as has_geometry
+                """)
+            
+            order_field = 'created_at' if 'created_at' in columns else 'id'
+            
+            sample_sql = text(f"""
+                SELECT {', '.join(select_fields)}
                 FROM {config.analysis_results_table}
-                ORDER BY created_at DESC
+                ORDER BY {order_field} DESC
                 LIMIT 5
             """)
             
