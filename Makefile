@@ -31,6 +31,15 @@ clean-bbox-partitions:
 	  env PGPASSWORD=postgres \
 	  psql -h local_pg -U postgres -f sql/cleanup_partitioned.sql
 
+# 深度清理：删除所有用户schema和数据（危险操作）
+clean-deep:
+	@echo "警告：此操作将删除所有用户数据和schema！"
+	@echo "按Ctrl+C取消，或按Enter继续..."
+	@read dummy
+	docker compose -f docker/docker-compose.yml exec -T workspace \
+	  env PGPASSWORD=postgres \
+	  psql -h local_pg -U postgres -f sql/cleanup_deep.sql
+
 # 显示帮助信息
 help:
 	@echo "Spatial-Data-Lab 开发环境管理"
@@ -41,9 +50,10 @@ help:
 	@echo "  make init-db             - 初始化数据库（首次使用）"
 	@echo "  make clean-bbox          - 彻底清理clips_bbox表（包括所有分表）"
 	@echo "  make clean-bbox-partitions - 清理clips_bbox分表（保留主表）"
+	@echo "  make clean-deep          - 深度清理：删除所有用户schema（危险）"
 	@echo "  make psql                - 进入PostgreSQL命令行"
 	@echo ""
 	@echo "数据处理请使用命令行工具："
 	@echo "  spdatalab build-dataset-with-bbox [参数]"
 
-.PHONY: up down psql init-db clean-bbox clean-bbox-partitions help
+.PHONY: up down psql init-db clean-bbox clean-bbox-partitions clean-deep help
