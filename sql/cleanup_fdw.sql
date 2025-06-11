@@ -1,58 +1,118 @@
--- ==============================================================================
--- FDW清理脚本
--- ==============================================================================
--- 
--- 此脚本用于清理所有FDW相关的设置，包括外部表、用户映射和服务器连接
--- 
--- 使用方法：
--- psql -d postgres -f sql/cleanup_fdw.sql
--- ==============================================================================
+-- FDW 清理脚本
+-- 用途：清理所有Foreign Data Wrapper相关的连接和表
+-- 使用方法：make clean-fdw 或 直接运行此脚本
 
--- 删除外部表（如果存在）
+-- ===============================================
+-- 清理外部表
+-- ===============================================
+
+-- 清理trajectory相关的外部表
 DROP FOREIGN TABLE IF EXISTS public.ddi_data_points CASCADE;
+
+-- 清理map相关的外部表  
 DROP FOREIGN TABLE IF EXISTS public.intersections CASCADE;
 
--- 删除用户映射
-DROP USER MAPPING IF EXISTS FOR postgres SERVER traj_srv;
-DROP USER MAPPING IF EXISTS FOR postgres SERVER map_srv;
+-- ===============================================
+-- 清理用户映射
+-- ===============================================
 
--- 删除服务器连接
-DROP SERVER IF EXISTS traj_srv CASCADE;
-DROP SERVER IF EXISTS map_srv CASCADE;
-
--- 验证清理结果
+-- 清理trajectory服务器的用户映射
 DO $$
 BEGIN
-    -- 检查外部表是否已删除
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.tables 
-        WHERE table_schema = 'public' AND table_name = 'ddi_data_points'
+    IF EXISTS (
+        SELECT 1 FROM pg_user_mappings 
+        WHERE srvname = 'traj_srv' AND usename = 'postgres'
     ) THEN
-        RAISE NOTICE '✅ ddi_data_points 外部表已删除';
+        DROP USER MAPPING FOR postgres SERVER traj_srv;
+        RAISE NOTICE '✅ 已清理trajectory服务器用户映射';
     ELSE
-        RAISE WARNING '❌ ddi_data_points 外部表仍存在';
+        RAISE NOTICE '⚠️  trajectory服务器用户映射不存在';
     END IF;
+END $$;
 
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.tables 
-        WHERE table_schema = 'public' AND table_name = 'intersections'
+-- 清理map服务器的用户映射
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_user_mappings 
+        WHERE srvname = 'map_srv' AND usename = 'postgres'
     ) THEN
-        RAISE NOTICE '✅ intersections 外部表已删除';
+        DROP USER MAPPING FOR postgres SERVER map_srv;
+        RAISE NOTICE '✅ 已清理map服务器用户映射';
     ELSE
-        RAISE WARNING '❌ intersections 外部表仍存在';
+        RAISE NOTICE '⚠️  map服务器用户映射不存在';
     END IF;
+END $$;
 
-    -- 检查FDW服务器是否已删除
-    IF NOT EXISTS (
+-- ===============================================
+-- 清理服务器连接
+-- ===============================================
+
+-- 清理trajectory服务器连接
+DO $$
+BEGIN
+    IF EXISTS (
         SELECT 1 FROM pg_foreign_server 
-        WHERE srvname IN ('traj_srv', 'map_srv')
+        WHERE srvname = 'traj_srv'
     ) THEN
-        RAISE NOTICE '✅ 所有FDW服务器已删除';
+        DROP SERVER traj_srv CASCADE;
+        RAISE NOTICE '✅ 已清理trajectory服务器连接';
     ELSE
-        RAISE WARNING '❌ 仍有FDW服务器存在';
+        RAISE NOTICE '⚠️  trajectory服务器连接不存在';
     END IF;
+END $$;
 
-    RAISE NOTICE '==========================================';
-    RAISE NOTICE 'FDW清理完成！';
-    RAISE NOTICE '==========================================';
-END $$; 
+-- 清理map服务器连接
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_foreign_server 
+        WHERE srvname = 'map_srv'
+    ) THEN
+        DROP SERVER map_srv CASCADE;
+        RAISE NOTICE '✅ 已清理map服务器连接';
+    ELSE
+        RAISE NOTICE '⚠️  map服务器连接不存在';
+    END IF;
+END $$;
+
+-- ===============================================
+-- 验证清理结果
+-- ===============================================
+
+-- 检查剩余的外部服务器
+DO $$
+DECLARE
+    remaining_servers INTEGER;
+BEGIN
+    SELECT COUNT(*) INTO remaining_servers
+    FROM pg_foreign_server 
+    WHERE srvname IN ('traj_srv', 'map_srv');
+    
+    IF remaining_servers = 0 THEN
+        RAISE NOTICE '✅ 所有FDW服务器已清理完成';
+    ELSE
+        RAISE WARNING '⚠️  仍有 % 个FDW服务器未清理', remaining_servers;
+    END IF;
+END $$;
+
+-- 检查剩余的外部表
+DO $$
+DECLARE
+    remaining_tables INTEGER;
+BEGIN
+    SELECT COUNT(*) INTO remaining_tables
+    FROM pg_foreign_tables 
+    WHERE tablename IN ('ddi_data_points', 'intersections');
+    
+    IF remaining_tables = 0 THEN
+        RAISE NOTICE '✅ 所有FDW外部表已清理完成';
+    ELSE
+        RAISE WARNING '⚠️  仍有 % 个FDW外部表未清理', remaining_tables;
+    END IF;
+END $$;
+
+RAISE NOTICE '================================================';
+RAISE NOTICE 'FDW 清理完成';
+RAISE NOTICE '如需重新连接，请运行: make init-fdw';
+RAISE NOTICE '================================================'; 
