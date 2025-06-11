@@ -292,12 +292,18 @@ def create_table_if_not_exists(eng, table_name='clips_bbox'):
                 CREATE INDEX idx_{table_name}_scene_token ON {table_name}(scene_token);
             """)
             
-            # 执行所有SQL语句
+            # 执行SQL语句，需要分步提交以确保PostGIS函数能找到表
             conn.execute(create_sql)
+            conn.commit()  # 先提交表创建
+            
+            # 执行PostGIS相关操作
             conn.execute(add_geom_sql)
             conn.execute(constraint_sql)
+            conn.commit()  # 提交几何列和约束
+            
+            # 创建索引
             conn.execute(index_sql)
-            conn.commit()
+            conn.commit()  # 最后提交索引
             
             print(f"成功创建表 {table_name} 及相关索引")
             return True
@@ -597,12 +603,18 @@ def create_table_for_subdataset(eng, subdataset_name, base_table_name='clips_bbo
                 CREATE INDEX idx_{table_name}_scene_token ON {table_name}(scene_token);
             """)
             
-            # 执行所有SQL语句
+            # 执行SQL语句，需要分步提交以确保PostGIS函数能找到表
             conn.execute(create_sql)
+            conn.commit()  # 先提交表创建
+            
+            # 执行PostGIS相关操作
             conn.execute(add_geom_sql)
             conn.execute(constraint_sql)
+            conn.commit()  # 提交几何列和约束
+            
+            # 创建索引
             conn.execute(index_sql)
-            conn.commit()
+            conn.commit()  # 最后提交索引
             
             print(f"成功创建分表 {table_name} 及相关索引")
             return True, table_name
