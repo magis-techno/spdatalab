@@ -566,6 +566,8 @@ def get_table_name_for_subdataset(subdataset_name: str) -> str:
             available_for_main = max_main_length - len(timestamp_suffix)
             if available_for_main > 10:  # 确保主体部分至少有10个字符
                 truncated_main = main_part[:available_for_main]
+                # 确保主体部分不以下划线结尾，避免与时间戳前的下划线形成连续下划线
+                truncated_main = truncated_main.rstrip('_')
                 clean_name = truncated_main + timestamp_suffix
             else:
                 # 时间戳太长，直接截断整个名称
@@ -587,6 +589,17 @@ def get_table_name_for_subdataset(subdataset_name: str) -> str:
     # 最终安全检查
     if len(table_name) > 50:
         table_name = table_name[:50]
+    
+    # 最终清理：确保没有连续下划线和空段
+    table_name = re.sub(r'_+', '_', table_name)  # 合并连续下划线
+    table_name = table_name.strip('_')  # 去除首尾下划线
+    
+    # 清理空段
+    name_parts = table_name.split('_')
+    valid_parts = [part for part in name_parts if part.strip()]
+    if len(valid_parts) != len(name_parts):
+        print(f"警告: 最终清理了空的表名段，从 {len(name_parts)} 段减少到 {len(valid_parts)} 段")
+        table_name = '_'.join(valid_parts)
     
     # 最终验证表名合法性
     validation_result = validate_table_name(table_name)
