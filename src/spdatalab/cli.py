@@ -82,11 +82,18 @@ def build_dataset(index_file: str, dataset_name: str, description: str, output: 
 @click.option('--retry-failed', is_flag=True, help='只重试失败的数据')
 @click.option('--show-stats', is_flag=True, help='显示处理统计信息并退出')
 @click.option('--create-table', is_flag=True, default=True, help='是否创建表（如果不存在）')
-def process_bbox(input: str, batch: int, insert_batch: int, work_dir: str, retry_failed: bool, show_stats: bool, create_table: bool):
+@click.option('--use-partitioning', is_flag=True, help='使用分表模式处理（按子数据集分表存储）')
+@click.option('--create-unified-view', is_flag=True, default=True, help='分表模式下是否创建统一视图')
+@click.option('--maintain-view-only', is_flag=True, help='仅维护统一视图，不处理数据')
+def process_bbox(input: str, batch: int, insert_batch: int, work_dir: str, retry_failed: bool, show_stats: bool, create_table: bool, use_partitioning: bool, create_unified_view: bool, maintain_view_only: bool):
     """处理边界框数据。
     
     从数据集文件中加载场景ID，获取边界框信息并插入到PostGIS数据库中。
     支持JSON、Parquet和文本格式的数据集文件。
+    
+    支持两种模式：
+    1. 传统模式：插入到单表clips_bbox（默认）
+    2. 分表模式：按子数据集分表存储，可选择创建统一视图
     
     Args:
         input: 输入文件路径，支持JSON/Parquet/文本格式
@@ -96,38 +103,166 @@ def process_bbox(input: str, batch: int, insert_batch: int, work_dir: str, retry
         retry_failed: 是否只重试失败的数据
         show_stats: 是否显示统计信息并退出
         create_table: 是否创建表（如果不存在）
+        use_partitioning: 是否使用分表模式处理
+        create_unified_view: 分表模式下是否创建统一视图
+        maintain_view_only: 是否仅维护统一视图，不处理数据
     """
     setup_logging()
     
     try:
-        from .dataset.bbox import run as bbox_run
-        
-        if show_stats:
-            click.echo("显示处理统计信息功能暂未实现")
-            return
-        
-        click.echo(f"开始处理边界框数据:")
-        click.echo(f"  - 输入文件: {input}")
-        click.echo(f"  - 处理批次: {batch}")
-        click.echo(f"  - 插入批次: {insert_batch}")
-        if work_dir:
-            click.echo(f"  - 工作目录: {work_dir}")
-        if retry_failed:
-            click.echo(f"  - 重试模式: 仅处理失败的数据")
-        
-        bbox_run(
-            input_path=input,
-            batch=batch,
-            insert_batch=insert_batch,
-            work_dir=work_dir or "./bbox_import_logs",
-            retry_failed=retry_failed,
-            create_table=create_table
-        )
-        
-        click.echo("✅ 边界框处理完成")
+        # 根据模式选择不同的运行函数
+        if use_partitioning:
+            from .dataset.bbox import run_with_partitioning
+            
+            click.echo(f"🎯 开始分表模式处理边界框数据:")
+            click.echo(f"  - 输入文件: {input}")
+            click.echo(f"  - 处理批次: {batch}")
+            click.echo(f"  - 插入批次: {insert_batch}")
+            click.echo(f"  - 工作目录: {work_dir or './bbox_import_logs'}")
+            click.echo(f"  - 创建统一视图: {'是' if create_unified_view else '否'}")
+            click.echo(f"  - 仅维护视图: {'是' if maintain_view_only else '否'}")
+            
+            if show_stats:
+                click.echo("分表模式下显示统计信息功能暂未实现")
+                return
+            
+            run_with_partitioning(
+                input_path=input,
+                batch=batch,
+                insert_batch=insert_batch,
+                work_dir=work_dir or "./bbox_import_logs",
+                create_unified_view_flag=create_unified_view,
+                maintain_view_only=maintain_view_only
+            )
+            
+            click.echo("✅ 分表模式边界框处理完成")
+            
+        else:
+            from .dataset.bbox import run as bbox_run
+            
+            if show_stats:
+                click.echo("显示处理统计信息功能暂未实现")
+                return
+            
+            click.echo(f"📝 开始传统模式处理边界框数据:")
+            click.echo(f"  - 输入文件: {input}")
+            click.echo(f"  - 处理批次: {batch}")
+            click.echo(f"  - 插入批次: {insert_batch}")
+            if work_dir:
+                click.echo(f"  - 工作目录: {work_dir}")
+            if retry_failed:
+                click.echo(f"  - 重试模式: 仅处理失败的数据")
+            
+            bbox_run(
+                input_path=input,
+                batch=batch,
+                insert_batch=insert_batch,
+                work_dir=work_dir or "./bbox_import_logs",
+                retry_failed=retry_failed,
+                create_table=create_table
+            )
+            
+            click.echo("✅ 传统模式边界框处理完成")
         
     except Exception as e:
         logger.error(f"处理边界框失败: {str(e)}")
+        raise
+
+@cli.command()
+@click.option('--view-name', default='clips_bbox_unified', help='统一视图名称')
+def create_unified_view(view_name: str):
+    """创建或更新bbox分表的统一视图。
+    
+    自动发现所有bbox分表并创建统一视图，便于跨表查询。
+    
+    Args:
+        view_name: 统一视图名称
+    """
+    setup_logging()
+    
+    try:
+        from .dataset.bbox import create_unified_view as create_view_func
+        from sqlalchemy import create_engine
+        
+        # 这里需要导入数据库连接配置
+        LOCAL_DSN = "postgresql+psycopg://postgres:postgres@local_pg:5432/postgres"
+        eng = create_engine(LOCAL_DSN, future=True)
+        
+        click.echo(f"🔧 创建统一视图: {view_name}")
+        
+        success = create_view_func(eng, view_name)
+        
+        if success:
+            click.echo(f"✅ 统一视图 {view_name} 创建成功")
+        else:
+            click.echo(f"❌ 统一视图 {view_name} 创建失败")
+            
+    except Exception as e:
+        logger.error(f"创建统一视图失败: {str(e)}")
+        raise
+
+@cli.command()
+@click.option('--view-name', default='clips_bbox_unified', help='统一视图名称')
+def maintain_unified_view(view_name: str):
+    """维护bbox分表的统一视图。
+    
+    检查并更新统一视图以包含所有当前的分表。
+    
+    Args:
+        view_name: 统一视图名称
+    """
+    setup_logging()
+    
+    try:
+        from .dataset.bbox import maintain_unified_view as maintain_view_func
+        from sqlalchemy import create_engine
+        
+        # 这里需要导入数据库连接配置
+        LOCAL_DSN = "postgresql+psycopg://postgres:postgres@local_pg:5432/postgres"
+        eng = create_engine(LOCAL_DSN, future=True)
+        
+        click.echo(f"🔧 维护统一视图: {view_name}")
+        
+        success = maintain_view_func(eng, view_name)
+        
+        if success:
+            click.echo(f"✅ 统一视图 {view_name} 维护成功")
+        else:
+            click.echo(f"❌ 统一视图 {view_name} 维护失败")
+            
+    except Exception as e:
+        logger.error(f"维护统一视图失败: {str(e)}")
+        raise
+
+@cli.command()
+def list_bbox_tables():
+    """列出所有bbox相关的数据表。
+    
+    显示数据库中所有bbox分表的信息。
+    """
+    setup_logging()
+    
+    try:
+        from .dataset.bbox import list_bbox_tables as list_tables_func
+        from sqlalchemy import create_engine
+        
+        # 这里需要导入数据库连接配置
+        LOCAL_DSN = "postgresql+psycopg://postgres:postgres@local_pg:5432/postgres"
+        eng = create_engine(LOCAL_DSN, future=True)
+        
+        click.echo("📋 查询bbox数据表...")
+        
+        tables = list_tables_func(eng)
+        
+        if tables:
+            click.echo(f"找到 {len(tables)} 个bbox表:")
+            for i, table in enumerate(tables, 1):
+                click.echo(f"  {i:2d}. {table}")
+        else:
+            click.echo("没有找到任何bbox表")
+            
+    except Exception as e:
+        logger.error(f"列出bbox表失败: {str(e)}")
         raise
 
 @cli.command()

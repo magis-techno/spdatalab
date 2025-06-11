@@ -799,6 +799,390 @@ def batch_create_tables_for_subdatasets(eng, subdataset_names: List[str]) -> Dic
     print(f"批量创建完成: 成功 {success_count}/{len(subdataset_names)} 个分表")
     return table_mapping
 
+def list_bbox_tables(eng) -> List[str]:
+    """列出所有bbox相关的表
+    
+    Args:
+        eng: 数据库引擎
+        
+    Returns:
+        bbox表名列表
+    """
+    list_tables_sql = text("""
+        SELECT table_name 
+        FROM information_schema.tables 
+        WHERE table_schema = 'public' 
+        AND table_name LIKE 'clips_bbox%'
+        ORDER BY table_name;
+    """)
+    
+    try:
+        with eng.connect() as conn:
+            result = conn.execute(list_tables_sql)
+            tables = [row[0] for row in result.fetchall()]
+            return tables
+    except Exception as e:
+        print(f"列出bbox表失败: {str(e)}")
+        return []
+
+def create_unified_view(eng, view_name: str = 'clips_bbox_unified') -> bool:
+    """创建统一视图，聚合所有分表数据
+    
+    Args:
+        eng: 数据库引擎
+        view_name: 统一视图名称
+        
+    Returns:
+        创建是否成功
+    """
+    try:
+        # 获取所有bbox分表
+        bbox_tables = list_bbox_tables(eng)
+        if not bbox_tables:
+            print("没有找到任何bbox表，无法创建统一视图")
+            return False
+        
+        # 构建UNION ALL查询
+        union_parts = []
+        for table_name in bbox_tables:
+            # 提取子数据集名称（去掉clips_bbox_前缀）
+            subdataset_name = table_name.replace('clips_bbox_', '') if table_name.startswith('clips_bbox_') else table_name
+            
+            union_part = f"""
+            SELECT 
+                id,
+                scene_token,
+                data_name,
+                event_id,
+                city_id,
+                timestamp,
+                all_good,
+                geometry,
+                '{subdataset_name}' as subdataset_name,
+                '{table_name}' as source_table
+            FROM {table_name}
+            """
+            union_parts.append(union_part)
+        
+        # 组合完整的视图查询
+        view_query = "UNION ALL\n".join(union_parts)
+        
+        # 先删除现有视图（如果存在）
+        drop_view_sql = text(f"DROP VIEW IF EXISTS {view_name};")
+        
+        # 创建新视图
+        create_view_sql = text(f"""
+            CREATE OR REPLACE VIEW {view_name} AS
+            {view_query};
+        """)
+        
+        with eng.connect() as conn:
+            conn.execute(drop_view_sql)
+            conn.execute(create_view_sql)
+            conn.commit()
+        
+        print(f"成功创建统一视图 {view_name}，包含 {len(bbox_tables)} 个分表:")
+        for table in bbox_tables:
+            print(f"  - {table}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"创建统一视图失败: {str(e)}")
+        return False
+
+def maintain_unified_view(eng, view_name: str = 'clips_bbox_unified') -> bool:
+    """维护统一视图，确保包含所有当前的分表
+    
+    Args:
+        eng: 数据库引擎  
+        view_name: 统一视图名称
+        
+    Returns:
+        维护是否成功
+    """
+    try:
+        # 检查视图是否存在
+        check_view_sql = text(f"""
+            SELECT EXISTS (
+                SELECT FROM information_schema.views 
+                WHERE table_schema = 'public' 
+                AND table_name = '{view_name}'
+            );
+        """)
+        
+        with eng.connect() as conn:
+            result = conn.execute(check_view_sql)
+            view_exists = result.scalar()
+        
+        if not view_exists:
+            print(f"视图 {view_name} 不存在，将创建新视图")
+            return create_unified_view(eng, view_name)
+        else:
+            print(f"视图 {view_name} 已存在，重新创建以包含最新的分表")
+            return create_unified_view(eng, view_name)
+        
+    except Exception as e:
+        print(f"维护统一视图失败: {str(e)}")
+        return False
+
+def run_with_partitioning(input_path, batch=1000, insert_batch=1000, work_dir="./bbox_import_logs", 
+                         create_unified_view_flag=True, maintain_view_only=False):
+    """使用分表模式运行边界框处理
+    
+    Args:
+        input_path: 输入数据集文件路径
+        batch: 处理批次大小
+        insert_batch: 插入批次大小  
+        work_dir: 工作目录
+        create_unified_view_flag: 是否创建统一视图
+        maintain_view_only: 是否只维护视图（不处理数据）
+    """
+    global interrupted
+    
+    # 设置信号处理器
+    setup_signal_handlers()
+    
+    print(f"=== 分表模式处理开始 ===")
+    print(f"输入文件: {input_path}")
+    print(f"工作目录: {work_dir}")
+    print(f"批次大小: {batch}")
+    print(f"插入批次大小: {insert_batch}")
+    print(f"创建统一视图: {create_unified_view_flag}")
+    print(f"仅维护视图: {maintain_view_only}")
+    
+    eng = create_engine(LOCAL_DSN, future=True)
+    
+    # 如果只是维护视图
+    if maintain_view_only:
+        print("\n=== 维护统一视图模式 ===")
+        success = maintain_unified_view(eng)
+        if success:
+            print("✅ 统一视图维护完成")
+        else:
+            print("❌ 统一视图维护失败")
+        return
+    
+    try:
+        # 步骤1: 按子数据集分组场景
+        print("\n=== 步骤1: 分组场景数据 ===")
+        scene_groups = group_scenes_by_subdataset(input_path)
+        
+        if not scene_groups:
+            print("没有找到有效的场景分组数据")
+            return
+        
+        # 步骤2: 批量创建分表
+        print("\n=== 步骤2: 创建分表 ===")
+        table_mapping = batch_create_tables_for_subdatasets(eng, list(scene_groups.keys()))
+        
+        # 步骤3: 分别处理每个子数据集
+        print("\n=== 步骤3: 分表数据处理 ===")
+        total_processed = 0
+        total_inserted = 0
+        
+        for i, (subdataset_name, scene_ids) in enumerate(scene_groups.items(), 1):
+            if interrupted:
+                print(f"\n程序被中断，已处理 {i-1}/{len(scene_groups)} 个子数据集")
+                break
+                
+            table_name = table_mapping[subdataset_name]
+            print(f"\n[{i}/{len(scene_groups)}] 处理子数据集: {subdataset_name}")
+            print(f"  - 目标表: {table_name}")
+            print(f"  - 场景数: {len(scene_ids)}")
+            
+            # 为每个子数据集创建独立的进度跟踪器
+            sub_work_dir = f"{work_dir}/{subdataset_name}"
+            sub_tracker = LightweightProgressTracker(sub_work_dir)
+            
+            try:
+                # 获取需要处理的场景ID
+                remaining_scene_ids = sub_tracker.get_remaining_tokens(scene_ids)
+                
+                if not remaining_scene_ids:
+                    print(f"  - 子数据集 {subdataset_name} 所有场景已处理完成，跳过")
+                    continue
+                
+                print(f"  - 需要处理: {len(remaining_scene_ids)} 个场景")
+                
+                # 处理当前子数据集的数据
+                sub_processed, sub_inserted = process_subdataset_scenes(
+                    eng, remaining_scene_ids, table_name, batch, insert_batch, sub_tracker
+                )
+                
+                total_processed += sub_processed
+                total_inserted += sub_inserted
+                
+                print(f"  - 完成: 处理 {sub_processed} 个，插入 {sub_inserted} 条记录")
+                
+            except Exception as e:
+                print(f"  - 处理子数据集 {subdataset_name} 失败: {str(e)}")
+                continue
+        
+        # 步骤4: 创建统一视图（如果需要）
+        if create_unified_view_flag and not interrupted:
+            print("\n=== 步骤4: 创建统一视图 ===")
+            success = create_unified_view(eng)
+            if success:
+                print("✅ 统一视图创建完成")
+            else:
+                print("❌ 统一视图创建失败")
+        
+        # 输出最终统计
+        print(f"\n=== 分表处理完成 ===")
+        print(f"总计处理: {total_processed} 条记录")
+        print(f"总计插入: {total_inserted} 条记录")
+        print(f"处理子数据集: {len(scene_groups)} 个")
+        
+        if interrupted:
+            print("⚠️  处理被中断，部分数据可能未完成")
+        else:
+            print("✅ 分表处理全部成功完成")
+            
+    except KeyboardInterrupt:
+        print(f"\n程序被用户中断")
+        interrupted = True
+    except Exception as e:
+        print(f"\n分表处理遇到错误: {str(e)}")
+    finally:
+        print(f"\n日志和进度文件保存在: {work_dir}")
+
+def process_subdataset_scenes(eng, scene_ids, table_name, batch_size, insert_batch_size, tracker):
+    """处理单个子数据集的场景数据
+    
+    Args:
+        eng: 数据库引擎
+        scene_ids: 场景ID列表
+        table_name: 目标表名
+        batch_size: 处理批次大小
+        insert_batch_size: 插入批次大小
+        tracker: 进度跟踪器
+        
+    Returns:
+        (processed_count, inserted_count) 元组
+    """
+    processed_count = 0
+    inserted_count = 0
+    
+    try:
+        for batch_num, token_batch in enumerate(chunk(scene_ids, batch_size), 1):
+            # 检查中断信号
+            if interrupted:
+                print(f"    批次处理被中断，已处理 {batch_num-1} 个批次")
+                break
+            
+            print(f"    [批次 {batch_num}] 处理 {len(token_batch)} 个场景")
+            
+            # 过滤已处理的记录
+            existing_in_progress = tracker.check_tokens_exist(token_batch)
+            token_batch = [token for token in token_batch if token not in existing_in_progress]
+            
+            if not token_batch:
+                print(f"    [批次 {batch_num}] 所有数据已处理，跳过")
+                continue
+            
+            if existing_in_progress:
+                print(f"    [批次 {batch_num}] 跳过 {len(existing_in_progress)} 个已处理的记录")
+            
+            # 获取元数据
+            try:
+                meta = fetch_meta(token_batch)
+                if meta.empty:
+                    print(f"    [批次 {batch_num}] 没有找到元数据，跳过")
+                    for token in token_batch:
+                        tracker.save_failed_record(token, "无法获取元数据", batch_num, "fetch_meta")
+                    continue
+                
+                print(f"    [批次 {batch_num}] 获取到 {len(meta)} 条元数据")
+                
+            except Exception as e:
+                print(f"    [批次 {batch_num}] 获取元数据失败: {str(e)}")
+                for token in token_batch:
+                    tracker.save_failed_record(token, f"获取元数据异常: {str(e)}", batch_num, "fetch_meta")
+                continue
+            
+            # 检查中断信号
+            if interrupted:
+                break
+            
+            # 获取边界框和几何对象
+            try:
+                bbox_gdf = fetch_bbox_with_geometry(meta.data_name.tolist(), eng)
+                if bbox_gdf.empty:
+                    print(f"    [批次 {batch_num}] 没有找到边界框数据，跳过")
+                    for token in meta.scene_token:
+                        tracker.save_failed_record(token, "无法获取边界框数据", batch_num, "fetch_bbox")
+                    continue
+                
+                print(f"    [批次 {batch_num}] 获取到 {len(bbox_gdf)} 条边界框数据")
+                
+            except Exception as e:
+                print(f"    [批次 {batch_num}] 获取边界框失败: {str(e)}")
+                for token in meta.scene_token:
+                    tracker.save_failed_record(token, f"获取边界框异常: {str(e)}", batch_num, "fetch_bbox")
+                continue
+            
+            # 检查中断信号
+            if interrupted:
+                break
+            
+            # 合并数据
+            try:
+                merged = meta.merge(bbox_gdf, left_on='data_name', right_on='dataset_name', how='inner')
+                if merged.empty:
+                    print(f"    [批次 {batch_num}] 合并后数据为空，跳过")
+                    for token in meta.scene_token:
+                        tracker.save_failed_record(token, "元数据与边界框数据无法匹配", batch_num, "data_merge")
+                    continue
+                
+                print(f"    [批次 {batch_num}] 合并后得到 {len(merged)} 条记录")
+                
+                # 创建最终的GeoDataFrame
+                final_gdf = gpd.GeoDataFrame(
+                    merged[['scene_token', 'data_name', 'event_id', 'city_id', 'timestamp', 'all_good']], 
+                    geometry=merged['geometry'], 
+                    crs=4326
+                )
+                
+            except Exception as e:
+                print(f"    [批次 {batch_num}] 数据合并失败: {str(e)}")
+                for token in meta.scene_token:
+                    tracker.save_failed_record(token, f"数据合并异常: {str(e)}", batch_num, "data_merge")
+                continue
+            
+            # 检查中断信号
+            if interrupted:
+                break
+            
+            # 批量插入到指定表
+            try:
+                batch_inserted = batch_insert_to_postgis(
+                    final_gdf, eng, 
+                    table_name=table_name,  # 使用指定的分表名称
+                    batch_size=insert_batch_size, 
+                    tracker=tracker, 
+                    batch_num=batch_num
+                )
+                inserted_count += batch_inserted
+                processed_count += len(final_gdf)
+                
+                print(f"    [批次 {batch_num}] 完成，插入 {batch_inserted} 条记录到 {table_name}")
+                
+            except Exception as e:
+                print(f"    [批次 {batch_num}] 插入数据库失败: {str(e)}")
+                for token in final_gdf.scene_token:
+                    tracker.save_failed_record(token, f"批量插入异常: {str(e)}", batch_num, "batch_insert")
+                continue
+        
+        return processed_count, inserted_count
+        
+    except Exception as e:
+        print(f"    处理子数据集场景失败: {str(e)}")
+        return processed_count, inserted_count
+    finally:
+        # 保存进度和统计信息
+        tracker.finalize()
+
 def run(input_path, batch=1000, insert_batch=1000, create_table=False, retry_failed=False, work_dir="./bbox_import_logs", show_stats=False):
     """主运行函数
     
