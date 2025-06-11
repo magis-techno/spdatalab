@@ -850,14 +850,14 @@ def create_unified_view(eng, view_name: str = 'clips_bbox_unified') -> bool:
             
             union_part = f"""
             SELECT 
-                id,
-                scene_token,
-                data_name,
-                event_id,
-                city_id,
-                timestamp,
-                all_good,
-                geometry,
+                {table_name}.id,
+                {table_name}.scene_token,
+                {table_name}.data_name,
+                {table_name}.event_id,
+                {table_name}.city_id,
+                {table_name}.timestamp,
+                {table_name}.all_good,
+                {table_name}.geometry,
                 '{subdataset_name}' as subdataset_name,
                 '{table_name}' as source_table
             FROM {table_name}
@@ -889,6 +889,22 @@ def create_unified_view(eng, view_name: str = 'clips_bbox_unified') -> bool:
         
     except Exception as e:
         print(f"创建统一视图失败: {str(e)}")
+        
+        # 提供调试信息
+        try:
+            print(f"调试信息:")
+            print(f"  - 找到的表数量: {len(bbox_tables) if 'bbox_tables' in locals() else 'N/A'}")
+            if 'bbox_tables' in locals() and bbox_tables:
+                print(f"  - 表列表: {', '.join(bbox_tables)}")
+            
+            # 显示生成的查询（前100个字符）
+            if 'view_query' in locals():
+                query_preview = view_query[:200] + "..." if len(view_query) > 200 else view_query
+                print(f"  - 生成的查询预览: {query_preview}")
+                
+        except Exception as debug_e:
+            print(f"  - 无法显示调试信息: {str(debug_e)}")
+        
         return False
 
 def maintain_unified_view(eng, view_name: str = 'clips_bbox_unified') -> bool:
