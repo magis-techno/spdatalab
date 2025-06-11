@@ -11,7 +11,8 @@ from sqlalchemy import create_engine, text
 from src.spdatalab.dataset.bbox import (
     normalize_subdataset_name,
     get_table_name_for_subdataset,
-    create_table_for_subdataset
+    create_table_for_subdataset,
+    validate_table_name
 )
 
 # 数据库连接
@@ -25,7 +26,12 @@ def test_table_name_generation():
         "GOD_E2E_DDI_340023_340024_330004_lane_change_early_325197_sub_ddi_2773412e2e_2025_05_18_10_56_18",
         "GOD_E2E_very_long_dataset_name_that_might_cause_issues_sub_ddi_hash123e2e_2025_01_01_12_00_00",
         "GOD_E2E_short_name_2025_05_18_11_07_59",
-        "normal_short_name"
+        "normal_short_name",
+        # 新增：测试连续下划线问题
+        "GOD_E2E_dataset__with__double__underscores_2025_01_01_12_00_00",
+        "GOD_E2E_name___with___triple___underscores",
+        "dataset____multiple____underscores____problem",
+        "GOD_E2E_mixed__single_and__double___underscores_sub_ddi_hash_2025_05_18_10_56_18"
     ]
     
     for i, original_name in enumerate(test_cases, 1):
@@ -40,6 +46,13 @@ def test_table_name_generation():
         table_name = get_table_name_for_subdataset(original_name)
         print(f"   表名: {table_name}")
         print(f"   表名长度: {len(table_name)}")
+        
+        # 验证表名
+        validation = validate_table_name(table_name)
+        if validation['valid']:
+            print(f"   ✅ 表名验证通过")
+        else:
+            print(f"   ❌ 表名验证失败: {', '.join(validation['issues'])}")
 
 def test_single_table_creation(test_name):
     """测试单个表的创建"""

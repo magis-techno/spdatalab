@@ -532,8 +532,22 @@ def get_table_name_for_subdataset(subdataset_name: str) -> str:
     
     # 清理特殊字符，确保表名合法
     clean_name = re.sub(r'[^a-zA-Z0-9_]', '_', normalized_name)
-    clean_name = re.sub(r'_+', '_', clean_name)  # 多个下划线合并
+    
+    # 处理连续下划线问题
+    original_underscores = len(re.findall(r'_{2,}', clean_name))
+    clean_name = re.sub(r'_+', '_', clean_name)  # 多个下划线合并为一个
     clean_name = clean_name.strip('_')  # 去除首尾下划线
+    
+    if original_underscores > 0:
+        print(f"警告: 发现 {original_underscores} 处连续下划线，已自动合并")
+        
+    # 确保没有空的表名部分（由连续下划线导致）
+    name_parts = clean_name.split('_')
+    # 过滤掉空字符串部分
+    valid_parts = [part for part in name_parts if part.strip()]
+    if len(valid_parts) != len(name_parts):
+        print(f"警告: 清理了空的表名段，从 {len(name_parts)} 段减少到 {len(valid_parts)} 段")
+        clean_name = '_'.join(valid_parts)
     
     # 使用保守的长度限制，为PostGIS兼容性预留空间
     # clips_bbox_ = 12字符，所以主体部分限制在 50-12=38 字符
@@ -574,8 +588,52 @@ def get_table_name_for_subdataset(subdataset_name: str) -> str:
     if len(table_name) > 50:
         table_name = table_name[:50]
     
+    # 最终验证表名合法性
+    validation_result = validate_table_name(table_name)
+    if not validation_result['valid']:
+        print(f"警告: 表名验证失败: {validation_result['issues']}")
+    
     print(f"表名生成: '{subdataset_name}' -> '{table_name}' (长度: {len(table_name)})")
     return table_name
+
+def validate_table_name(table_name: str) -> dict:
+    """验证表名的合法性
+    
+    Args:
+        table_name: 要验证的表名
+        
+    Returns:
+        包含验证结果的字典
+    """
+    issues = []
+    
+    # 检查长度
+    if len(table_name) > 63:
+        issues.append(f"表名过长: {len(table_name)} > 63")
+    
+    # 检查字符
+    if not re.match(r'^[a-zA-Z][a-zA-Z0-9_]*$', table_name):
+        issues.append("表名包含非法字符或不以字母开头")
+    
+    # 检查连续下划线
+    if re.search(r'_{2,}', table_name):
+        issues.append("表名包含连续下划线")
+    
+    # 检查首尾下划线
+    if table_name.startswith('_') or table_name.endswith('_'):
+        issues.append("表名以下划线开头或结尾")
+    
+    # 检查空的段
+    parts = table_name.split('_')
+    empty_parts = [i for i, part in enumerate(parts) if not part.strip()]
+    if empty_parts:
+        issues.append(f"表名包含空段: 位置 {empty_parts}")
+    
+    return {
+        'valid': len(issues) == 0,
+        'issues': issues,
+        'length': len(table_name)
+    }
 
 def create_table_for_subdataset(eng, subdataset_name, base_table_name='clips_bbox'):
     """为特定子数据集创建分表"""
