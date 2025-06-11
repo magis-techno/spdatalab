@@ -35,6 +35,11 @@ clean-bbox:
 # FDW 远程数据库连接管理
 # ============================================================================
 
+# 调试FDW配置
+debug-fdw:
+	@echo "🔍 调试FDW配置..."
+	python debug_fdw_config.py
+
 # 设置FDW连接（需要先配置.env文件）
 setup-fdw:
 	@if [ ! -f .env ]; then \
@@ -50,7 +55,11 @@ setup-fdw:
 	  -v fdw_user=$(FDW_USER) \
 	  -v fdw_pwd=$(FDW_PASSWORD) \
 	  -v traj_host=$(REMOTE_TRAJ_HOST) \
+	  -v traj_port=$(REMOTE_TRAJ_PORT) \
+	  -v traj_db=$(REMOTE_TRAJ_DB) \
 	  -v map_host=$(REMOTE_MAP_HOST) \
+	  -v map_port=$(REMOTE_MAP_PORT) \
+	  -v map_db=$(REMOTE_MAP_DB) \
 	  -f sql/setup_fdw_with_params.sql
 
 # 清理FDW连接
@@ -175,6 +184,7 @@ help:
 	@echo "  make psql        - 进入PostgreSQL命令行"
 	@echo ""
 	@echo "🔗 FDW远程连接管理："
+	@echo "  make debug-fdw   - 调试FDW配置参数"
 	@echo "  make setup-fdw   - 设置FDW连接（需要先配置.env）"
 	@echo "  make cleanup-fdw - 清理FDW连接"
 	@echo "  make test-fdw    - 测试FDW连接"
@@ -197,6 +207,6 @@ help:
 	@echo "  3. 运行相应的make命令"
 
 .PHONY: up down psql init-db clean-bbox help \
-        setup-fdw cleanup-fdw test-fdw \
+        debug-fdw setup-fdw cleanup-fdw test-fdw \
         demo-sprint2 test-sprint2 test-sprint2-full cleanup-sprint2 \
         list-tables create-view maintain-view process-partitioned

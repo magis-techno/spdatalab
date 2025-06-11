@@ -28,8 +28,8 @@ DROP SERVER IF EXISTS traj_srv CASCADE;
 CREATE SERVER traj_srv FOREIGN DATA WRAPPER postgres_fdw
   OPTIONS (
     host 'REMOTE_TRAJ_HOST',           -- 替换为实际的轨迹数据库主机
-    dbname 'trajdb', 
-    port '5432',
+    dbname 'REMOTE_TRAJ_DB',           -- 替换为实际的轨迹数据库名称  
+    port 'REMOTE_TRAJ_PORT',           -- 替换为实际的轨迹数据库端口
     fetch_size '1000',                 -- 优化批量获取
     connect_timeout '10'               -- 连接超时设置
   );
@@ -55,8 +55,8 @@ DROP SERVER IF EXISTS map_srv CASCADE;
 CREATE SERVER map_srv FOREIGN DATA WRAPPER postgres_fdw
   OPTIONS (
     host 'REMOTE_MAP_HOST',            -- 替换为实际的地图数据库主机
-    dbname 'mapdb', 
-    port '5432',
+    dbname 'REMOTE_MAP_DB',            -- 替换为实际的地图数据库名称
+    port 'REMOTE_MAP_PORT',            -- 替换为实际的地图数据库端口
     fetch_size '1000',                 -- 优化批量获取
     connect_timeout '10'               -- 连接超时设置
   );

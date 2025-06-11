@@ -4,14 +4,17 @@
 -- 
 -- 使用方法：
 -- psql -d postgres -v fdw_user=username -v fdw_pwd=password \
---      -v traj_host=traj.example.com -v map_host=map.example.com \
+--      -v traj_host=traj.example.com -v traj_port=5432 \
+--      -v map_host=map.example.com -v map_port=5432 \
 --      -f sql/setup_fdw_with_params.sql
 -- 
 -- 或者在psql中设置变量后执行：
 -- \set fdw_user 'your_username'
 -- \set fdw_pwd 'your_password'  
 -- \set traj_host 'your_traj_host'
+-- \set traj_port '5432'
 -- \set map_host 'your_map_host'
+-- \set map_port '5432'
 -- \i sql/setup_fdw_with_params.sql
 -- ==============================================================================
 
@@ -21,7 +24,7 @@ CREATE EXTENSION IF NOT EXISTS postgres_fdw;
 -- 轨迹数据库FDW设置
 DROP SERVER IF EXISTS traj_srv CASCADE;
 CREATE SERVER traj_srv FOREIGN DATA WRAPPER postgres_fdw
-  OPTIONS (host :'traj_host', dbname 'trajdb', port '5432');
+  OPTIONS (host :'traj_host', dbname :'traj_db', port :'traj_port');
 
 CREATE USER MAPPING IF NOT EXISTS FOR postgres SERVER traj_srv
   OPTIONS (user :'fdw_user', password :'fdw_pwd');
@@ -33,7 +36,7 @@ IMPORT FOREIGN SCHEMA public
 -- 地图数据库FDW设置
 DROP SERVER IF EXISTS map_srv CASCADE;
 CREATE SERVER map_srv FOREIGN DATA WRAPPER postgres_fdw
-  OPTIONS (host :'map_host', dbname 'mapdb', port '5432');
+  OPTIONS (host :'map_host', dbname :'map_db', port :'map_port');
 
 CREATE USER MAPPING IF NOT EXISTS FOR postgres SERVER map_srv
   OPTIONS (user :'fdw_user', password :'fdw_pwd');
