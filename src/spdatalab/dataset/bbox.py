@@ -465,6 +465,74 @@ def batch_insert_to_postgis(gdf, eng, table_name='clips_bbox', batch_size=1000, 
     
     return inserted_rows
 
+def normalize_subdataset_name(subdataset_name: str) -> str:
+    """规范化子数据集名称
+    
+    规则：
+    1. 去掉开头的 "GOD_E2E_"
+    2. 如果有 "_sub_ddi_" 则截断到这里（不包含_sub_ddi_）
+    3. 但要保留结尾的时间戳格式 "_YYYY_MM_DD_HH_MM_SS"
+    
+    Args:
+        subdataset_name: 原始子数据集名称
+        
+    Returns:
+        规范化后的名称
+    """
+    original_name = subdataset_name
+    
+    # 1. 去掉开头的 GOD_E2E_
+    if subdataset_name.startswith("GOD_E2E_"):
+        subdataset_name = subdataset_name[8:]  # len("GOD_E2E_") = 8
+    
+    # 2. 查找时间戳模式（在处理_sub_ddi_之前先提取）
+    timestamp_pattern = r'(_\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2})$'
+    timestamp_match = re.search(timestamp_pattern, subdataset_name)
+    timestamp_suffix = timestamp_match.group(1) if timestamp_match else ""
+    
+    # 3. 处理 _sub_ddi_ 截断
+    sub_ddi_pos = subdataset_name.find("_sub_ddi_")
+    if sub_ddi_pos != -1:
+        # 截断到 _sub_ddi_ 之前
+        subdataset_name = subdataset_name[:sub_ddi_pos]
+        
+        # 如果截断后没有时间戳，但原来有时间戳，则需要添加回来
+        if timestamp_suffix and not re.search(timestamp_pattern, subdataset_name):
+            subdataset_name += timestamp_suffix
+    
+    # 4. 清理和验证结果
+    subdataset_name = subdataset_name.strip('_')
+    
+    # 确保名称不为空
+    if not subdataset_name:
+        subdataset_name = "unnamed_dataset"
+    
+    print(f"名称规范化: '{original_name}' -> '{subdataset_name}'")
+    return subdataset_name
+
+def get_table_name_for_subdataset(subdataset_name: str) -> str:
+    """为子数据集生成合法的PostgreSQL表名"""
+    # 先规范化名称
+    normalized_name = normalize_subdataset_name(subdataset_name)
+    
+    # 清理特殊字符，确保表名合法
+    clean_name = re.sub(r'[^a-zA-Z0-9_]', '_', normalized_name)
+    clean_name = re.sub(r'_+', '_', clean_name)  # 多个下划线合并
+    clean_name = clean_name.strip('_')  # 去除首尾下划线
+    
+    # PostgreSQL表名限制63字符
+    if len(clean_name) > 50:  # 留出前缀空间
+        # 保留开头和结尾，中间用省略
+        clean_name = clean_name[:20] + "_" + clean_name[-25:]
+    
+    table_name = f"clips_bbox_{clean_name}"
+    
+    # 确保表名符合PostgreSQL规范（以字母开头）
+    if table_name[0].isdigit():
+        table_name = "t_" + table_name
+    
+    return table_name
+
 def create_table_for_subdataset(eng, subdataset_name, base_table_name='clips_bbox'):
     """为特定子数据集创建分表"""
     table_name = get_table_name_for_subdataset(subdataset_name)
