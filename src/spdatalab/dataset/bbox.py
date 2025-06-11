@@ -535,17 +535,39 @@ def get_table_name_for_subdataset(subdataset_name: str) -> str:
     clean_name = re.sub(r'_+', '_', clean_name)  # 多个下划线合并
     clean_name = clean_name.strip('_')  # 去除首尾下划线
     
-    # PostgreSQL表名限制63字符
-    if len(clean_name) > 50:  # 留出前缀空间
-        # 保留开头和结尾，中间用省略
-        clean_name = clean_name[:20] + "_" + clean_name[-25:]
-    
+    # 构建初始表名
     table_name = f"clips_bbox_{clean_name}"
+    
+    # PostgreSQL表名限制63字符
+    if len(table_name) > 63:
+        # 保留时间戳（如果存在）
+        timestamp_pattern = r'(_\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2})$'
+        timestamp_match = re.search(timestamp_pattern, clean_name)
+        timestamp_suffix = timestamp_match.group(1) if timestamp_match else ""
+        
+        # 计算可用长度
+        prefix_len = len("clips_bbox_")
+        available_len = 63 - prefix_len - len(timestamp_suffix)
+        
+        if timestamp_suffix:
+            # 截取主要部分，保留时间戳
+            main_part = clean_name[:clean_name.rfind(timestamp_suffix)]
+            truncated_main = main_part[:available_len]
+            clean_name = truncated_main + timestamp_suffix
+        else:
+            # 没有时间戳，直接截断
+            clean_name = clean_name[:available_len]
+        
+        table_name = f"clips_bbox_{clean_name}"
     
     # 确保表名符合PostgreSQL规范（以字母开头）
     if table_name[0].isdigit():
         table_name = "t_" + table_name
+        # 如果加前缀后超长，再次截断
+        if len(table_name) > 63:
+            table_name = table_name[:63]
     
+    print(f"表名: '{subdataset_name}' -> '{table_name}' (长度: {len(table_name)})")
     return table_name
 
 def create_table_for_subdataset(eng, subdataset_name, base_table_name='clips_bbox'):
