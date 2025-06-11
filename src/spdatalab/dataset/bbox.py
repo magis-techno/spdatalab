@@ -535,39 +535,46 @@ def get_table_name_for_subdataset(subdataset_name: str) -> str:
     clean_name = re.sub(r'_+', '_', clean_name)  # 多个下划线合并
     clean_name = clean_name.strip('_')  # 去除首尾下划线
     
-    # 构建初始表名
-    table_name = f"clips_bbox_{clean_name}"
+    # 使用保守的长度限制，为PostGIS兼容性预留空间
+    # clips_bbox_ = 12字符，所以主体部分限制在 50-12=38 字符
+    max_main_length = 38
     
-    # PostgreSQL表名限制63字符
-    if len(table_name) > 63:
-        # 保留时间戳（如果存在）
+    if len(clean_name) > max_main_length:
+        # 保留时间戳（如果存在），截断主体部分
         timestamp_pattern = r'(_\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2})$'
         timestamp_match = re.search(timestamp_pattern, clean_name)
-        timestamp_suffix = timestamp_match.group(1) if timestamp_match else ""
         
-        # 计算可用长度
-        prefix_len = len("clips_bbox_")
-        available_len = 63 - prefix_len - len(timestamp_suffix)
-        
-        if timestamp_suffix:
-            # 截取主要部分，保留时间戳
+        if timestamp_match:
+            timestamp_suffix = timestamp_match.group(1)  # _2025_05_18_10_56_18
             main_part = clean_name[:clean_name.rfind(timestamp_suffix)]
-            truncated_main = main_part[:available_len]
-            clean_name = truncated_main + timestamp_suffix
+            
+            # 为时间戳预留空间
+            available_for_main = max_main_length - len(timestamp_suffix)
+            if available_for_main > 10:  # 确保主体部分至少有10个字符
+                truncated_main = main_part[:available_for_main]
+                clean_name = truncated_main + timestamp_suffix
+            else:
+                # 时间戳太长，直接截断整个名称
+                clean_name = clean_name[:max_main_length]
         else:
             # 没有时间戳，直接截断
-            clean_name = clean_name[:available_len]
-        
-        table_name = f"clips_bbox_{clean_name}"
+            clean_name = clean_name[:max_main_length]
+    
+    # 构建最终表名
+    table_name = f"clips_bbox_{clean_name}"
     
     # 确保表名符合PostgreSQL规范（以字母开头）
     if table_name[0].isdigit():
         table_name = "t_" + table_name
         # 如果加前缀后超长，再次截断
-        if len(table_name) > 63:
-            table_name = table_name[:63]
+        if len(table_name) > 50:  # 保守截断
+            table_name = table_name[:50]
     
-    print(f"表名: '{subdataset_name}' -> '{table_name}' (长度: {len(table_name)})")
+    # 最终安全检查
+    if len(table_name) > 50:
+        table_name = table_name[:50]
+    
+    print(f"表名生成: '{subdataset_name}' -> '{table_name}' (长度: {len(table_name)})")
     return table_name
 
 def create_table_for_subdataset(eng, subdataset_name, base_table_name='clips_bbox'):
