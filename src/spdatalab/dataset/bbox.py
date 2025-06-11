@@ -479,7 +479,7 @@ def normalize_subdataset_name(subdataset_name: str) -> str:
     1. 去掉开头的 "GOD_E2E_"
     2. 如果有 "_sub_ddi_" 则截断到这里（不包含_sub_ddi_）
     3. 如果中间出现类似 "_277736e2e_"（277打头，e2e结尾）的字符串，这部分及之后都不要
-    4. 保留结尾的时间戳格式 "_YYYY_MM_DD_HH_MM_SS"
+    4. 移除结尾的时间戳格式 "_YYYY_MM_DD_HH_MM_SS"
     
     Args:
         subdataset_name: 原始子数据集名称
@@ -493,17 +493,12 @@ def normalize_subdataset_name(subdataset_name: str) -> str:
     if subdataset_name.startswith("GOD_E2E_"):
         subdataset_name = subdataset_name[8:]  # len("GOD_E2E_") = 8
     
-    # 2. 查找时间戳模式（在处理其他截断之前先提取）
-    timestamp_pattern = r'(_\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2})$'
-    timestamp_match = re.search(timestamp_pattern, subdataset_name)
-    timestamp_suffix = timestamp_match.group(1) if timestamp_match else ""
-    
-    # 3. 处理 _sub_ddi_ 截断
+    # 2. 处理 _sub_ddi_ 截断
     sub_ddi_pos = subdataset_name.find("_sub_ddi_")
     if sub_ddi_pos != -1:
         subdataset_name = subdataset_name[:sub_ddi_pos]
     
-    # 4. 处理类似 _277736e2e_ 的模式截断（277打头，e2e结尾）
+    # 3. 处理类似 _277736e2e_ 的模式截断（277打头，e2e结尾）
     # 匹配模式：_277开头，任意字符，e2e结尾的字符串
     hash_pattern = r'_277[^_]*e2e_'
     hash_match = re.search(hash_pattern, subdataset_name)
@@ -511,11 +506,11 @@ def normalize_subdataset_name(subdataset_name: str) -> str:
         # 截断到匹配位置之前
         subdataset_name = subdataset_name[:hash_match.start()]
     
-    # 5. 如果截断后没有时间戳，但原来有时间戳，则需要添加回来
-    if timestamp_suffix and not re.search(timestamp_pattern, subdataset_name):
-        subdataset_name += timestamp_suffix
+    # 4. 移除结尾的时间戳格式 "_YYYY_MM_DD_HH_MM_SS"
+    timestamp_pattern = r'_\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2}$'
+    subdataset_name = re.sub(timestamp_pattern, '', subdataset_name)
     
-    # 6. 清理和验证结果
+    # 5. 清理和验证结果
     subdataset_name = subdataset_name.strip('_')
     
     # 确保名称不为空
@@ -557,27 +552,8 @@ def get_table_name_for_subdataset(subdataset_name: str) -> str:
     max_main_length = 38
     
     if len(clean_name) > max_main_length:
-        # 保留时间戳（如果存在），截断主体部分
-        timestamp_pattern = r'(_\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2})$'
-        timestamp_match = re.search(timestamp_pattern, clean_name)
-        
-        if timestamp_match:
-            timestamp_suffix = timestamp_match.group(1)  # _2025_05_18_10_56_18
-            main_part = clean_name[:clean_name.rfind(timestamp_suffix)]
-            
-            # 为时间戳预留空间
-            available_for_main = max_main_length - len(timestamp_suffix)
-            if available_for_main > 10:  # 确保主体部分至少有10个字符
-                truncated_main = main_part[:available_for_main]
-                # 确保主体部分不以下划线结尾，避免与时间戳前的下划线形成连续下划线
-                truncated_main = truncated_main.rstrip('_')
-                clean_name = truncated_main + timestamp_suffix
-            else:
-                # 时间戳太长，直接截断整个名称
-                clean_name = clean_name[:max_main_length]
-        else:
-            # 没有时间戳，直接截断
-            clean_name = clean_name[:max_main_length]
+        # 直接截断（不需要处理时间戳，因为已经在normalize阶段移除了）
+        clean_name = clean_name[:max_main_length]
     
     # 构建最终表名
     table_name = f"clips_bbox_{clean_name}"
@@ -799,6 +775,38 @@ def batch_create_tables_for_subdatasets(eng, subdataset_names: List[str]) -> Dic
     print(f"批量创建完成: 成功 {success_count}/{len(subdataset_names)} 个分表")
     return table_mapping
 
+def filter_partition_tables(tables: List[str], exclude_view: str = None) -> List[str]:
+    """过滤出真正的分表，排除主表、视图、临时表等
+    
+    Args:
+        tables: 表名列表
+        exclude_view: 要排除的视图名称
+        
+    Returns:
+        过滤后的分表列表
+    """
+    filtered = []
+    
+    for table in tables:
+        # 排除主表
+        if table == 'clips_bbox':
+            continue
+            
+        # 排除指定的视图（避免循环引用）
+        if exclude_view and table == exclude_view:
+            continue
+            
+        # 排除包含特定关键词的表
+        exclude_keywords = ['unified', 'temp', 'backup', 'test', 'tmp']
+        if any(keyword in table.lower() for keyword in exclude_keywords):
+            continue
+            
+        # 只包含分表格式的表（必须以clips_bbox_开头）
+        if table.startswith('clips_bbox_') and table != 'clips_bbox':
+            filtered.append(table)
+    
+    return filtered
+
 def list_bbox_tables(eng) -> List[str]:
     """列出所有bbox相关的表
     
@@ -836,10 +844,17 @@ def create_unified_view(eng, view_name: str = 'clips_bbox_unified') -> bool:
         创建是否成功
     """
     try:
-        # 获取所有bbox分表
-        bbox_tables = list_bbox_tables(eng)
-        if not bbox_tables:
+        # 获取所有bbox相关表
+        all_tables = list_bbox_tables(eng)
+        if not all_tables:
             print("没有找到任何bbox表，无法创建统一视图")
+            return False
+        
+        # 过滤出真正的分表，排除视图、主表等
+        bbox_tables = filter_partition_tables(all_tables, exclude_view=view_name)
+        if not bbox_tables:
+            print("没有找到任何分表，无法创建统一视图")
+            print(f"可用的表: {all_tables}")
             return False
         
         # 构建UNION ALL查询
