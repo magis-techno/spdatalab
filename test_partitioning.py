@@ -32,10 +32,13 @@ def test_name_normalization():
         "GOD_E2E_simple_dataset",
         "normal_dataset_name_2025_01_01_12_00_00",
         "dataset_with_sub_ddi_extra_info_2025_05_18_11_07_59",
-        "dataset_with_2773412e2e_and_more_content",
-        "GOD_E2E_complex_name_277736e2e_after_hash",
         "short_name",
-        "very_very_very_long_dataset_name_that_exceeds_normal_length_limits_2025_05_18_11_07_59"
+        "very_very_very_long_dataset_name_that_exceeds_normal_length_limits_2025_05_18_11_07_59",
+        # 新增测试用例：包含277...e2e模式
+        "GOD_E2E_lane_change_1_277736e2e_2025_05_18_11_07_59",
+        "dataset_with_277abc123e2e_suffix",
+        "normal_dataset_277abcde2e_with_timestamp_2025_01_01_12_00_00",
+        "complex_GOD_E2E_name_277hash123e2e_sub_ddi_extra_2025_05_18_11_07_59"
     ]
     
     print("测试用例和结果:")
