@@ -1,28 +1,20 @@
--- 清理脚本
--- 支持两种清理级别：标准清理和彻底清理
--- 使用方法：
---   psql -f cleanup.sql                             # 标准清理（默认）
---   psql -v cleanup_level=2 -f cleanup.sql          # 彻底清理
+-- 数据库清理脚本
+-- 标准清理：删除clips_bbox相关数据，重建干净表
+-- 彻底清理：删除所有用户schema和数据（需要设置cleanup_level=2）
 
 \echo '=========================================='
 \echo '数据库清理脚本'
 \echo '=========================================='
 
--- 设置默认清理级别（如果没有指定）
-\set cleanup_level_default 1
-SELECT COALESCE(:'cleanup_level', :'cleanup_level_default') as current_cleanup_level \gset
-
-\echo '清理级别：' :current_cleanup_level
-
 -- ==============================================
--- 级别1：标准清理（clips_bbox相关数据）
+-- 第一步：标准清理（总是执行）
 -- ==============================================
 \echo '执行标准清理：删除clips_bbox相关数据...'
 
 -- 删除统一视图
 DROP VIEW IF EXISTS clips_bbox_all CASCADE;
 
--- 删除所有分表
+-- 删除所有clips_bbox相关表
 DO $$
 DECLARE
     table_record RECORD;
@@ -71,9 +63,11 @@ END $$;
 \echo '✅ 标准清理完成：clips_bbox相关数据已删除'
 
 -- ==============================================
--- 级别2：彻底清理（删除所有用户schema和数据）
+-- 第二步：彻底清理（仅在设置cleanup_level=2时执行）
 -- ==============================================
-\if :'current_cleanup_level' = '2'
+
+-- 检查是否需要执行彻底清理
+\if :{?cleanup_level}
 \echo '执行彻底清理：删除所有用户schema和数据...'
 
 -- 强制断开所有其他连接
@@ -138,10 +132,8 @@ END $$;
 \endif
 
 -- ==============================================
--- 重新创建干净环境
+-- 第三步：重新创建干净环境（总是执行）
 -- ==============================================
-\endif
-
 \echo '重新创建干净环境...'
 
 -- 确保public schema存在
@@ -154,7 +146,7 @@ CREATE EXTENSION IF NOT EXISTS postgis;
 CREATE EXTENSION IF NOT EXISTS postgis_topology;
 
 -- 创建干净的clips_bbox表
-CREATE TABLE clips_bbox(
+CREATE TABLE IF NOT EXISTS clips_bbox(
     id serial PRIMARY KEY,
     scene_token text,
     data_name text UNIQUE,
@@ -164,20 +156,34 @@ CREATE TABLE clips_bbox(
     all_good boolean
 );
 
--- 添加PostGIS几何列
-SELECT AddGeometryColumn('public', 'clips_bbox', 'geometry', 4326, 'POLYGON', 2);
-
--- 添加几何约束
-ALTER TABLE clips_bbox ADD CONSTRAINT check_geom_type 
-    CHECK (ST_GeometryType(geometry) IN ('ST_Polygon', 'ST_Point'));
-
--- 创建索引
-CREATE INDEX idx_clips_bbox_geometry ON clips_bbox USING GIST(geometry);
-CREATE INDEX idx_clips_bbox_data_name ON clips_bbox(data_name);
-CREATE INDEX idx_clips_bbox_scene_token ON clips_bbox(scene_token);
+-- 添加PostGIS几何列（如果不存在）
+DO $$
+BEGIN
+    -- 检查几何列是否已存在
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'clips_bbox' 
+        AND column_name = 'geometry'
+    ) THEN
+        PERFORM AddGeometryColumn('public', 'clips_bbox', 'geometry', 4326, 'POLYGON', 2);
+        
+        -- 添加几何约束
+        ALTER TABLE clips_bbox ADD CONSTRAINT check_geom_type 
+            CHECK (ST_GeometryType(geometry) IN ('ST_Polygon', 'ST_Point'));
+        
+        -- 创建索引
+        CREATE INDEX idx_clips_bbox_geometry ON clips_bbox USING GIST(geometry);
+        CREATE INDEX idx_clips_bbox_data_name ON clips_bbox(data_name);
+        CREATE INDEX idx_clips_bbox_scene_token ON clips_bbox(scene_token);
+        
+        RAISE NOTICE '已创建clips_bbox表和几何列';
+    ELSE
+        RAISE NOTICE 'clips_bbox表已存在，跳过创建';
+    END IF;
+END $$;
 
 -- 创建clip_filter表
-CREATE TABLE clip_filter(
+CREATE TABLE IF NOT EXISTS clip_filter(
     scene_token text PRIMARY KEY,
     dataset_name text
 );
@@ -188,9 +194,9 @@ CREATE TABLE clip_filter(
 -- 清理完成报告
 -- ==============================================
 \echo '=========================================='
-\echo '清理完成！清理级别：' :current_cleanup_level
+\echo '清理完成！'
 \echo ''
-\echo '清理级别说明：'
-\echo '  1 - 标准清理：删除clips_bbox相关数据，重建干净表'
-\echo '  2 - 彻底清理：删除所有用户schema和数据'
+\echo '使用方法：'
+\echo '  make clean-bbox  - 标准清理：删除clips_bbox相关数据，重建干净表'
+\echo '  make clean-deep  - 彻底清理：删除所有用户schema和数据'
 \echo '==========================================' 
