@@ -472,7 +472,7 @@ def normalize_subdataset_name(subdataset_name: str) -> str:
     规则：
     1. 去掉开头的 "GOD_E2E_"
     2. 如果有 "_sub_ddi_" 则截断到这里（不包含_sub_ddi_）
-    3. 但要保留结尾的时间戳格式 "_YYYY_MM_DD_HH_MM_SS"
+    3. 如果中间出现类似 "_277736e2e_"（2777打头，e2e结尾）的字符串，这部分及之后都不要
     
     Args:
         subdataset_name: 原始子数据集名称
@@ -486,20 +486,18 @@ def normalize_subdataset_name(subdataset_name: str) -> str:
     if subdataset_name.startswith("GOD_E2E_"):
         subdataset_name = subdataset_name[8:]  # len("GOD_E2E_") = 8
     
-    # 2. 查找时间戳模式（在处理_sub_ddi_之前先提取）
-    timestamp_pattern = r'(_\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2})$'
-    timestamp_match = re.search(timestamp_pattern, subdataset_name)
-    timestamp_suffix = timestamp_match.group(1) if timestamp_match else ""
-    
-    # 3. 处理 _sub_ddi_ 截断
+    # 2. 处理 _sub_ddi_ 截断
     sub_ddi_pos = subdataset_name.find("_sub_ddi_")
     if sub_ddi_pos != -1:
-        # 截断到 _sub_ddi_ 之前
         subdataset_name = subdataset_name[:sub_ddi_pos]
-        
-        # 如果截断后没有时间戳，但原来有时间戳，则需要添加回来
-        if timestamp_suffix and not re.search(timestamp_pattern, subdataset_name):
-            subdataset_name += timestamp_suffix
+    
+    # 3. 处理 _2777xxxe2e_ 模式截断（2777打头，e2e结尾的字符串）
+    # 匹配模式：_2777开头，中间任意字符，e2e结尾，后面可能还有其他内容
+    hash_pattern = r'_2777[^_]*e2e_?.*$'
+    hash_match = re.search(hash_pattern, subdataset_name)
+    if hash_match:
+        # 截断到匹配位置之前
+        subdataset_name = subdataset_name[:hash_match.start()]
     
     # 4. 清理和验证结果
     subdataset_name = subdataset_name.strip('_')
