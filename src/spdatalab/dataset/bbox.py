@@ -3,6 +3,8 @@ import argparse
 import json
 import signal
 import sys
+import hashlib
+import random
 from pathlib import Path
 from datetime import datetime
 import geopandas as gpd, pandas as pd
@@ -34,6 +36,40 @@ def setup_signal_handlers():
     """设置信号处理器"""
     signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
     signal.signal(signal.SIGTERM, signal_handler)  # 终止信号
+
+def create_schema_if_not_exists(eng, schema_name):
+    """创建schema如果不存在"""
+    create_schema_sql = text(f"CREATE SCHEMA IF NOT EXISTS {schema_name}")
+    try:
+        with eng.connect() as conn:
+            conn.execute(create_schema_sql)
+            conn.commit()
+            print(f"Schema {schema_name} 已创建或已存在")
+            return True
+    except Exception as e:
+        print(f"创建schema失败: {str(e)}")
+        return False
+
+def get_city_schema_name(city_id):
+    """将city_id转换为有效的schema名称"""
+    if not city_id or city_id.lower() == 'null':
+        return 'city_unknown'
+    # 清理城市ID，使其符合PostgreSQL schema命名规范
+    clean_city_id = ''.join(c if c.isalnum() or c == '_' else '_' for c in str(city_id).lower())
+    return f"city_{clean_city_id}"
+
+def get_table_name(schema_name, is_preview=False):
+    """获取表名"""
+    base_name = "clips_bbox"
+    if is_preview:
+        base_name += "_preview"
+    return f"{schema_name}.{base_name}"
+
+def get_sample_hash(data_name, sample_rate=0.01):
+    """使用一致性hash判断是否应该采样"""
+    hash_obj = hashlib.md5(str(data_name).encode())
+    hash_int = int(hash_obj.hexdigest(), 16)
+    return (hash_int % 10000) < (sample_rate * 10000)
 
 class LightweightProgressTracker:
     """轻量级进度跟踪器，使用Parquet文件存储状态，针对大规模数据优化"""
@@ -237,14 +273,21 @@ class LightweightProgressTracker:
         self._flush_success_buffer()
         self._flush_failed_buffer()
 
-def create_table_if_not_exists(eng, table_name='clips_bbox'):
-    """如果表不存在则创建表 - 与cleanup_clips_bbox.sql保持一致"""
+def create_table_if_not_exists(eng, schema_name, table_name, is_preview=False):
+    """如果表不存在则创建表，支持按schema分别创建"""
+    # 解析schema和表名
+    if '.' in table_name:
+        schema_part, table_part = table_name.split('.', 1)
+    else:
+        schema_part = schema_name
+        table_part = table_name
+    
     # 检查表是否已存在
     check_table_sql = text(f"""
         SELECT EXISTS (
             SELECT FROM information_schema.tables 
-            WHERE table_schema = 'public' 
-            AND table_name = '{table_name}'
+            WHERE table_schema = '{schema_part}' 
+            AND table_name = '{table_part}'
         );
     """)
     
@@ -254,17 +297,22 @@ def create_table_if_not_exists(eng, table_name='clips_bbox'):
             table_exists = result.scalar()
             
             if table_exists:
-                print(f"表 {table_name} 已存在，跳过创建")
+                print(f"表 {schema_part}.{table_part} 已存在，跳过创建")
                 return True
                 
-            print(f"表 {table_name} 不存在，开始创建...")
+            print(f"表 {schema_part}.{table_part} 不存在，开始创建...")
             
-            # 与cleanup_clips_bbox.sql保持一致的表结构
+            # 确保schema存在
+            if not create_schema_if_not_exists(eng, schema_part):
+                return False
+            
+            # 创建表结构
+            unique_constraint = "" if is_preview else "UNIQUE"
             create_sql = text(f"""
-                CREATE TABLE {table_name}(
+                CREATE TABLE {schema_part}.{table_part}(
                     id serial PRIMARY KEY,
                     scene_token text,
-                    data_name text UNIQUE,
+                    data_name text {unique_constraint},
                     event_id text,
                     city_id text,
                     "timestamp" bigint,
@@ -274,20 +322,24 @@ def create_table_if_not_exists(eng, table_name='clips_bbox'):
             
             # 使用PostGIS添加几何列
             add_geom_sql = text(f"""
-                SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'POLYGON', 2);
+                SELECT AddGeometryColumn('{schema_part}', '{table_part}', 'geometry', 4326, 'POLYGON', 2);
             """)
             
             # 添加几何约束
+            constraint_name = f"check_geom_type_{table_part}"
             constraint_sql = text(f"""
-                ALTER TABLE {table_name} ADD CONSTRAINT check_geom_type 
+                ALTER TABLE {schema_part}.{table_part} 
+                ADD CONSTRAINT {constraint_name}
                     CHECK (ST_GeometryType(geometry) IN ('ST_Polygon', 'ST_Point'));
             """)
             
-            # 创建索引
+            # 创建索引（考虑schema前缀避免冲突）
+            clean_schema = schema_part.replace('-', '_').replace('.', '_')
             index_sql = text(f"""
-                CREATE INDEX idx_{table_name}_geometry ON {table_name} USING GIST(geometry);
-                CREATE INDEX idx_{table_name}_data_name ON {table_name}(data_name);
-                CREATE INDEX idx_{table_name}_scene_token ON {table_name}(scene_token);
+                CREATE INDEX idx_{clean_schema}_{table_part}_geometry ON {schema_part}.{table_part} USING GIST(geometry);
+                CREATE INDEX idx_{clean_schema}_{table_part}_data_name ON {schema_part}.{table_part}(data_name);
+                CREATE INDEX idx_{clean_schema}_{table_part}_scene_token ON {schema_part}.{table_part}(scene_token);
+                CREATE INDEX idx_{clean_schema}_{table_part}_city_id ON {schema_part}.{table_part}(city_id);
             """)
             
             # 执行所有SQL语句
@@ -297,12 +349,12 @@ def create_table_if_not_exists(eng, table_name='clips_bbox'):
             conn.execute(index_sql)
             conn.commit()
             
-            print(f"成功创建表 {table_name} 及相关索引")
+            print(f"成功创建表 {schema_part}.{table_part} 及相关索引")
             return True
             
     except Exception as e:
         print(f"创建表时出错: {str(e)}")
-        print("建议：如果表已通过cleanup_clips_bbox.sql创建，请使用 --no-create-table 选项")
+        print("建议：检查PostgreSQL权限和schema配置")
         return False
 
 def chunk(lst, n):
@@ -397,66 +449,103 @@ def fetch_bbox_with_geometry(names, eng):
         geom_col='geometry'
     )
 
-def batch_insert_to_postgis(gdf, eng, table_name='clips_bbox', batch_size=1000, tracker=None, batch_num=None):
-    """批量插入到PostGIS，依赖数据库约束处理重复数据"""
+def batch_insert_to_postgis(gdf, eng, city_tables_map, batch_size=1000, tracker=None, batch_num=None, enable_preview=False, preview_rate=0.01):
+    """批量插入到PostGIS，按city_id分表存储，支持预览数据"""
     total_rows = len(gdf)
     inserted_rows = 0
     successful_tokens = []
     
-    # 分批插入
-    for i in range(0, total_rows, batch_size):
-        batch_gdf = gdf.iloc[i:i+batch_size]
-        batch_tokens = batch_gdf['scene_token'].tolist()
+    # 按city_id分组数据
+    city_groups = gdf.groupby('city_id')
+    
+    for city_id, city_gdf in city_groups:
+        city_table = city_tables_map.get(city_id, city_tables_map.get('unknown'))
         
-        try:
-            # 直接插入，让数据库处理重复
-            batch_gdf.to_postgis(
-                table_name, 
-                eng, 
-                if_exists='append', 
-                index=False
-            )
-            inserted_rows += len(batch_gdf)
-            successful_tokens.extend(batch_tokens)
-            print(f'[批量插入] 已插入: {inserted_rows}/{total_rows} 行')
+        print(f'[城市 {city_id}] 开始处理 {len(city_gdf)} 条记录，目标表: {city_table}')
+        
+        # 分批插入当前城市的数据
+        for i in range(0, len(city_gdf), batch_size):
+            batch_gdf = city_gdf.iloc[i:i+batch_size]
+            batch_tokens = batch_gdf['scene_token'].tolist()
             
-        except Exception as e:
-            error_str = str(e).lower()
-            
-            # 如果是重复键违反约束，尝试逐行插入以识别具体的重复记录
-            if 'unique' in error_str or 'duplicate' in error_str or 'constraint' in error_str:
-                print(f'[批量插入] 批次 {i//batch_size + 1} 遇到重复数据，进行逐行插入')
+            try:
+                # 直接插入到城市表
+                batch_gdf.to_postgis(
+                    city_table, 
+                    eng, 
+                    if_exists='append', 
+                    index=False
+                )
                 
-                for idx, row in batch_gdf.iterrows():
-                    scene_token = row['scene_token']
-                    try:
-                        # 创建单行GeoDataFrame
-                        single_gdf = gpd.GeoDataFrame(
-                            [row.drop('geometry')], 
-                            geometry=[row.geometry], 
-                            crs=4326
-                        )
-                        single_gdf.to_postgis(table_name, eng, if_exists='append', index=False)
-                        inserted_rows += 1
-                        successful_tokens.append(scene_token)
-                    except Exception as row_e:
-                        row_error_str = str(row_e).lower()
-                        if 'unique' in row_error_str or 'duplicate' in row_error_str:
-                            # 重复数据，不记录为失败，只是跳过
-                            print(f'[跳过重复] scene_token: {scene_token}')
-                            successful_tokens.append(scene_token)  # 视为成功（已存在）
-                        else:
-                            # 其他类型的错误才记录为失败
-                            error_msg = f'插入失败: {str(row_e)}'
-                            print(f'[插入错误] scene_token: {scene_token}: {error_msg}')
-                            if tracker:
-                                tracker.save_failed_record(scene_token, error_msg, batch_num, "database_insert")
-            else:
-                # 非重复数据问题，记录为失败
-                print(f'[批量插入错误] 批次 {i//batch_size + 1}: {str(e)}')
-                for token in batch_tokens:
-                    if tracker:
-                        tracker.save_failed_record(token, f"批量插入异常: {str(e)}", batch_num, "database_insert")
+                # 如果启用预览模式，采样部分数据到预览表
+                if enable_preview and preview_rate > 0:
+                    preview_gdf = batch_gdf[batch_gdf['data_name'].apply(
+                        lambda x: get_sample_hash(x, preview_rate)
+                    )]
+                    
+                    if len(preview_gdf) > 0:
+                        try:
+                            # 插入到全局预览表
+                            preview_table = "public.clips_bbox_preview"
+                            preview_gdf.to_postgis(
+                                preview_table,
+                                eng,
+                                if_exists='append',
+                                index=False
+                            )
+                            print(f'[预览数据] 城市 {city_id} 插入了 {len(preview_gdf)} 条预览记录')
+                        except Exception as preview_e:
+                            print(f'[预览数据警告] 城市 {city_id} 预览数据插入失败: {preview_e}')
+                
+                inserted_rows += len(batch_gdf)
+                successful_tokens.extend(batch_tokens)
+                print(f'[城市 {city_id}] 批次插入成功: {len(batch_gdf)} 行')
+                
+            except Exception as e:
+                error_str = str(e).lower()
+                
+                # 如果是重复键违反约束，尝试逐行插入以识别具体的重复记录
+                if 'unique' in error_str or 'duplicate' in error_str or 'constraint' in error_str:
+                    print(f'[城市 {city_id}] 批次 {i//batch_size + 1} 遇到重复数据，进行逐行插入')
+                    
+                    for idx, row in batch_gdf.iterrows():
+                        scene_token = row['scene_token']
+                        try:
+                            # 创建单行GeoDataFrame
+                            single_gdf = gpd.GeoDataFrame(
+                                [row.drop('geometry')], 
+                                geometry=[row.geometry], 
+                                crs=4326
+                            )
+                            single_gdf.to_postgis(city_table, eng, if_exists='append', index=False)
+                            
+                            # 处理预览数据
+                            if enable_preview and get_sample_hash(row['data_name'], preview_rate):
+                                try:
+                                    single_gdf.to_postgis("public.clips_bbox_preview", eng, if_exists='append', index=False)
+                                except:
+                                    pass  # 预览数据失败不影响主流程
+                            
+                            inserted_rows += 1
+                            successful_tokens.append(scene_token)
+                        except Exception as row_e:
+                            row_error_str = str(row_e).lower()
+                            if 'unique' in row_error_str or 'duplicate' in row_error_str:
+                                # 重复数据，不记录为失败，只是跳过
+                                print(f'[跳过重复] 城市 {city_id} scene_token: {scene_token}')
+                                successful_tokens.append(scene_token)  # 视为成功（已存在）
+                            else:
+                                # 其他类型的错误才记录为失败
+                                error_msg = f'插入失败: {str(row_e)}'
+                                print(f'[插入错误] 城市 {city_id} scene_token: {scene_token}: {error_msg}')
+                                if tracker:
+                                    tracker.save_failed_record(scene_token, error_msg, batch_num, "database_insert")
+                else:
+                    # 非重复数据问题，记录为失败
+                    print(f'[批量插入错误] 城市 {city_id} 批次 {i//batch_size + 1}: {str(e)}')
+                    for token in batch_tokens:
+                        if tracker:
+                            tracker.save_failed_record(token, f"批量插入异常: {str(e)}", batch_num, "database_insert")
     
     # 批量保存成功的tokens（包括重复跳过的）
     if tracker and successful_tokens:
@@ -464,7 +553,8 @@ def batch_insert_to_postgis(gdf, eng, table_name='clips_bbox', batch_size=1000, 
     
     return inserted_rows
 
-def run(input_path, batch=1000, insert_batch=1000, create_table=False, retry_failed=False, work_dir="./bbox_import_logs", show_stats=False):
+def run(input_path, batch=1000, insert_batch=1000, create_table=False, retry_failed=False, work_dir="./bbox_import_logs", show_stats=False, 
+        use_city_schema=False, enable_preview=False, preview_rate=0.01):
     """主运行函数
     
     Args:
@@ -475,6 +565,9 @@ def run(input_path, batch=1000, insert_batch=1000, create_table=False, retry_fai
         retry_failed: 是否只重试失败的数据
         work_dir: 工作目录，用于存储日志和进度文件
         show_stats: 是否显示统计信息并退出
+        use_city_schema: 是否按city_id创建不同的schema
+        enable_preview: 是否启用预览数据
+        preview_rate: 预览数据的采样率（默认1%）
     """
     global interrupted
     
@@ -523,11 +616,71 @@ def run(input_path, batch=1000, insert_batch=1000, create_table=False, retry_fai
     
     eng = create_engine(LOCAL_DSN, future=True)
     
+    # 预处理：如果使用城市schema，需要先分析数据确定所有城市
+    city_tables_map = {}
+    if use_city_schema:
+        print("正在分析数据中的城市信息...")
+        # 先取一小批数据分析城市分布
+        try:
+            sample_tokens = scene_ids[:min(1000, len(scene_ids))]
+            sample_meta = fetch_meta(sample_tokens)
+            unique_cities = sample_meta['city_id'].dropna().unique().tolist()
+            
+            # 如果sample数据不足，获取更多数据
+            if len(unique_cities) < 5 and len(scene_ids) > 1000:
+                print("样本城市数量较少，扩大样本范围...")
+                sample_tokens = scene_ids[:min(5000, len(scene_ids))]
+                sample_meta = fetch_meta(sample_tokens)
+                unique_cities = sample_meta['city_id'].dropna().unique().tolist()
+            
+            print(f"发现 {len(unique_cities)} 个城市: {unique_cities}")
+            
+            # 为每个城市创建schema和表映射
+            for city_id in unique_cities:
+                schema_name = get_city_schema_name(city_id)
+                city_tables_map[city_id] = get_table_name(schema_name, False)
+            
+            # 添加未知城市的处理
+            city_tables_map['unknown'] = get_table_name('city_unknown', False)
+            
+        except Exception as e:
+            print(f"分析城市信息失败: {e}")
+            print("将使用传统的单表模式")
+            use_city_schema = False
+            city_tables_map['default'] = 'public.clips_bbox'
+    else:
+        # 传统模式，使用单表
+        city_tables_map['default'] = 'public.clips_bbox'
+    
     # 创建表（如果需要）
     if create_table:
-        if not create_table_if_not_exists(eng):
-            print("创建表失败，退出")
-            return
+        if use_city_schema:
+            print("创建按城市分别的schema和表...")
+            success_count = 0
+            for city_id, table_name in city_tables_map.items():
+                schema_name = table_name.split('.')[0]
+                if create_table_if_not_exists(eng, schema_name, table_name, False):
+                    success_count += 1
+                else:
+                    print(f"创建城市表失败: {table_name}")
+            
+            # 创建预览表
+            if enable_preview:
+                if create_table_if_not_exists(eng, 'public', 'public.clips_bbox_preview', True):
+                    print("预览表创建成功")
+                else:
+                    print("预览表创建失败，将禁用预览功能")
+                    enable_preview = False
+            
+            if success_count == 0:
+                print("所有城市表创建失败，退出")
+                return
+            else:
+                print(f"成功创建 {success_count}/{len(city_tables_map)} 个城市表")
+        else:
+            if not create_table_if_not_exists(eng, 'public', 'clips_bbox', False):
+                print("创建表失败，退出")
+                return
     
     total_processed = 0
     total_inserted = 0
@@ -631,14 +784,45 @@ def run(input_path, batch=1000, insert_batch=1000, create_table=False, retry_fai
                 print(f"\n程序被中断，正在处理批次 {batch_num}")
                 break
             
+            # 处理city_id为空的情况
+            final_gdf['city_id'] = final_gdf['city_id'].fillna('unknown')
+            
             # 批量插入数据库
             try:
-                batch_inserted = batch_insert_to_postgis(
-                    final_gdf, eng, 
-                    batch_size=insert_batch, 
-                    tracker=tracker, 
-                    batch_num=batch_num
-                )
+                if use_city_schema:
+                    # 确保所有city_id都有对应的表映射
+                    cities_in_batch = final_gdf['city_id'].unique()
+                    for city_id in cities_in_batch:
+                        if city_id not in city_tables_map:
+                            # 动态创建新发现的城市表
+                            schema_name = get_city_schema_name(city_id)
+                            table_name = get_table_name(schema_name, False)
+                            city_tables_map[city_id] = table_name
+                            if create_table:
+                                create_table_if_not_exists(eng, schema_name, table_name, False)
+                    
+                    batch_inserted = batch_insert_to_postgis(
+                        final_gdf, eng, 
+                        city_tables_map,
+                        batch_size=insert_batch, 
+                        tracker=tracker, 
+                        batch_num=batch_num,
+                        enable_preview=enable_preview,
+                        preview_rate=preview_rate
+                    )
+                else:
+                    # 传统模式，使用单表 - 为所有数据分配到default表
+                    final_gdf['city_id'] = 'default'  # 传统模式下统一使用default
+                    batch_inserted = batch_insert_to_postgis(
+                        final_gdf, eng, 
+                        city_tables_map,
+                        batch_size=insert_batch, 
+                        tracker=tracker, 
+                        batch_num=batch_num,
+                        enable_preview=enable_preview,
+                        preview_rate=preview_rate
+                    )
+                
                 total_inserted += batch_inserted
                 total_processed += len(final_gdf)
                 
@@ -691,6 +875,10 @@ if __name__ == '__main__':
     ap.add_argument('--retry-failed', action='store_true', help='是否只重试失败的数据')
     ap.add_argument('--work-dir', default='./bbox_import_logs', help='工作目录，用于存储日志和进度文件')
     ap.add_argument('--show-stats', action='store_true', help='显示处理统计信息并退出')
+    ap.add_argument('--use-city-schema', action='store_true', help='按city_id创建不同的schema存储数据')
+    ap.add_argument('--enable-preview', action='store_true', help='启用预览数据功能，创建1%的采样数据')
+    ap.add_argument('--preview-rate', type=float, default=0.01, help='预览数据采样率（默认0.01即1%）')
     
     args = ap.parse_args()
-    run(args.input, args.batch, args.insert_batch, args.create_table, args.retry_failed, args.work_dir, args.show_stats)
+    run(args.input, args.batch, args.insert_batch, args.create_table, args.retry_failed, args.work_dir, args.show_stats,
+        args.use_city_schema, args.enable_preview, args.preview_rate)
