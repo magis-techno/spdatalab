@@ -922,6 +922,211 @@ def create_unified_view(eng, view_name: str = 'clips_bbox_unified') -> bool:
         
         return False
 
+def create_qgis_compatible_unified_view(eng, view_name: str = 'clips_bbox_unified_qgis') -> bool:
+    """
+    创建QGIS兼容的统一视图，带全局唯一ID
+    
+    Args:
+        eng: SQLAlchemy engine
+        view_name: 视图名称
+        
+    Returns:
+        bool: 创建是否成功
+    """
+    try:
+        # 获取分表列表
+        all_tables = list_bbox_tables(eng)
+        bbox_tables = filter_partition_tables(all_tables, exclude_view=view_name)
+        
+        if not bbox_tables:
+            print("没有找到任何分表，无法创建QGIS兼容的统一视图")
+            return False
+        
+        print(f"正在为 {len(bbox_tables)} 个分表创建QGIS兼容的统一视图...")
+        
+        # 构建带ROW_NUMBER的UNION查询
+        union_parts = []
+        for table_name in bbox_tables:
+            subdataset_name = table_name.replace('clips_bbox_', '') if table_name.startswith('clips_bbox_') else table_name
+            
+            union_part = f"""
+            SELECT 
+                {table_name}.id as original_id,
+                {table_name}.scene_token,
+                {table_name}.data_name,
+                {table_name}.event_id,
+                {table_name}.city_id,
+                {table_name}.timestamp,
+                {table_name}.all_good,
+                {table_name}.geometry,
+                '{subdataset_name}' as subdataset_name,
+                '{table_name}' as source_table
+            FROM {table_name}
+            """
+            union_parts.append(union_part)
+        
+        # 包装在ROW_NUMBER中创建全局唯一ID
+        inner_query = "UNION ALL\n".join(union_parts)
+        
+        view_query = f"""
+        SELECT 
+            ROW_NUMBER() OVER (ORDER BY source_table, original_id) as qgis_id,
+            original_id,
+            scene_token,
+            data_name,
+            event_id,
+            city_id,
+            timestamp,
+            all_good,
+            geometry,
+            subdataset_name,
+            source_table
+        FROM (
+            {inner_query}
+        ) as unified_data
+        """
+        
+        # 创建视图
+        drop_view_sql = text(f"DROP VIEW IF EXISTS {view_name};")
+        create_view_sql = text(f"CREATE OR REPLACE VIEW {view_name} AS {view_query};")
+        
+        with eng.connect() as conn:
+            conn.execute(drop_view_sql)
+            conn.execute(create_view_sql)
+            conn.commit()
+        
+        print(f"✅ 成功创建QGIS兼容的统一视图 {view_name}")
+        print(f"📋 在QGIS中加载时，请选择 'qgis_id' 作为主键列")
+        print(f"🔍 视图包含以下分表: {', '.join(bbox_tables)}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"创建QGIS兼容统一视图失败: {str(e)}")
+        return False
+
+def create_materialized_unified_view(eng, view_name: str = 'clips_bbox_unified_mat') -> bool:
+    """
+    创建物化视图，提供更好的QGIS性能
+    
+    Args:
+        eng: SQLAlchemy engine
+        view_name: 物化视图名称
+        
+    Returns:
+        bool: 创建是否成功
+    """
+    try:
+        # 获取分表列表
+        all_tables = list_bbox_tables(eng)
+        bbox_tables = filter_partition_tables(all_tables, exclude_view=view_name)
+        
+        if not bbox_tables:
+            print("没有找到任何分表，无法创建物化视图")
+            return False
+        
+        print(f"正在为 {len(bbox_tables)} 个分表创建物化视图...")
+        
+        # 构建UNION查询
+        union_parts = []
+        for table_name in bbox_tables:
+            subdataset_name = table_name.replace('clips_bbox_', '') if table_name.startswith('clips_bbox_') else table_name
+            
+            union_part = f"""
+            SELECT 
+                {table_name}.id as original_id,
+                {table_name}.scene_token,
+                {table_name}.data_name,
+                {table_name}.event_id,
+                {table_name}.city_id,
+                {table_name}.timestamp,
+                {table_name}.all_good,
+                {table_name}.geometry,
+                '{subdataset_name}' as subdataset_name,
+                '{table_name}' as source_table
+            FROM {table_name}
+            """
+            union_parts.append(union_part)
+        
+        inner_query = "UNION ALL\n".join(union_parts)
+        
+        # 创建物化视图SQL
+        drop_view_sql = text(f"DROP MATERIALIZED VIEW IF EXISTS {view_name};")
+        
+        create_mat_view_sql = text(f"""
+            CREATE MATERIALIZED VIEW {view_name} AS
+            SELECT 
+                ROW_NUMBER() OVER (ORDER BY source_table, original_id) as qgis_id,
+                original_id,
+                scene_token,
+                data_name,
+                event_id,
+                city_id,
+                timestamp,
+                all_good,
+                geometry,
+                subdataset_name,
+                source_table
+            FROM (
+                {inner_query}
+            ) as unified_data;
+        """)
+        
+        # 创建索引
+        create_index_sql = text(f"""
+            CREATE UNIQUE INDEX IF NOT EXISTS {view_name}_qgis_id_idx 
+            ON {view_name} (qgis_id);
+        """)
+        
+        create_spatial_index_sql = text(f"""
+            CREATE INDEX IF NOT EXISTS {view_name}_geom_idx 
+            ON {view_name} USING GIST (geometry);
+        """)
+        
+        with eng.connect() as conn:
+            conn.execute(drop_view_sql)
+            conn.execute(create_mat_view_sql)
+            conn.execute(create_index_sql)
+            conn.execute(create_spatial_index_sql)
+            conn.commit()
+        
+        print(f"✅ 成功创建物化视图 {view_name}")
+        print(f"📋 在QGIS中使用 'qgis_id' 作为主键列")
+        print(f"💡 提示：数据更新后需要刷新物化视图：REFRESH MATERIALIZED VIEW {view_name};")
+        print(f"🔍 物化视图包含以下分表: {', '.join(bbox_tables)}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"创建物化视图失败: {str(e)}")
+        return False
+
+def refresh_materialized_view(eng, view_name: str = 'clips_bbox_unified_mat') -> bool:
+    """
+    刷新物化视图
+    
+    Args:
+        eng: SQLAlchemy engine
+        view_name: 物化视图名称
+        
+    Returns:
+        bool: 刷新是否成功
+    """
+    try:
+        refresh_sql = text(f"REFRESH MATERIALIZED VIEW {view_name};")
+        
+        with eng.connect() as conn:
+            print(f"正在刷新物化视图 {view_name}...")
+            conn.execute(refresh_sql)
+            conn.commit()
+        
+        print(f"✅ 物化视图 {view_name} 刷新完成")
+        return True
+        
+    except Exception as e:
+        print(f"刷新物化视图失败: {str(e)}")
+        return False
+
 def maintain_unified_view(eng, view_name: str = 'clips_bbox_unified') -> bool:
     """维护统一视图，确保包含所有当前的分表
     

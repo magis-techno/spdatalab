@@ -810,6 +810,16 @@ def main():
                                      help='输出格式，json 或 parquet')
     build_dataset_parser.set_defaults(func=build_dataset)
     
+    # 添加QGIS相关的命令行参数
+    parser.add_argument('--create-qgis-view', action='store_true',
+                        help='创建QGIS兼容的统一视图')
+    parser.add_argument('--create-materialized-view', action='store_true', 
+                        help='创建物化统一视图以提高QGIS性能')
+    parser.add_argument('--refresh-materialized-view', action='store_true',
+                        help='刷新现有的物化视图')
+    parser.add_argument('--view-name', type=str, default=None,
+                        help='指定视图名称（可选）')
+    
     args = parser.parse_args()
     if args.command:
         if args.command == 'generate-scene-list':
@@ -818,6 +828,43 @@ def main():
             args.func(args.index_file, args.dataset_name, args.description, args.output, args.format)
     else:
         parser.print_help()
+
+    # 处理QGIS相关命令
+    if args.create_qgis_view:
+        from .dataset.bbox import create_qgis_compatible_unified_view
+        eng = get_psql_engine()
+        view_name = args.view_name or 'clips_bbox_unified_qgis'
+        success = create_qgis_compatible_unified_view(eng, view_name)
+        if success:
+            print(f"🎯 QGIS兼容视图创建完成！")
+            print(f"📝 在QGIS中连接PostgreSQL数据库时：")
+            print(f"   1. 选择视图: {view_name}")
+            print(f"   2. 主键列选择: qgis_id")
+            print(f"   3. 几何列选择: geometry")
+        return
+    
+    if args.create_materialized_view:
+        from .dataset.bbox import create_materialized_unified_view
+        eng = get_psql_engine()
+        view_name = args.view_name or 'clips_bbox_unified_mat'
+        success = create_materialized_unified_view(eng, view_name)
+        if success:
+            print(f"🎯 物化视图创建完成！")
+            print(f"📝 在QGIS中连接PostgreSQL数据库时：")
+            print(f"   1. 选择物化视图: {view_name}")
+            print(f"   2. 主键列选择: qgis_id")
+            print(f"   3. 几何列选择: geometry")
+            print(f"⚠️  提醒：数据更新后记得刷新物化视图")
+        return
+    
+    if args.refresh_materialized_view:
+        from .dataset.bbox import refresh_materialized_view
+        eng = get_psql_engine()
+        view_name = args.view_name or 'clips_bbox_unified_mat'
+        success = refresh_materialized_view(eng, view_name)
+        if success:
+            print(f"🎯 物化视图刷新完成！新数据已可在QGIS中使用")
+        return
 
 if __name__ == '__main__':
     cli()
