@@ -533,6 +533,9 @@ def get_table_name_for_subdataset(subdataset_name: str) -> str:
     # 清理特殊字符，确保表名合法
     clean_name = re.sub(r'[^a-zA-Z0-9_]', '_', normalized_name)
     
+    # 转换为小写（PostgreSQL表名最佳实践）
+    clean_name = clean_name.lower()
+    
     # 处理连续下划线问题
     original_underscores = len(re.findall(r'_{2,}', clean_name))
     clean_name = re.sub(r'_+', '_', clean_name)  # 多个下划线合并为一个
@@ -627,6 +630,10 @@ def validate_table_name(table_name: str) -> dict:
     # 检查字符
     if not re.match(r'^[a-zA-Z][a-zA-Z0-9_]*$', table_name):
         issues.append("表名包含非法字符或不以字母开头")
+    
+    # 检查大写字母（PostgreSQL最佳实践是小写）
+    if re.search(r'[A-Z]', table_name):
+        issues.append("表名包含大写字母，建议使用小写")
     
     # 检查连续下划线
     if re.search(r'_{2,}', table_name):

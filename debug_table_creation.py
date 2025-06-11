@@ -31,7 +31,11 @@ def test_table_name_generation():
         "GOD_E2E_dataset__with__double__underscores_2025_01_01_12_00_00",
         "GOD_E2E_name___with___triple___underscores",
         "dataset____multiple____underscores____problem",
-        "GOD_E2E_mixed__single_and__double___underscores_sub_ddi_hash_2025_05_18_10_56_18"
+        "GOD_E2E_mixed__single_and__double___underscores_sub_ddi_hash_2025_05_18_10_56_18",
+        # 新增：测试大写字母转换
+        "GOD_E2E_UPPERCASE_NAME_2025_01_01_12_00_00",
+        "GOD_E2E_MixedCase_Dataset_Name",
+        "FULLY_UPPERCASE_DATASET_NAME"
     ]
     
     for i, original_name in enumerate(test_cases, 1):
