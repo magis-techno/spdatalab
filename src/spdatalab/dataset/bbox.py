@@ -1230,7 +1230,12 @@ def run_with_partitioning_parallel(input_path, batch=1000, insert_batch=1000, wo
     
     # 确定并行worker数量
     if max_workers is None:
-        max_workers = min(mp.cpu_count(), 8)  # 限制最大8个进程避免过载
+        # 智能默认值：CPU核心数 * 1.5，但不超过16（可通过参数覆盖）
+        cpu_count = mp.cpu_count()
+        max_workers = min(int(cpu_count * 1.5), 16)
+        print(f"🔍 检测到 {cpu_count} 个CPU核心，默认使用 {max_workers} 个workers")
+    else:
+        print(f"🎯 用户指定使用 {max_workers} 个workers")
     
     print(f"=== 并行分表模式处理开始 ===")
     print(f"输入文件: {input_path}")
