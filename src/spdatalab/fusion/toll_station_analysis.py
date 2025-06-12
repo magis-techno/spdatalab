@@ -302,8 +302,9 @@ class TollStationAnalyzer:
             logger.info(f"分析收费站 {toll_station_id} 的轨迹数据...")
             
             try:
-                # 查询该收费站范围内的轨迹数据，并生成轨迹线几何
-                trajectory_sql = text(f"""
+                # 分两步查询：先获取统计信息，再生成几何
+                # 步骤1: 获取基本统计信息
+                stats_sql = text(f"""
                     SELECT 
                         dataset_name,
                         COUNT(*) as trajectory_count,
@@ -313,22 +314,8 @@ class TollStationAnalyzer:
                         COUNT(CASE WHEN workstage = 2 THEN 1 END) as workstage_2_count,
                         ROUND(
                             COUNT(CASE WHEN workstage = 2 THEN 1 END)::float / COUNT(*)::float * 100, 2
-                        ) as workstage_2_ratio,
-                        ST_AsText(
-                            ST_MakeLine(
-                                ARRAY(
-                                    SELECT point_lla 
-                                    FROM {self.config.trajectory_table} t2 
-                                    WHERE t2.dataset_name = t1.dataset_name
-                                    AND ST_Intersects(
-                                        t2.point_lla, 
-                                        ST_GeomFromText('{geometry_wkt}', 4326)
-                                    )
-                                    ORDER BY t2.timestamp
-                                )
-                            )
-                        ) as trajectory_geometry
-                    FROM {self.config.trajectory_table} t1
+                        ) as workstage_2_ratio
+                    FROM {self.config.trajectory_table}
                     WHERE ST_Intersects(
                         point_lla, 
                         ST_GeomFromText('{geometry_wkt}', 4326)
@@ -339,9 +326,47 @@ class TollStationAnalyzer:
                     LIMIT {self.config.max_trajectory_records // len(toll_stations)}
                 """)
                 
-                # 在轨迹数据库中执行轨迹查询
+                # 在轨迹数据库中执行统计查询
                 with self.trajectory_engine.connect() as conn:
-                    trajectory_result = pd.read_sql(trajectory_sql, conn)
+                    trajectory_result = pd.read_sql(stats_sql, conn)
+                
+                # 步骤2: 为每个数据集生成轨迹几何
+                if not trajectory_result.empty:
+                    trajectory_geometries = []
+                    for _, row in trajectory_result.iterrows():
+                        dataset_name = row['dataset_name']
+                        
+                        # 生成该数据集的轨迹线几何
+                        geom_sql = text(f"""
+                            SELECT ST_AsText(
+                                ST_MakeLine(
+                                    ARRAY(
+                                        SELECT point_lla 
+                                        FROM {self.config.trajectory_table}
+                                        WHERE dataset_name = '{dataset_name}'
+                                        AND ST_Intersects(
+                                            point_lla, 
+                                            ST_GeomFromText('{geometry_wkt}', 4326)
+                                        )
+                                        ORDER BY timestamp
+                                        LIMIT 1000
+                                    )
+                                )
+                            ) as trajectory_geometry
+                        """)
+                        
+                        try:
+                            with self.trajectory_engine.connect() as conn:
+                                geom_result = conn.execute(geom_sql).fetchone()
+                                trajectory_geometry = geom_result[0] if geom_result and geom_result[0] else None
+                        except Exception as geom_e:
+                            logger.warning(f"生成数据集 {dataset_name} 轨迹几何失败: {geom_e}")
+                            trajectory_geometry = None
+                        
+                        trajectory_geometries.append(trajectory_geometry)
+                    
+                    # 添加几何列到结果中
+                    trajectory_result['trajectory_geometry'] = trajectory_geometries
                 
                 if not trajectory_result.empty:
                     # 添加收费站ID

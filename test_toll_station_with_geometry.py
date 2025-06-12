@@ -70,11 +70,11 @@ def test_with_geometry():
         else:
             print(f"✅ 找到 {len(trajectory_results)} 个数据集-收费站组合")
             
-            # 显示轨迹结果详情
+            # 显示前3个轨迹结果的简要信息
+            print("   前3个数据集:")
             for _, row in trajectory_results.head(3).iterrows():
-                print(f"   数据集: {row['dataset_name']}")
-                print(f"     轨迹点数: {row['point_count']}")
-                print(f"     几何长度: {len(row.get('trajectory_geometry', '')) if row.get('trajectory_geometry') else 0}")
+                geom_len = len(row.get('trajectory_geometry', '')) if row.get('trajectory_geometry') else 0
+                print(f"     {row['dataset_name']}: {row['point_count']}点, 几何:{geom_len}字符")
         
         # 检查轨迹保存结果
         check_traj_sql = text(f"""
@@ -126,7 +126,7 @@ def check_geometry_quality():
         
         # 检查最近的分析结果
         recent_analysis_sql = text(f"""
-            SELECT DISTINCT analysis_id 
+            SELECT analysis_id, created_at
             FROM {analyzer.config.toll_station_table} 
             ORDER BY created_at DESC 
             LIMIT 1
