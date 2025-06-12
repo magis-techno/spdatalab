@@ -120,6 +120,7 @@ class TollStationAnalyzer:
                 max_timestamp BIGINT,
                 workstage_2_count INTEGER DEFAULT 0,
                 workstage_2_ratio FLOAT DEFAULT 0.0,
+                trajectory_geometry TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(analysis_id, toll_station_id, dataset_name)
             )
@@ -250,6 +251,7 @@ class TollStationAnalyzer:
                         index=False,
                         method='multi'
                     )
+                    conn.commit()
                 logger.info(f"成功保存 {len(save_records)} 个收费站数据")
             except Exception as e:
                 logger.error(f"保存收费站数据失败: {e}")
@@ -300,7 +302,7 @@ class TollStationAnalyzer:
             logger.info(f"分析收费站 {toll_station_id} 的轨迹数据...")
             
             try:
-                # 查询该收费站范围内的轨迹数据
+                # 查询该收费站范围内的轨迹数据，并生成轨迹线几何
                 trajectory_sql = text(f"""
                     SELECT 
                         dataset_name,
@@ -311,13 +313,28 @@ class TollStationAnalyzer:
                         COUNT(CASE WHEN workstage = 2 THEN 1 END) as workstage_2_count,
                         ROUND(
                             COUNT(CASE WHEN workstage = 2 THEN 1 END)::float / COUNT(*)::float * 100, 2
-                        ) as workstage_2_ratio
-                    FROM {self.config.trajectory_table} 
+                        ) as workstage_2_ratio,
+                        ST_AsText(
+                            ST_MakeLine(
+                                ARRAY(
+                                    SELECT point_lla 
+                                    FROM {self.config.trajectory_table} t2 
+                                    WHERE t2.dataset_name = t1.dataset_name
+                                    AND ST_Intersects(
+                                        t2.point_lla, 
+                                        ST_GeomFromText('{geometry_wkt}', 4326)
+                                    )
+                                    ORDER BY t2.timestamp
+                                )
+                            )
+                        ) as trajectory_geometry
+                    FROM {self.config.trajectory_table} t1
                     WHERE ST_Intersects(
                         point_lla, 
                         ST_GeomFromText('{geometry_wkt}', 4326)
                     )
                     GROUP BY dataset_name
+                    HAVING COUNT(*) >= 2
                     ORDER BY trajectory_count DESC
                     LIMIT {self.config.max_trajectory_records // len(toll_stations)}
                 """)
@@ -366,6 +383,7 @@ class TollStationAnalyzer:
                     index=False,
                     method='multi'
                 )
+                conn.commit()
             logger.info(f"成功保存 {len(results_df)} 条轨迹分析结果")
         except Exception as e:
             logger.error(f"保存轨迹分析结果失败: {e}")

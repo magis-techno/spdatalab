@@ -25,6 +25,13 @@ clean-bbox:
 	  env PGPASSWORD=postgres \
 	  psql -h local_pg -U postgres -f sql/cleanup.sql
 
+# 清理收费站分析相关表和视图
+clean-toll-station:
+	@echo "清理收费站分析相关表和视图..."
+	docker compose -f docker/docker-compose.yml exec -T workspace \
+	  env PGPASSWORD=postgres \
+	  psql -h local_pg -U postgres -f scripts/clean_toll_station_analysis.sql
+
 # 初始化FDW连接（连接远程trajectory和map数据库）
 init-fdw:
 	@echo "初始化FDW连接..."
@@ -68,7 +75,8 @@ help:
 	@echo "  make clean-fdw - 清理FDW连接"
 	@echo ""
 	@echo "数据管理："
-	@echo "  make clean-bbox- 清理clips_bbox表"
+	@echo "  make clean-bbox        - 清理clips_bbox表"
+	@echo "  make clean-toll-station- 清理收费站分析相关表和视图"
 	@echo ""
 	@echo "数据处理请使用命令行工具："
 	@echo "  spdatalab build-dataset-with-bbox [参数]"
@@ -76,4 +84,4 @@ help:
 	@echo "注意："
 	@echo "  使用init-fdw前请先修改sql/init_fdw.sql中的连接参数"
 
-.PHONY: up down psql init-db clean-bbox init-fdw check-fdw clean-fdw help
+.PHONY: up down psql init-db clean-bbox clean-toll-station init-fdw check-fdw clean-fdw help
