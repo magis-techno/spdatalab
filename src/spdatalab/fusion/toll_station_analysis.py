@@ -523,13 +523,7 @@ class TollStationAnalyzer:
                     intersection_id,
                     intersectiontype,
                     intersectionsubtype,
-                    CASE 
-                        WHEN buffered_geometry IS NOT NULL THEN 
-                            ST_GeomFromText(buffered_geometry, 4326)
-                        WHEN intersection_geometry IS NOT NULL THEN 
-                            ST_GeomFromText(intersection_geometry, 4326)
-                        ELSE NULL
-                    END as geometry,
+                    geometry,
                     created_at
                 FROM {self.config.toll_station_table}
                 WHERE analysis_id = '{analysis_id}'
@@ -559,13 +553,8 @@ class TollStationAnalyzer:
                     tr.point_count,
                     tr.workstage_2_count,
                     tr.workstage_2_ratio,
-                    CASE 
-                        WHEN ts.buffered_geometry IS NOT NULL THEN 
-                            ST_GeomFromText(ts.buffered_geometry, 4326)
-                        WHEN ts.intersection_geometry IS NOT NULL THEN 
-                            ST_GeomFromText(ts.intersection_geometry, 4326)
-                        ELSE NULL
-                    END as geometry,
+                    tr.geometry as trajectory_geometry,
+                    ts.geometry as toll_station_geometry,
                     tr.created_at
                 FROM {self.config.trajectory_results_table} tr
                 LEFT JOIN {self.config.toll_station_table} ts 
@@ -589,8 +578,7 @@ class TollStationAnalyzer:
 # 便捷接口函数
 def analyze_toll_station_trajectories(
     limit: Optional[int] = None,
-    use_buffer: bool = True,
-    buffer_distance_meters: float = 100.0,
+    buffer_distance_meters: float = 1000.0,
     config: Optional[TollStationAnalysisConfig] = None
 ) -> Tuple[pd.DataFrame, pd.DataFrame, str]:
     """
@@ -598,7 +586,6 @@ def analyze_toll_station_trajectories(
     
     Args:
         limit: 限制分析的收费站数量
-        use_buffer: 是否使用缓冲区
         buffer_distance_meters: 缓冲区距离（米）
         config: 自定义配置
         
@@ -624,7 +611,7 @@ def analyze_toll_station_trajectories(
     # 2. 分析轨迹数据
     trajectory_results = analyzer.analyze_trajectories_in_toll_stations(
         analysis_id=analysis_id,
-        use_buffer=use_buffer
+        buffer_distance_meters=buffer_distance_meters
     )
     
     return toll_stations, trajectory_results, analysis_id
