@@ -80,8 +80,7 @@ class TollStationAnalyzer:
                 intersection_id BIGINT NOT NULL,
                 intersectiontype INTEGER,
                 intersectionsubtype INTEGER,
-                intersection_geometry TEXT,
-                buffered_geometry TEXT,
+                geometry GEOMETRY(POINT, 4326),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(analysis_id, intersection_id)
             )
@@ -120,7 +119,7 @@ class TollStationAnalyzer:
                 max_timestamp BIGINT,
                 workstage_2_count INTEGER DEFAULT 0,
                 workstage_2_ratio FLOAT DEFAULT 0.0,
-                trajectory_geometry TEXT,
+                geometry GEOMETRY(LINESTRING, 4326),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(analysis_id, toll_station_id, dataset_name)
             )
@@ -206,52 +205,44 @@ class TollStationAnalyzer:
         if toll_stations_df.empty:
             return
         
-        # 为每个收费站生成缓冲区几何
+        # 准备保存记录，直接使用原始几何
         save_records = []
         for _, row in toll_stations_df.iterrows():
-            # 生成缓冲区几何（如果原始几何存在）
-            buffered_geometry = None
-            if row.get('intersection_geometry'):
-                try:
-                    # 在远程数据库中计算缓冲区
-                    buffer_sql = text(f"""
-                        SELECT ST_AsText(
-                            ST_Buffer(
-                                ST_GeomFromText('{row['intersection_geometry']}', 4326)::geography,
-                                {self.config.buffer_distance_meters}
-                            )::geometry
-                        ) as buffered_geom
-                    """)
-                    with self.remote_engine.connect() as conn:
-                        buffer_result = conn.execute(buffer_sql).fetchone()
-                        if buffer_result and buffer_result[0]:
-                            buffered_geometry = buffer_result[0]
-                except Exception as e:
-                    logger.warning(f"生成缓冲区失败: {e}")
+            # 直接使用WKT几何字符串，让PostgreSQL转换为几何类型
+            geometry_wkt = row.get('intersection_geometry')
             
-            record = {
-                'analysis_id': analysis_id,
-                'intersection_id': int(row['intersection_id']),
-                'intersectiontype': int(row['intersectiontype']) if pd.notna(row['intersectiontype']) else None,
-                'intersectionsubtype': int(row['intersectionsubtype']) if pd.notna(row['intersectionsubtype']) else None,
-                'intersection_geometry': row.get('intersection_geometry'),
-                'buffered_geometry': buffered_geometry
-            }
-            save_records.append(record)
+            if geometry_wkt:
+                record = {
+                    'analysis_id': analysis_id,
+                    'intersection_id': int(row['intersection_id']),
+                    'intersectiontype': int(row['intersectiontype']) if pd.notna(row['intersectiontype']) else None,
+                    'intersectionsubtype': int(row['intersectionsubtype']) if pd.notna(row['intersectionsubtype']) else None,
+                    'geometry': f"SRID=4326;{geometry_wkt}"  # 使用PostGIS的EWKT格式
+                }
+                save_records.append(record)
         
         # 保存到数据库
         if save_records:
-            save_df = pd.DataFrame(save_records)
             try:
-                with self.local_engine.connect() as conn:
-                    save_df.to_sql(
-                        self.config.toll_station_table,
-                        conn,
-                        if_exists='append',
-                        index=False,
-                        method='multi'
-                    )
-                    conn.commit()
+                # 使用SQL INSERT来正确处理几何类型
+                for record in save_records:
+                    insert_sql = text(f"""
+                        INSERT INTO {self.config.toll_station_table} 
+                        (analysis_id, intersection_id, intersectiontype, intersectionsubtype, geometry)
+                        VALUES (
+                            :analysis_id, 
+                            :intersection_id, 
+                            :intersectiontype, 
+                            :intersectionsubtype, 
+                            ST_GeomFromEWKT(:geometry)
+                        )
+                        ON CONFLICT (analysis_id, intersection_id) DO NOTHING
+                    """)
+                    
+                    with self.local_engine.connect() as conn:
+                        conn.execute(insert_sql, record)
+                        conn.commit()
+                
                 logger.info(f"成功保存 {len(save_records)} 个收费站数据")
             except Exception as e:
                 logger.error(f"保存收费站数据失败: {e}")
@@ -259,28 +250,33 @@ class TollStationAnalyzer:
     def analyze_trajectories_in_toll_stations(
         self,
         analysis_id: str,
-        use_buffer: bool = True
+        buffer_distance_meters: float = 1000.0
     ) -> pd.DataFrame:
         """
         分析收费站范围内的轨迹数据
         
         Args:
             analysis_id: 分析ID
-            use_buffer: 是否使用缓冲区几何
+            buffer_distance_meters: 缓冲区距离（米）
             
         Returns:
             轨迹分析结果DataFrame
         """
         logger.info(f"开始分析收费站轨迹数据: {analysis_id}")
         
-        # 1. 获取收费站数据
+        # 1. 获取收费站数据并生成缓冲区
         toll_stations_sql = text(f"""
             SELECT 
                 intersection_id,
-                {'buffered_geometry' if use_buffer else 'intersection_geometry'} as geometry
+                ST_AsText(
+                    ST_Buffer(
+                        geometry::geography,
+                        {buffer_distance_meters}
+                    )::geometry
+                ) as buffer_geometry
             FROM {self.config.toll_station_table} 
             WHERE analysis_id = '{analysis_id}' 
-            AND {'buffered_geometry' if use_buffer else 'intersection_geometry'} IS NOT NULL
+            AND geometry IS NOT NULL
         """)
         
         with self.local_engine.connect() as conn:
@@ -297,7 +293,7 @@ class TollStationAnalyzer:
         
         for _, toll_station in toll_stations.iterrows():
             toll_station_id = toll_station['intersection_id']
-            geometry_wkt = toll_station['geometry']
+            geometry_wkt = toll_station['buffer_geometry']
             
             logger.info(f"分析收费站 {toll_station_id} 的轨迹数据...")
             
@@ -338,19 +334,17 @@ class TollStationAnalyzer:
                         
                         # 生成该数据集的轨迹线几何
                         geom_sql = text(f"""
-                            SELECT ST_AsText(
-                                ST_MakeLine(
-                                    ARRAY(
-                                        SELECT point_lla 
-                                        FROM {self.config.trajectory_table}
-                                        WHERE dataset_name = '{dataset_name}'
-                                        AND ST_Intersects(
-                                            point_lla, 
-                                            ST_GeomFromText('{geometry_wkt}', 4326)
-                                        )
-                                        ORDER BY timestamp
-                                        LIMIT 1000
+                            SELECT ST_MakeLine(
+                                ARRAY(
+                                    SELECT point_lla 
+                                    FROM {self.config.trajectory_table}
+                                    WHERE dataset_name = '{dataset_name}'
+                                    AND ST_Intersects(
+                                        point_lla, 
+                                        ST_GeomFromText('{geometry_wkt}', 4326)
                                     )
+                                    ORDER BY timestamp
+                                    LIMIT 1000
                                 )
                             ) as trajectory_geometry
                         """)
@@ -400,15 +394,42 @@ class TollStationAnalyzer:
             return
         
         try:
-            with self.local_engine.connect() as conn:
-                results_df.to_sql(
-                    self.config.trajectory_results_table,
-                    conn,
-                    if_exists='append',
-                    index=False,
-                    method='multi'
-                )
-                conn.commit()
+            # 使用SQL INSERT来正确处理几何类型
+            for _, row in results_df.iterrows():
+                # 准备几何数据
+                geometry_value = None
+                if row.get('trajectory_geometry') is not None:
+                    # 如果是二进制几何数据，直接使用
+                    geometry_value = row['trajectory_geometry']
+                
+                insert_sql = text(f"""
+                    INSERT INTO {self.config.trajectory_results_table} 
+                    (analysis_id, toll_station_id, dataset_name, trajectory_count, point_count,
+                     min_timestamp, max_timestamp, workstage_2_count, workstage_2_ratio, geometry)
+                    VALUES (
+                        :analysis_id, :toll_station_id, :dataset_name, :trajectory_count, :point_count,
+                        :min_timestamp, :max_timestamp, :workstage_2_count, :workstage_2_ratio, :geometry
+                    )
+                    ON CONFLICT (analysis_id, toll_station_id, dataset_name) DO NOTHING
+                """)
+                
+                params = {
+                    'analysis_id': row['analysis_id'],
+                    'toll_station_id': row['toll_station_id'],
+                    'dataset_name': row['dataset_name'],
+                    'trajectory_count': row['trajectory_count'],
+                    'point_count': row['point_count'],
+                    'min_timestamp': row['min_timestamp'],
+                    'max_timestamp': row['max_timestamp'],
+                    'workstage_2_count': row['workstage_2_count'],
+                    'workstage_2_ratio': row['workstage_2_ratio'],
+                    'geometry': geometry_value
+                }
+                
+                with self.local_engine.connect() as conn:
+                    conn.execute(insert_sql, params)
+                    conn.commit()
+            
             logger.info(f"成功保存 {len(results_df)} 条轨迹分析结果")
         except Exception as e:
             logger.error(f"保存轨迹分析结果失败: {e}")

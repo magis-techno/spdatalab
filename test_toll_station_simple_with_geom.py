@@ -45,7 +45,7 @@ def main():
         
         # 2. 分析轨迹
         print("2️⃣ 分析轨迹...")
-        trajectory_results = analyzer.analyze_trajectories_in_toll_stations(analysis_id, use_buffer=True)
+        trajectory_results = analyzer.analyze_trajectories_in_toll_stations(analysis_id, buffer_distance_meters=1000.0)
         print(f"   找到 {len(trajectory_results)} 个数据集-收费站组合")
         
         # 检查轨迹保存
@@ -53,7 +53,7 @@ def main():
             traj_stats = conn.execute(text(f"""
                 SELECT 
                     COUNT(*) as total,
-                    COUNT(trajectory_geometry) as with_geom
+                    COUNT(geometry) as with_geom
                 FROM {analyzer.config.trajectory_results_table} 
                 WHERE analysis_id = '{analysis_id}'
             """)).fetchone()
@@ -68,13 +68,12 @@ def main():
         with analyzer.local_engine.connect() as conn:
             toll_geom = conn.execute(text(f"""
                 SELECT 
-                    COUNT(intersection_geometry) as orig_geom,
-                    COUNT(buffered_geometry) as buffer_geom
+                    COUNT(geometry) as geom_count
                 FROM {analyzer.config.toll_station_table}
                 WHERE analysis_id = '{analysis_id}'
             """)).fetchone()
         
-        print(f"   收费站: {toll_geom[0]}个原始几何, {toll_geom[1]}个缓冲几何")
+        print(f"   收费站: {toll_geom[0]}个几何")
         
         # 轨迹几何样本
         with analyzer.local_engine.connect() as conn:
@@ -82,7 +81,7 @@ def main():
                 SELECT 
                     dataset_name,
                     point_count,
-                    CASE WHEN trajectory_geometry IS NOT NULL THEN 'YES' ELSE 'NO' END as has_geom
+                    CASE WHEN geometry IS NOT NULL THEN 'YES' ELSE 'NO' END as has_geom
                 FROM {analyzer.config.trajectory_results_table}
                 WHERE analysis_id = '{analysis_id}'
                 ORDER BY point_count DESC
