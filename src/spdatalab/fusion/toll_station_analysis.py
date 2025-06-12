@@ -80,7 +80,7 @@ class TollStationAnalyzer:
                 intersection_id BIGINT NOT NULL,
                 intersectiontype INTEGER,
                 intersectionsubtype INTEGER,
-                geometry GEOMETRY(POINT, 4326),
+                geometry GEOMETRY,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(analysis_id, intersection_id)
             )
@@ -119,7 +119,7 @@ class TollStationAnalyzer:
                 max_timestamp BIGINT,
                 workstage_2_count INTEGER DEFAULT 0,
                 workstage_2_ratio FLOAT DEFAULT 0.0,
-                geometry GEOMETRY(LINESTRING, 4326),
+                geometry GEOMETRY,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(analysis_id, toll_station_id, dataset_name)
             )
@@ -217,7 +217,7 @@ class TollStationAnalyzer:
                     'intersection_id': int(row['intersection_id']),
                     'intersectiontype': int(row['intersectiontype']) if pd.notna(row['intersectiontype']) else None,
                     'intersectionsubtype': int(row['intersectionsubtype']) if pd.notna(row['intersectionsubtype']) else None,
-                    'geometry': f"SRID=4326;{geometry_wkt}"  # 使用PostGIS的EWKT格式
+                    'geometry_wkt': geometry_wkt  # 保存WKT字符串，在SQL中转换
                 }
                 save_records.append(record)
         
@@ -234,7 +234,7 @@ class TollStationAnalyzer:
                             :intersection_id, 
                             :intersectiontype, 
                             :intersectionsubtype, 
-                            ST_GeomFromEWKT(:geometry)
+                            ST_SetSRID(ST_GeomFromText(:geometry_wkt), 4326)
                         )
                         ON CONFLICT (analysis_id, intersection_id) DO NOTHING
                     """)
