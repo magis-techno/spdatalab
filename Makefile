@@ -52,6 +52,25 @@ clean-fdw:
 	  env PGPASSWORD=postgres \
 	  psql -h local_pg -U postgres -f sql/cleanup_fdw.sql
 
+# Mock数据环境管理
+mock-up:
+	docker compose -f mock/docker-compose.mock.yml up -d
+
+mock-down:
+	docker compose -f mock/docker-compose.mock.yml down
+
+mock-init:
+	docker compose -f mock/docker-compose.mock.yml exec mock_manager python scripts/setup_mock.py setup --scale small
+
+mock-check:
+	docker compose -f mock/docker-compose.mock.yml exec mock_manager python scripts/setup_mock.py validate
+
+mock-reset:
+	docker compose -f mock/docker-compose.mock.yml exec mock_manager python scripts/reset_data.py
+
+mock-logs:
+	docker compose -f mock/docker-compose.mock.yml logs -f
+
 # 显示帮助信息
 help:
 	@echo "Spatial-Data-Lab 开发环境管理"
@@ -61,6 +80,14 @@ help:
 	@echo "  make down      - 停止开发环境"
 	@echo "  make init-db   - 初始化数据库（首次使用）"
 	@echo "  make psql      - 进入PostgreSQL命令行"
+	@echo ""
+	@echo "Mock数据环境："
+	@echo "  make mock-up   - 启动Mock数据环境"
+	@echo "  make mock-down - 停止Mock数据环境"
+	@echo "  make mock-init - 初始化Mock测试数据"
+	@echo "  make mock-check- 验证Mock环境"
+	@echo "  make mock-reset- 重置Mock数据"
+	@echo "  make mock-logs - 查看Mock服务日志"
 	@echo ""
 	@echo "FDW远程连接管理："
 	@echo "  make init-fdw  - 初始化FDW连接（trajectory和map数据库）"
@@ -76,4 +103,4 @@ help:
 	@echo "注意："
 	@echo "  使用init-fdw前请先修改sql/init_fdw.sql中的连接参数"
 
-.PHONY: up down psql init-db clean-bbox init-fdw check-fdw clean-fdw help
+.PHONY: up down psql init-db clean-bbox init-fdw check-fdw clean-fdw help mock-up mock-down mock-init mock-check mock-reset mock-logs

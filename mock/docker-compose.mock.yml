@@ -1,0 +1,114 @@
+version: '3.9'
+
+services:
+  # 轨迹数据库 - 存储轨迹点数据
+  trajectory_db:
+    image: postgis/postgis:16-3.4
+    container_name: mock_trajectory_db
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: trajectory
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - trajectory_data:/var/lib/postgresql/data
+      - ./databases/trajectory:/docker-entrypoint-initdb.d
+    networks:
+      - mock_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d trajectory"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # 业务数据库 - 存储元数据信息
+  business_db:
+    image: postgis/postgis:16-3.4
+    container_name: mock_business_db
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_DB: business
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - business_data:/var/lib/postgresql/data
+      - ./databases/business:/docker-entrypoint-initdb.d
+    networks:
+      - mock_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d business"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # 地图数据库 - 存储路口等地图数据
+  map_db:
+    image: postgis/postgis:16-3.4
+    container_name: mock_map_db
+    ports:
+      - "5435:5432"
+    environment:
+      POSTGRES_DB: mapdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - map_data:/var/lib/postgresql/data
+      - ./databases/map:/docker-entrypoint-initdb.d
+    networks:
+      - mock_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d mapdb"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Mock数据管理服务
+  mock_manager:
+    build:
+      context: .
+      dockerfile: Dockerfile.mock
+    container_name: mock_manager
+    volumes:
+      - .:/workspace
+      - ../:/project_root
+    working_dir: /workspace
+    depends_on:
+      trajectory_db:
+        condition: service_healthy
+      business_db:
+        condition: service_healthy
+      map_db:
+        condition: service_healthy
+    environment:
+      - TRAJECTORY_DSN=postgresql+psycopg://postgres:postgres@trajectory_db:5432/trajectory
+      - BUSINESS_DSN=postgresql+psycopg://postgres:postgres@business_db:5432/business
+      - MAP_DSN=postgresql+psycopg://postgres:postgres@map_db:5432/mapdb
+    networks:
+      - mock_net
+    command: tail -f /dev/null
+
+  # Redis缓存 (可选，用于加速测试)
+  redis:
+    image: redis:7-alpine
+    container_name: mock_redis
+    ports:
+      - "6379:6379"
+    networks:
+      - mock_net
+
+volumes:
+  trajectory_data:
+  business_data:  
+  map_data:
+
+networks:
+  mock_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.32.0.0/24 

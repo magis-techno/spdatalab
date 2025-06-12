@@ -1,0 +1,5 @@
+mock/test_data/jsonl/lane_change_1_sub_ddi_001.jsonl@duplicate20
+mock/test_data/jsonl/lane_change_2_sub_ddi_002.jsonl@duplicate15
+mock/test_data/jsonl/intersection_test_1_sub_ddi_003.jsonl@duplicate10
+mock/test_data/jsonl/highway_merge_1_sub_ddi_004.jsonl@duplicate25
+mock/test_data/jsonl/urban_scenario_1_sub_ddi_005.jsonl@duplicate30 
