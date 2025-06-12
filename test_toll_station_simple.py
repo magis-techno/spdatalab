@@ -7,6 +7,7 @@
 
 import sys
 from pathlib import Path
+from sqlalchemy import text
 
 # 添加项目根目录到Python路径
 project_root = Path(__file__).parent
@@ -28,12 +29,12 @@ def test_database_connection():
         
         # 测试本地数据库连接
         with analyzer.local_engine.connect() as conn:
-            result = conn.execute("SELECT 1").scalar()
+            result = conn.execute(text("SELECT 1")).scalar()
             print("✅ 本地数据库连接正常")
         
         # 测试远程数据库连接
         with analyzer.remote_engine.connect() as conn:
-            result = conn.execute("SELECT 1").scalar()
+            result = conn.execute(text("SELECT 1")).scalar()
             print("✅ 远程数据库连接正常")
             
         return True
@@ -51,24 +52,24 @@ def test_intersection_table():
         
         with analyzer.remote_engine.connect() as conn:
             # 检查表是否存在
-            check_table_sql = """
+            check_table_sql = text("""
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
                     WHERE table_name = 'full_intersection'
                 );
-            """
+            """)
             table_exists = conn.execute(check_table_sql).scalar()
             
             if table_exists:
                 print("✅ full_intersection表存在")
                 
                 # 检查表中的记录数
-                count_sql = "SELECT COUNT(*) FROM full_intersection"
+                count_sql = text("SELECT COUNT(*) FROM full_intersection")
                 total_count = conn.execute(count_sql).scalar()
                 print(f"📊 表中总记录数: {total_count:,}")
                 
                 # 检查收费站数量
-                toll_count_sql = "SELECT COUNT(*) FROM full_intersection WHERE intersectiontype = 2"
+                toll_count_sql = text("SELECT COUNT(*) FROM full_intersection WHERE intersectiontype = 2")
                 toll_count = conn.execute(toll_count_sql).scalar()
                 print(f"🏛️ 收费站数量: {toll_count}")
                 
