@@ -875,20 +875,17 @@ def refresh_materialized_view(view_name: str):
 
 @cli.command()
 @click.option('--limit', type=int, help='限制分析的收费站数量（可选）')
-@click.option('--use-buffer', is_flag=True, default=True, help='是否使用缓冲区分析')
-@click.option('--buffer-distance', type=float, default=100.0, help='缓冲区距离（米）')
 @click.option('--analysis-id', help='自定义分析ID')
 @click.option('--export-qgis', is_flag=True, help='导出QGIS可视化视图')
 @click.option('--max-trajectory-records', type=int, default=10000, help='最大轨迹记录数')
-def analyze_toll_stations(limit: int, use_buffer: bool, 
-                         buffer_distance: float, analysis_id: str, export_qgis: bool,
+def analyze_toll_stations(limit: int, analysis_id: str, export_qgis: bool,
                          max_trajectory_records: int):
     """
     分析收费站（intersectiontype=2）及其范围内的轨迹数据
     
     功能：
     1. 直接查找intersectiontype=2的收费站数据（不依赖bbox）
-    2. 分析收费站范围内的轨迹数据
+    2. 使用收费站原始几何与轨迹数据进行空间相交分析
     3. 按dataset_name聚合轨迹统计
     4. 可选导出QGIS可视化视图
     
@@ -899,8 +896,8 @@ def analyze_toll_stations(limit: int, use_buffer: bool,
         # 限制分析数量
         spdatalab analyze-toll-stations --limit 100
         
-        # 自定义缓冲区和导出QGIS
-        spdatalab analyze-toll-stations --buffer-distance 200 --export-qgis
+        # 导出QGIS视图
+        spdatalab analyze-toll-stations --export-qgis
     """
     try:
         from .fusion.toll_station_analysis import (
@@ -916,23 +913,18 @@ def analyze_toll_stations(limit: int, use_buffer: bool,
     click.echo("🚀 开始收费站轨迹分析...")
     click.echo(f"📋 分析参数:")
     click.echo(f"   - 收费站限制: {limit or '无限制'}")
-    click.echo(f"   - 使用缓冲区: {'是' if use_buffer else '否'}")
-    if use_buffer:
-        click.echo(f"   - 缓冲区距离: {buffer_distance}米")
+    click.echo(f"   - 空间关系: 直接几何相交（无缓冲区）")
     click.echo(f"   - 最大轨迹记录: {max_trajectory_records}")
     
     try:
         # 配置分析参数
         config = TollStationAnalysisConfig(
-            buffer_distance_meters=buffer_distance,
             max_trajectory_records=max_trajectory_records
         )
         
         # 执行分析
         toll_stations, trajectory_results, final_analysis_id = analyze_toll_station_trajectories(
             limit=limit,
-            use_buffer=use_buffer,
-            buffer_distance_meters=buffer_distance,
             config=config
         )
         

@@ -249,31 +249,24 @@ class TollStationAnalyzer:
     
     def analyze_trajectories_in_toll_stations(
         self,
-        analysis_id: str,
-        buffer_distance_meters: float = 1000.0
+        analysis_id: str
     ) -> pd.DataFrame:
         """
-        分析收费站范围内的轨迹数据
+        分析收费站范围内的轨迹数据（直接使用原始几何相交）
         
         Args:
             analysis_id: 分析ID
-            buffer_distance_meters: 缓冲区距离（米）
             
         Returns:
             轨迹分析结果DataFrame
         """
         logger.info(f"开始分析收费站轨迹数据: {analysis_id}")
         
-        # 1. 获取收费站数据并生成缓冲区
+        # 1. 获取收费站数据
         toll_stations_sql = text(f"""
             SELECT 
                 intersection_id,
-                ST_AsText(
-                    ST_Buffer(
-                        geometry::geography,
-                        {buffer_distance_meters}
-                    )::geometry
-                ) as buffer_geometry
+                ST_AsText(geometry) as geometry_wkt
             FROM {self.config.toll_station_table} 
             WHERE analysis_id = '{analysis_id}' 
             AND geometry IS NOT NULL
@@ -293,7 +286,7 @@ class TollStationAnalyzer:
         
         for _, toll_station in toll_stations.iterrows():
             toll_station_id = toll_station['intersection_id']
-            geometry_wkt = toll_station['buffer_geometry']
+            geometry_wkt = toll_station['geometry_wkt']
             
             logger.info(f"分析收费站 {toll_station_id} 的轨迹数据...")
             
@@ -578,26 +571,19 @@ class TollStationAnalyzer:
 # 便捷接口函数
 def analyze_toll_station_trajectories(
     limit: Optional[int] = None,
-    buffer_distance_meters: float = 1000.0,
     config: Optional[TollStationAnalysisConfig] = None
 ) -> Tuple[pd.DataFrame, pd.DataFrame, str]:
     """
-    一站式收费站轨迹分析（不依赖bbox）
+    一站式收费站轨迹分析（不依赖bbox，直接使用几何相交）
     
     Args:
         limit: 限制分析的收费站数量
-        buffer_distance_meters: 缓冲区距离（米）
         config: 自定义配置
         
     Returns:
         (收费站数据, 轨迹分析结果, 分析ID)
     """
-    if config:
-        config.buffer_distance_meters = buffer_distance_meters
-    else:
-        config = TollStationAnalysisConfig(buffer_distance_meters=buffer_distance_meters)
-    
-    analyzer = TollStationAnalyzer(config)
+    analyzer = TollStationAnalyzer(config or TollStationAnalysisConfig())
     
     # 1. 查找收费站
     toll_stations, analysis_id = analyzer.find_toll_stations(
@@ -610,8 +596,7 @@ def analyze_toll_station_trajectories(
     
     # 2. 分析轨迹数据
     trajectory_results = analyzer.analyze_trajectories_in_toll_stations(
-        analysis_id=analysis_id,
-        buffer_distance_meters=buffer_distance_meters
+        analysis_id=analysis_id
     )
     
     return toll_stations, trajectory_results, analysis_id

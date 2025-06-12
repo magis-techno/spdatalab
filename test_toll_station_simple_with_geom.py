@@ -45,7 +45,7 @@ def main():
         
         # 2. 分析轨迹
         print("2️⃣ 分析轨迹...")
-        trajectory_results = analyzer.analyze_trajectories_in_toll_stations(analysis_id, buffer_distance_meters=1000.0)
+        trajectory_results = analyzer.analyze_trajectories_in_toll_stations(analysis_id)
         print(f"   找到 {len(trajectory_results)} 个数据集-收费站组合")
         
         # 检查轨迹保存

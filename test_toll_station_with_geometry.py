@@ -63,7 +63,7 @@ def test_with_geometry():
         
         # 步骤2: 分析轨迹数据
         print("2️⃣ 分析轨迹数据...")
-        trajectory_results = analyzer.analyze_trajectories_in_toll_stations(analysis_id, buffer_distance_meters=1000.0)
+        trajectory_results = analyzer.analyze_trajectories_in_toll_stations(analysis_id)
         
         if trajectory_results.empty:
             print("⚠️ 没有找到轨迹数据")
