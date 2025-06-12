@@ -2,10 +2,10 @@
 收费站数据分析模块
 
 功能：
-1. 查找intersectiontype=2的收费站数据
+1. 直接查找intersectiontype=2的收费站数据（不依赖bbox）
 2. 基于收费站范围查询轨迹数据
 3. 按dataset_name对轨迹数据进行聚合分析
-4. 支持clip_bbox和路口数据的空间分析
+4. 支持独立的收费站空间分析
 """
 
 import logging
@@ -15,12 +15,6 @@ from sqlalchemy import create_engine, text
 from typing import Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass
 from datetime import datetime
-
-from .spatial_join_production import (
-    ProductionSpatialJoin, 
-    SpatialJoinConfig, 
-    INTERSECTION_TYPE_MAPPING
-)
 
 logger = logging.getLogger(__name__)
 
@@ -36,13 +30,16 @@ class TollStationAnalysisConfig:
     toll_station_type: int = 2  # intersectiontype = 2 对应收费站
     buffer_distance_meters: float = 100.0  # 收费站缓冲区距离
     max_trajectory_records: int = 10000  # 单次查询轨迹数据的最大记录数
+    # 远程表名配置
+    intersection_table: str = "full_intersection"  # 远程intersection表名
+    trajectory_table: str = "public.ddi_data_points"  # 远程轨迹表名
 
 class TollStationAnalyzer:
     """
     收费站数据分析器
     
     主要功能：
-    1. 查找收费站数据（intersectiontype=2）
+    1. 直接查找收费站数据（intersectiontype=2），不依赖bbox
     2. 基于收费站几何范围查询轨迹数据
     3. 对轨迹数据按dataset_name进行聚合分析
     """
@@ -60,13 +57,6 @@ class TollStationAnalyzer:
             connect_args={"client_encoding": "utf8"}
         )
         
-        # 初始化空间连接器
-        spatial_config = SpatialJoinConfig(
-            local_dsn=self.config.local_dsn,
-            remote_dsn=self.config.remote_dsn
-        )
-        self.spatial_joiner = ProductionSpatialJoin(spatial_config)
-        
         # 初始化分析表
         self._init_analysis_tables()
     
@@ -81,23 +71,19 @@ class TollStationAnalyzer:
             CREATE TABLE IF NOT EXISTS {self.config.toll_station_table} (
                 id SERIAL PRIMARY KEY,
                 analysis_id VARCHAR(100) NOT NULL,
-                scene_token VARCHAR(255) NOT NULL,
-                city_id VARCHAR(100),
                 intersection_id BIGINT NOT NULL,
                 intersectiontype INTEGER,
                 intersectionsubtype INTEGER,
                 intersection_geometry TEXT,
                 buffered_geometry TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(analysis_id, scene_token, intersection_id)
+                UNIQUE(analysis_id, intersection_id)
             )
         """)
         
         # 创建索引
         create_indexes_sql = [
             text(f"CREATE INDEX IF NOT EXISTS idx_{self.config.toll_station_table}_analysis_id ON {self.config.toll_station_table} (analysis_id)"),
-            text(f"CREATE INDEX IF NOT EXISTS idx_{self.config.toll_station_table}_scene_token ON {self.config.toll_station_table} (scene_token)"),
-            text(f"CREATE INDEX IF NOT EXISTS idx_{self.config.toll_station_table}_city_id ON {self.config.toll_station_table} (city_id)"),
             text(f"CREATE INDEX IF NOT EXISTS idx_{self.config.toll_station_table}_intersection_id ON {self.config.toll_station_table} (intersection_id)")
         ]
         
@@ -155,16 +141,14 @@ class TollStationAnalyzer:
     
     def find_toll_stations(
         self,
-        num_bbox: int = 1000,
-        city_filter: Optional[str] = None,
+        limit: Optional[int] = None,
         analysis_id: Optional[str] = None
     ) -> Tuple[pd.DataFrame, str]:
         """
-        查找收费站数据（intersectiontype=2）
+        直接查找收费站数据（intersectiontype=2）
         
         Args:
-            num_bbox: 要处理的bbox数量
-            city_filter: 城市过滤条件
+            limit: 限制查找的收费站数量（可选）
             analysis_id: 分析ID（可选，自动生成）
             
         Returns:
@@ -175,36 +159,40 @@ class TollStationAnalyzer:
         
         logger.info(f"开始查找收费站数据: {analysis_id}")
         
-        # 1. 构建缓存数据（如果需要）
-        logger.info("构建相交关系缓存...")
-        cached_count, cache_stats = self.spatial_joiner.build_intersection_cache(
-            num_bbox=num_bbox,
-            city_filter=city_filter
-        )
-        logger.info(f"缓存完成，共缓存 {cached_count} 个相交关系")
+        # 直接从intersection表查找收费站
+        limit_clause = f"LIMIT {limit}" if limit else ""
         
-        # 2. 查找收费站数据
-        logger.info("查找收费站数据...")
-        toll_stations_df = self.spatial_joiner.analyze_intersections(
-            city_filter=city_filter,
-            intersection_types=[self.config.toll_station_type]
-        )
+        toll_station_sql = text(f"""
+            SELECT 
+                id as intersection_id,
+                intersectiontype,
+                intersectionsubtype,
+                ST_AsText(wkb_geometry) as intersection_geometry
+            FROM {self.config.intersection_table}
+            WHERE intersectiontype = {self.config.toll_station_type}
+            AND wkb_geometry IS NOT NULL
+            ORDER BY id
+            {limit_clause}
+        """)
         
-        if toll_stations_df.empty:
-            logger.warning("未找到收费站数据")
+        try:
+            with self.remote_engine.connect() as conn:
+                toll_stations_df = pd.read_sql(toll_station_sql, conn)
+            
+            if toll_stations_df.empty:
+                logger.warning("未找到收费站数据")
+                return toll_stations_df, analysis_id
+            
+            logger.info(f"找到 {len(toll_stations_df)} 个收费站")
+            
+            # 保存收费站数据到分析表
+            self._save_toll_stations(toll_stations_df, analysis_id)
+            
             return toll_stations_df, analysis_id
-        
-        # 3. 获取收费站详细信息
-        toll_station_details = self.spatial_joiner.get_intersection_details(
-            city_filter=city_filter,
-            intersection_types=[self.config.toll_station_type]
-        )
-        
-        # 4. 保存收费站数据到分析表
-        self._save_toll_stations(toll_station_details, analysis_id)
-        
-        logger.info(f"找到 {len(toll_station_details)} 个收费站")
-        return toll_station_details, analysis_id
+            
+        except Exception as e:
+            logger.error(f"查找收费站失败: {e}")
+            return pd.DataFrame(), analysis_id
     
     def _save_toll_stations(self, toll_stations_df: pd.DataFrame, analysis_id: str):
         """保存收费站数据到分析表"""
@@ -236,11 +224,9 @@ class TollStationAnalyzer:
             
             record = {
                 'analysis_id': analysis_id,
-                'scene_token': row['scene_token'],
-                'city_id': row.get('city_id'),
                 'intersection_id': int(row['intersection_id']),
-                'intersectiontype': int(row['intersection_type']) if pd.notna(row['intersection_type']) else None,
-                'intersectionsubtype': int(row['intersection_subtype']) if pd.notna(row['intersection_subtype']) else None,
+                'intersectiontype': int(row['intersectiontype']) if pd.notna(row['intersectiontype']) else None,
+                'intersectionsubtype': int(row['intersectionsubtype']) if pd.notna(row['intersectionsubtype']) else None,
                 'intersection_geometry': row.get('intersection_geometry'),
                 'buffered_geometry': buffered_geometry
             }
@@ -283,8 +269,6 @@ class TollStationAnalyzer:
         toll_stations_sql = text(f"""
             SELECT 
                 intersection_id,
-                scene_token,
-                city_id,
                 {'buffered_geometry' if use_buffer else 'intersection_geometry'} as geometry
             FROM {self.config.toll_station_table} 
             WHERE analysis_id = '{analysis_id}' 
@@ -322,7 +306,7 @@ class TollStationAnalyzer:
                         ROUND(
                             COUNT(CASE WHEN workstage = 2 THEN 1 END)::float / COUNT(*)::float * 100, 2
                         ) as workstage_2_ratio
-                    FROM public.ddi_data_points 
+                    FROM {self.config.trajectory_table} 
                     WHERE ST_Intersects(
                         point_lla, 
                         ST_GeomFromText('{geometry_wkt}', 4326)
@@ -396,9 +380,7 @@ class TollStationAnalyzer:
             # 收费站统计
             toll_station_sql = text(f"""
                 SELECT 
-                    COUNT(*) as total_toll_stations,
-                    COUNT(DISTINCT city_id) as cities_count,
-                    COUNT(DISTINCT scene_token) as scenes_count
+                    COUNT(*) as total_toll_stations
                 FROM {self.config.toll_station_table} 
                 WHERE analysis_id = '{analysis_id}'
             """)
@@ -407,9 +389,7 @@ class TollStationAnalyzer:
                 toll_stats = conn.execute(toll_station_sql).fetchone()
                 if toll_stats:
                     summary.update({
-                        'total_toll_stations': toll_stats[0],
-                        'cities_count': toll_stats[1],
-                        'scenes_count': toll_stats[2]
+                        'total_toll_stations': toll_stats[0]
                     })
             
             # 轨迹统计
@@ -470,8 +450,6 @@ class TollStationAnalyzer:
                 SELECT 
                     id,
                     analysis_id,
-                    scene_token,
-                    city_id,
                     intersection_id,
                     intersectiontype,
                     intersectionsubtype,
@@ -511,8 +489,6 @@ class TollStationAnalyzer:
                     tr.point_count,
                     tr.workstage_2_count,
                     tr.workstage_2_ratio,
-                    ts.city_id,
-                    ts.scene_token,
                     CASE 
                         WHEN ts.buffered_geometry IS NOT NULL THEN 
                             ST_GeomFromText(ts.buffered_geometry, 4326)
@@ -542,18 +518,16 @@ class TollStationAnalyzer:
 
 # 便捷接口函数
 def analyze_toll_station_trajectories(
-    num_bbox: int = 1000,
-    city_filter: Optional[str] = None,
+    limit: Optional[int] = None,
     use_buffer: bool = True,
     buffer_distance_meters: float = 100.0,
     config: Optional[TollStationAnalysisConfig] = None
 ) -> Tuple[pd.DataFrame, pd.DataFrame, str]:
     """
-    一站式收费站轨迹分析
+    一站式收费站轨迹分析（不依赖bbox）
     
     Args:
-        num_bbox: 要处理的bbox数量
-        city_filter: 城市过滤条件
+        limit: 限制分析的收费站数量
         use_buffer: 是否使用缓冲区
         buffer_distance_meters: 缓冲区距离（米）
         config: 自定义配置
@@ -570,8 +544,7 @@ def analyze_toll_station_trajectories(
     
     # 1. 查找收费站
     toll_stations, analysis_id = analyzer.find_toll_stations(
-        num_bbox=num_bbox,
-        city_filter=city_filter,
+        limit=limit,
         analysis_id=None
     )
     
