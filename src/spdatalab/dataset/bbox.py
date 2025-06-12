@@ -10,6 +10,12 @@ import geopandas as gpd, pandas as pd
 from sqlalchemy import text, create_engine
 from spdatalab.common.io_hive import hive_cursor
 from typing import List, Dict
+import multiprocessing as mp
+from multiprocessing import Pool, Manager
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import threading
+import time
+import os
 
 # 检查是否有parquet支持
 try:
@@ -1162,9 +1168,230 @@ def maintain_unified_view(eng, view_name: str = 'clips_bbox_unified') -> bool:
         print(f"维护统一视图失败: {str(e)}")
         return False
 
+def process_subdataset_parallel(args):
+    """并行处理单个子数据集的包装函数
+    
+    Args:
+        args: (subdataset_name, scene_ids, table_name, batch_size, insert_batch_size, work_dir, dsn)
+        
+    Returns:
+        (subdataset_name, processed_count, inserted_count, success)
+    """
+    subdataset_name, scene_ids, table_name, batch_size, insert_batch_size, work_dir, dsn = args
+    
+    try:
+        # 为每个进程创建独立的数据库连接
+        from sqlalchemy import create_engine
+        eng = create_engine(dsn, future=True)
+        
+        # 创建独立的进度跟踪器
+        sub_work_dir = f"{work_dir}/{subdataset_name}"
+        sub_tracker = LightweightProgressTracker(sub_work_dir)
+        
+        # 获取需要处理的场景ID
+        remaining_scene_ids = sub_tracker.get_remaining_tokens(scene_ids)
+        
+        if not remaining_scene_ids:
+            print(f"  🔄 [{subdataset_name}] 所有场景已处理完成，跳过")
+            return subdataset_name, 0, 0, True
+        
+        print(f"  🚀 [{subdataset_name}] 开始处理 {len(remaining_scene_ids)} 个场景")
+        
+        # 处理当前子数据集的数据
+        processed_count, inserted_count = process_subdataset_scenes(
+            eng, remaining_scene_ids, table_name, batch_size, insert_batch_size, sub_tracker
+        )
+        
+        print(f"  ✅ [{subdataset_name}] 完成: 处理 {processed_count} 个，插入 {inserted_count} 条记录")
+        
+        return subdataset_name, processed_count, inserted_count, True
+        
+    except Exception as e:
+        print(f"  ❌ [{subdataset_name}] 处理失败: {str(e)}")
+        return subdataset_name, 0, 0, False
+
+def run_with_partitioning_parallel(input_path, batch=1000, insert_batch=1000, work_dir="./bbox_import_logs", 
+                                 create_unified_view_flag=True, maintain_view_only=False, max_workers=None):
+    """使用并行分表模式运行边界框处理
+    
+    Args:
+        input_path: 输入数据集文件路径
+        batch: 处理批次大小
+        insert_batch: 插入批次大小  
+        work_dir: 工作目录
+        create_unified_view_flag: 是否创建统一视图
+        maintain_view_only: 是否只维护视图（不处理数据）
+        max_workers: 最大并行worker数量，None为自动检测CPU核心数
+    """
+    global interrupted
+    
+    # 设置信号处理器
+    setup_signal_handlers()
+    
+    # 确定并行worker数量
+    if max_workers is None:
+        max_workers = min(mp.cpu_count(), 8)  # 限制最大8个进程避免过载
+    
+    print(f"=== 并行分表模式处理开始 ===")
+    print(f"输入文件: {input_path}")
+    print(f"工作目录: {work_dir}")
+    print(f"批次大小: {batch}")
+    print(f"插入批次大小: {insert_batch}")
+    print(f"并行worker数: {max_workers}")
+    print(f"创建统一视图: {create_unified_view_flag}")
+    print(f"仅维护视图: {maintain_view_only}")
+    
+    eng = create_engine(LOCAL_DSN, future=True)
+    
+    # 如果只是维护视图
+    if maintain_view_only:
+        print("\n=== 维护统一视图模式 ===")
+        success = maintain_unified_view(eng)
+        if success:
+            print("✅ 统一视图维护完成")
+        else:
+            print("❌ 统一视图维护失败")
+        return
+    
+    try:
+        # 步骤1: 按子数据集分组场景
+        print("\n=== 步骤1: 分组场景数据 ===")
+        scene_groups = group_scenes_by_subdataset(input_path)
+        
+        if not scene_groups:
+            print("没有找到有效的场景分组数据")
+            return
+        
+        print(f"找到 {len(scene_groups)} 个子数据集")
+        
+        # 步骤2: 批量创建分表
+        print("\n=== 步骤2: 创建分表 ===")
+        table_mapping = batch_create_tables_for_subdatasets(eng, list(scene_groups.keys()))
+        
+        # 步骤3: 并行处理每个子数据集
+        print(f"\n=== 步骤3: 并行分表数据处理 ({max_workers} workers) ===")
+        
+        # 准备并行任务参数
+        task_args = []
+        for subdataset_name, scene_ids in scene_groups.items():
+            table_name = table_mapping[subdataset_name]
+            task_args.append((
+                subdataset_name, scene_ids, table_name, 
+                batch, insert_batch, work_dir, LOCAL_DSN
+            ))
+        
+        # 执行并行处理
+        total_processed = 0
+        total_inserted = 0
+        completed_count = 0
+        failed_count = 0
+        
+        print(f"启动 {len(task_args)} 个并行任务...")
+        
+        start_time = time.time()
+        
+        # 使用ProcessPoolExecutor进行并行处理
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            # 提交所有任务
+            future_to_subdataset = {
+                executor.submit(process_subdataset_parallel, args): args[0] 
+                for args in task_args
+            }
+            
+            # 处理完成的任务
+            for future in as_completed(future_to_subdataset):
+                if interrupted:
+                    print("\n⚠️  检测到中断信号，正在停止剩余任务...")
+                    executor.shutdown(wait=False)
+                    break
+                
+                subdataset_name = future_to_subdataset[future]
+                try:
+                    result_name, processed, inserted, success = future.result()
+                    completed_count += 1
+                    
+                    if success:
+                        total_processed += processed
+                        total_inserted += inserted
+                        print(f"✅ [{completed_count}/{len(task_args)}] {subdataset_name}: {processed}处理/{inserted}插入")
+                    else:
+                        failed_count += 1
+                        print(f"❌ [{completed_count}/{len(task_args)}] {subdataset_name}: 处理失败")
+                        
+                except Exception as e:
+                    failed_count += 1
+                    print(f"❌ [{completed_count}/{len(task_args)}] {subdataset_name}: 异常 - {str(e)}")
+        
+        processing_time = time.time() - start_time
+        
+        # 步骤4: 创建统一视图（如果需要）
+        if create_unified_view_flag and not interrupted:
+            print("\n=== 步骤4: 创建统一视图 ===")
+            success = create_unified_view(eng)
+            if success:
+                print("✅ 统一视图创建完成")
+            else:
+                print("❌ 统一视图创建失败")
+        
+        # 输出最终统计
+        print(f"\n=== 并行分表处理完成 ===")
+        print(f"处理时间: {processing_time:.2f} 秒")
+        print(f"总计处理: {total_processed} 条记录")
+        print(f"总计插入: {total_inserted} 条记录")
+        print(f"成功子数据集: {completed_count - failed_count}/{len(scene_groups)}")
+        if failed_count > 0:
+            print(f"失败子数据集: {failed_count}")
+        
+        if interrupted:
+            print("⚠️  处理被中断，部分数据可能未完成")
+        else:
+            print("✅ 并行分表处理完成")
+            
+        # 计算性能提升估算
+        if processing_time > 0:
+            estimated_sequential_time = processing_time * max_workers
+            speedup = estimated_sequential_time / processing_time
+            print(f"🚀 预计性能提升: {speedup:.1f}x (相比顺序处理)")
+            
+    except KeyboardInterrupt:
+        print(f"\n程序被用户中断")
+        interrupted = True
+    except Exception as e:
+        print(f"\n并行分表处理遇到错误: {str(e)}")
+    finally:
+        print(f"\n日志和进度文件保存在: {work_dir}")
+
 def run_with_partitioning(input_path, batch=1000, insert_batch=1000, work_dir="./bbox_import_logs", 
-                         create_unified_view_flag=True, maintain_view_only=False):
-    """使用分表模式运行边界框处理
+                         create_unified_view_flag=True, maintain_view_only=False, use_parallel=False, 
+                         max_workers=None):
+    """使用分表模式运行边界框处理（支持并行和顺序模式）
+    
+    Args:
+        input_path: 输入数据集文件路径
+        batch: 处理批次大小
+        insert_batch: 插入批次大小  
+        work_dir: 工作目录
+        create_unified_view_flag: 是否创建统一视图
+        maintain_view_only: 是否只维护视图（不处理数据）
+        use_parallel: 是否使用并行处理模式
+        max_workers: 最大并行worker数量，None为自动检测CPU核心数
+    """
+    if use_parallel:
+        # 使用并行模式
+        return run_with_partitioning_parallel(
+            input_path, batch, insert_batch, work_dir, 
+            create_unified_view_flag, maintain_view_only, max_workers
+        )
+    else:
+        # 使用顺序模式（原始实现）
+        return run_with_partitioning_sequential(
+            input_path, batch, insert_batch, work_dir, 
+            create_unified_view_flag, maintain_view_only
+        )
+
+def run_with_partitioning_sequential(input_path, batch=1000, insert_batch=1000, work_dir="./bbox_import_logs", 
+                                   create_unified_view_flag=True, maintain_view_only=False):
+    """使用顺序分表模式运行边界框处理（原始实现）
     
     Args:
         input_path: 输入数据集文件路径
