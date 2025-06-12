@@ -85,9 +85,7 @@ def build_dataset(index_file: str, dataset_name: str, description: str, output: 
 @click.option('--use-partitioning', is_flag=True, help='使用分表模式处理（按子数据集分表存储）')
 @click.option('--create-unified-view', is_flag=True, default=True, help='分表模式下是否创建统一视图')
 @click.option('--maintain-view-only', is_flag=True, help='仅维护统一视图，不处理数据')
-@click.option('--use-parallel', is_flag=True, help='使用并行处理模式（仅分表模式下有效）')
-@click.option('--max-workers', type=int, help='最大并行worker数量，默认为CPU核心数')
-def process_bbox(input: str, batch: int, insert_batch: int, work_dir: str, retry_failed: bool, show_stats: bool, create_table: bool, use_partitioning: bool, create_unified_view: bool, maintain_view_only: bool, use_parallel: bool, max_workers: int):
+def process_bbox(input: str, batch: int, insert_batch: int, work_dir: str, retry_failed: bool, show_stats: bool, create_table: bool, use_partitioning: bool, create_unified_view: bool, maintain_view_only: bool):
     """处理边界框数据。
     
     从数据集文件中加载场景ID，获取边界框信息并插入到PostGIS数据库中。
@@ -108,8 +106,6 @@ def process_bbox(input: str, batch: int, insert_batch: int, work_dir: str, retry
         use_partitioning: 是否使用分表模式处理
         create_unified_view: 分表模式下是否创建统一视图
         maintain_view_only: 是否仅维护统一视图，不处理数据
-        use_parallel: 是否使用并行处理模式（仅分表模式下有效）
-        max_workers: 最大并行worker数量
     """
     setup_logging()
     
@@ -125,10 +121,6 @@ def process_bbox(input: str, batch: int, insert_batch: int, work_dir: str, retry
             click.echo(f"  - 工作目录: {work_dir or './bbox_import_logs'}")
             click.echo(f"  - 创建统一视图: {'是' if create_unified_view else '否'}")
             click.echo(f"  - 仅维护视图: {'是' if maintain_view_only else '否'}")
-            click.echo(f"  - 并行处理: {'是' if use_parallel else '否'}")
-            if use_parallel:
-                workers = max_workers or 'CPU核心数'
-                click.echo(f"  - 并行数量: {workers}")
             
             if show_stats:
                 click.echo("分表模式下显示统计信息功能暂未实现")
@@ -140,9 +132,7 @@ def process_bbox(input: str, batch: int, insert_batch: int, work_dir: str, retry
                 insert_batch=insert_batch,
                 work_dir=work_dir or "./bbox_import_logs",
                 create_unified_view_flag=create_unified_view,
-                maintain_view_only=maintain_view_only,
-                use_parallel=use_parallel,
-                max_workers=max_workers
+                maintain_view_only=maintain_view_only
             )
             
             click.echo("✅ 分表模式边界框处理完成")
@@ -884,180 +874,197 @@ def refresh_materialized_view(view_name: str):
         raise
 
 @cli.command()
-@click.option('--city-filter', help='城市过滤条件，如: city_id=\'001\'')
-@click.option('--num-bbox', type=int, default=1000, help='处理的边界框数量')
-@click.option('--output-file', help='输出文件路径（CSV格式）')
-@click.option('--enable-cache', is_flag=True, default=True, help='是否启用缓存表')
-@click.option('--buffer-meters', type=float, default=50.0, help='收费站缓冲区半径（米）')
-def query_toll_stations_trajectory(city_filter: str, num_bbox: int, output_file: str, enable_cache: bool, buffer_meters: float):
-    """查找收费站范围内的轨迹数据并按dataset_name聚合。
-    
-    该功能会：
-    1. 查找所有收费站类型的路口数据（intersectiontype=2）
-    2. 查询与收费站相交的场景数据
-    3. 从业务库查询scene_token对应的dataset_name
-    4. 从轨迹数据库查询轨迹数据并按dataset_name聚合统计
-    
-    Args:
-        city_filter: 城市过滤条件
-        num_bbox: 处理的边界框数量
-        output_file: 输出文件路径
-        enable_cache: 是否启用缓存表
-        buffer_meters: 收费站缓冲区半径
+@click.option('--num-bbox', type=int, default=1000, help='要处理的bbox数量')
+@click.option('--city-filter', help='城市过滤条件（如shanghai）')
+@click.option('--use-buffer', is_flag=True, default=True, help='是否使用缓冲区分析')
+@click.option('--buffer-distance', type=float, default=100.0, help='缓冲区距离（米）')
+@click.option('--analysis-id', help='自定义分析ID')
+@click.option('--export-qgis', is_flag=True, help='导出QGIS可视化视图')
+@click.option('--max-trajectory-records', type=int, default=10000, help='最大轨迹记录数')
+def analyze_toll_stations(num_bbox: int, city_filter: str, use_buffer: bool, 
+                         buffer_distance: float, analysis_id: str, export_qgis: bool,
+                         max_trajectory_records: int):
     """
-    setup_logging()
+    分析收费站（intersectiontype=2）及其范围内的轨迹数据
+    
+    功能：
+    1. 查找intersectiontype=2的收费站数据
+    2. 分析收费站范围内的轨迹数据
+    3. 按dataset_name聚合轨迹统计
+    4. 可选导出QGIS可视化视图
+    
+    示例：
+        # 基础分析
+        spdatalab analyze-toll-stations --num-bbox 500
+        
+        # 指定城市分析
+        spdatalab analyze-toll-stations --city-filter shanghai --use-buffer
+        
+        # 自定义缓冲区和导出QGIS
+        spdatalab analyze-toll-stations --buffer-distance 200 --export-qgis
+    """
+    try:
+        from .fusion.toll_station_analysis import (
+            TollStationAnalyzer,
+            TollStationAnalysisConfig,
+            analyze_toll_station_trajectories
+        )
+    except ImportError as e:
+        click.echo(f"❌ 导入模块失败: {e}")
+        click.echo("请确保已正确安装所有依赖")
+        return
+    
+    click.echo("🚀 开始收费站轨迹分析...")
+    click.echo(f"📋 分析参数:")
+    click.echo(f"   - bbox数量: {num_bbox}")
+    click.echo(f"   - 城市过滤: {city_filter or '无限制'}")
+    click.echo(f"   - 使用缓冲区: {'是' if use_buffer else '否'}")
+    if use_buffer:
+        click.echo(f"   - 缓冲区距离: {buffer_distance}米")
+    click.echo(f"   - 最大轨迹记录: {max_trajectory_records}")
     
     try:
-        click.echo("🚗 开始查找收费站轨迹数据...")
-        click.echo(f"  - 城市过滤: {city_filter or '无'}")
-        click.echo(f"  - 边界框数量: {num_bbox}")
-        click.echo(f"  - 缓冲区半径: {buffer_meters}米")
-        click.echo(f"  - 启用缓存: {'是' if enable_cache else '否'}")
+        # 配置分析参数
+        config = TollStationAnalysisConfig(
+            buffer_distance_meters=buffer_distance,
+            max_trajectory_records=max_trajectory_records
+        )
         
-        # 导入必要的模块
-        from .fusion.spatial_join_production import ProductionSpatialJoin, SpatialJoinConfig
-        from .common.io_hive import hive_cursor
-        import pandas as pd
-        
-        # 配置空间连接器
-        config = SpatialJoinConfig(enable_cache_table=enable_cache)
-        spatial_join = ProductionSpatialJoin(config)
-        
-        # 第1步：构建收费站相交数据缓存
-        click.echo("\n📍 步骤1：查找收费站相交数据")
-        intersection_count, stats = spatial_join.build_intersection_cache(
+        # 执行分析
+        toll_stations, trajectory_results, final_analysis_id = analyze_toll_station_trajectories(
             num_bbox=num_bbox,
             city_filter=city_filter,
-            force_rebuild=False
+            use_buffer=use_buffer,
+            buffer_distance_meters=buffer_distance,
+            config=config
         )
         
-        click.echo(f"  - 处理了 {stats.get('processed_bbox', 0)} 个边界框")
-        click.echo(f"  - 找到 {intersection_count} 个路口相交记录")
+        if analysis_id:
+            final_analysis_id = analysis_id
         
-        # 第2步：筛选收费站数据
-        click.echo("\n🛣️  步骤2：筛选收费站数据")
-        toll_stations = spatial_join.analyze_intersections(
-            city_filter=city_filter,
-            intersection_types=[2],  # Toll Station
-            group_by=['scene_token', 'intersection_id']
-        )
-        
+        # 显示结果
         if toll_stations.empty:
-            click.echo("❌ 未找到收费站数据")
+            click.echo("⚠️ 未找到收费站数据")
+            click.echo("\n💡 可能的原因:")
+            click.echo("   - 指定的城市没有收费站数据")
+            click.echo("   - 数据库连接问题")
+            click.echo("   - bbox数据不足")
             return
         
-        toll_scene_tokens = toll_stations['scene_token'].unique().tolist()
-        click.echo(f"  - 找到 {len(toll_scene_tokens)} 个收费站相关场景")
+        click.echo(f"\n✅ 分析完成！")
+        click.echo(f"📊 分析ID: {final_analysis_id}")
+        click.echo(f"📍 找到收费站: {len(toll_stations)} 个")
         
-        # 第3步：从业务库查询dataset_name
-        click.echo("\n🗄️  步骤3：查询场景对应的数据集名称")
-        scene_to_dataset = {}
+        # 显示收费站统计
+        if 'city_id' in toll_stations.columns:
+            city_stats = toll_stations['city_id'].value_counts()
+            click.echo(f"\n🏙️ 城市分布:")
+            for city, count in city_stats.head(10).items():
+                click.echo(f"   {city}: {count} 个收费站")
         
-        # 分批查询，避免SQL过长
-        batch_size = 1000
-        for i in range(0, len(toll_scene_tokens), batch_size):
-            batch_tokens = toll_scene_tokens[i:i+batch_size]
-            tokens_str = "', '".join(batch_tokens)
+        # 显示轨迹分析结果
+        if not trajectory_results.empty:
+            total_trajectories = trajectory_results['trajectory_count'].sum()
+            total_datasets = trajectory_results['dataset_name'].nunique()
+            avg_workstage_2 = trajectory_results['workstage_2_ratio'].mean()
             
-            with hive_cursor('app_gy1') as cur:
-                query = f"""
-                SELECT scene_token, dataset_name 
-                FROM scene_table 
-                WHERE scene_token IN ('{tokens_str}')
-                """
-                cur.execute(query)
-                for row in cur.fetchall():
-                    scene_to_dataset[row[0]] = row[1]
-        
-        click.echo(f"  - 查询到 {len(scene_to_dataset)} 个场景的数据集映射")
-        
-        # 第4步：统计轨迹数据
-        click.echo("\n📊 步骤4：统计轨迹数据")
-        dataset_stats = {}
-        
-        for scene_token, dataset_name in scene_to_dataset.items():
-            if dataset_name not in dataset_stats:
-                dataset_stats[dataset_name] = {
-                    'dataset_name': dataset_name,
-                    'scene_count': 0,
-                    'trajectory_count': 0,
-                    'scene_tokens': []
-                }
+            click.echo(f"\n🚗 轨迹数据统计:")
+            click.echo(f"   - 总轨迹数: {total_trajectories:,}")
+            click.echo(f"   - 数据集数: {total_datasets}")
+            click.echo(f"   - 平均工作阶段2比例: {avg_workstage_2:.1f}%")
             
-            dataset_stats[dataset_name]['scene_count'] += 1
-            dataset_stats[dataset_name]['scene_tokens'].append(scene_token)
+            # 显示Top数据集
+            click.echo(f"\n🔝 Top 10 数据集:")
+            top_datasets = trajectory_results.groupby('dataset_name')['trajectory_count'].sum().sort_values(ascending=False).head(10)
+            for i, (dataset, count) in enumerate(top_datasets.items(), 1):
+                click.echo(f"   {i:2d}. {dataset}: {count:,} 条轨迹")
+        else:
+            click.echo(f"\n⚠️ 未找到轨迹数据")
         
-        # 查询轨迹数据统计
-        for dataset_name, stats_data in dataset_stats.items():
-            scene_tokens = stats_data['scene_tokens']
-            
-            # 分批查询轨迹数据
-            total_trajectories = 0
-            for i in range(0, len(scene_tokens), batch_size):
-                batch_tokens = scene_tokens[i:i+batch_size]
-                tokens_str = "', '".join(batch_tokens)
+        # 导出QGIS视图
+        if export_qgis:
+            click.echo(f"\n🗺️ 导出QGIS可视化视图...")
+            try:
+                from .fusion.toll_station_analysis import export_toll_station_results_for_qgis
+                export_info = export_toll_station_results_for_qgis(final_analysis_id, config)
                 
-                try:
-                    with hive_cursor('dataset_gy1') as cur:
-                        trajectory_query = f"""
-                        SELECT COUNT(*) as trajectory_count
-                        FROM trajectory_table 
-                        WHERE scene_token IN ('{tokens_str}')
-                        """
-                        cur.execute(trajectory_query)
-                        result = cur.fetchone()
-                        if result:
-                            total_trajectories += result[0]
-                except Exception as e:
-                    logger.warning(f"查询数据集 {dataset_name} 轨迹数据失败: {e}")
-            
-            dataset_stats[dataset_name]['trajectory_count'] = total_trajectories
+                click.echo(f"✅ QGIS视图创建成功:")
+                for view_type, view_name in export_info.items():
+                    click.echo(f"   - {view_name}")
+                
+                click.echo(f"\n💡 QGIS使用说明:")
+                click.echo(f"   1. 连接到local_pg数据库 (localhost:5432/postgres)")
+                click.echo(f"   2. 添加上述视图作为图层")
+                click.echo(f"   3. 收费站视图显示位置，轨迹视图显示统计密度")
+                
+            except Exception as qgis_error:
+                click.echo(f"❌ QGIS视图导出失败: {qgis_error}")
         
-        # 第5步：输出结果
-        click.echo("\n📋 收费站轨迹数据统计:")
-        click.echo("=" * 80)
+        # 保存分析信息
+        click.echo(f"\n💾 分析数据已保存到本地数据库")
+        click.echo(f"   - 收费站表: toll_station_analysis")
+        click.echo(f"   - 轨迹结果表: toll_station_trajectories")
         
-        results_data = []
-        total_scenes = 0
-        total_trajectories = 0
-        
-        for dataset_name, stats_data in dataset_stats.items():
-            scene_count = stats_data['scene_count']
-            trajectory_count = stats_data['trajectory_count']
-            
-            results_data.append({
-                'dataset_name': dataset_name,
-                'scene_count': scene_count,
-                'trajectory_count': trajectory_count,
-                'avg_trajectories_per_scene': trajectory_count / scene_count if scene_count > 0 else 0
-            })
-            
-            total_scenes += scene_count
-            total_trajectories += trajectory_count
-            
-            click.echo(f"📦 数据集: {dataset_name}")
-            click.echo(f"   - 场景数量: {scene_count:,}")
-            click.echo(f"   - 轨迹数量: {trajectory_count:,}")
-            click.echo(f"   - 平均每场景轨迹数: {trajectory_count/scene_count:.1f}")
-            click.echo()
-        
-        click.echo(f"📊 汇总统计:")
-        click.echo(f"   - 总数据集数: {len(dataset_stats)}")
-        click.echo(f"   - 总场景数: {total_scenes:,}")
-        click.echo(f"   - 总轨迹数: {total_trajectories:,}")
-        
-        # 第6步：保存结果
-        if output_file:
-            results_df = pd.DataFrame(results_data)
-            results_df = results_df.sort_values('trajectory_count', ascending=False)
-            results_df.to_csv(output_file, index=False, encoding='utf-8')
-            click.echo(f"\n💾 结果已保存到: {output_file}")
-        
-        click.echo("\n✅ 收费站轨迹数据查询完成")
+        # 给出后续操作建议
+        click.echo(f"\n🎯 后续操作建议:")
+        click.echo(f"   - 查看分析汇总: 使用 --analysis-id {final_analysis_id}")
+        click.echo(f"   - QGIS可视化: 连接到local_pg数据库查看视图")
+        click.echo(f"   - 数据导出: 可从数据库表中导出CSV或其他格式")
         
     except Exception as e:
-        logger.error(f"查询收费站轨迹数据失败: {str(e)}")
-        raise
+        click.echo(f"❌ 分析失败: {e}")
+        import traceback
+        if click.get_current_context().obj.get('debug', False):
+            click.echo(f"\n🐛 详细错误信息:")
+            click.echo(traceback.format_exc())
+        else:
+            click.echo(f"\n💡 使用 --debug 参数查看详细错误信息")
+
+@cli.command()
+@click.option('--analysis-id', required=True, help='分析ID')
+def toll_stations_summary(analysis_id: str):
+    """
+    查看收费站分析的汇总信息
+    
+    示例：
+        spdatalab toll-stations-summary --analysis-id toll_station_20231201_143022
+    """
+    try:
+        from .fusion.toll_station_analysis import get_toll_station_analysis_summary
+    except ImportError as e:
+        click.echo(f"❌ 导入模块失败: {e}")
+        return
+    
+    try:
+        summary = get_toll_station_analysis_summary(analysis_id)
+        
+        if 'error' in summary:
+            click.echo(f"❌ 获取汇总失败: {summary['error']}")
+            return
+        
+        click.echo(f"📊 收费站分析汇总 - {analysis_id}")
+        click.echo("=" * 60)
+        
+        # 收费站统计
+        click.echo(f"🏛️ 收费站统计:")
+        click.echo(f"   - 总收费站数: {summary.get('total_toll_stations', 0)}")
+        click.echo(f"   - 涉及城市数: {summary.get('cities_count', 0)}")
+        click.echo(f"   - 涉及场景数: {summary.get('scenes_count', 0)}")
+        
+        # 轨迹统计
+        click.echo(f"\n🚗 轨迹统计:")
+        click.echo(f"   - 唯一数据集: {summary.get('unique_datasets', 0)}")
+        click.echo(f"   - 总轨迹数: {summary.get('total_trajectories', 0):,}")
+        click.echo(f"   - 总数据点: {summary.get('total_points', 0):,}")
+        click.echo(f"   - 平均工作阶段2比例: {summary.get('avg_workstage_2_ratio', 0)}%")
+        
+        # 分析信息  
+        click.echo(f"\n📋 分析信息:")
+        click.echo(f"   - 分析ID: {summary.get('analysis_id', 'N/A')}")
+        click.echo(f"   - 分析时间: {summary.get('analysis_time', 'N/A')}")
+        
+    except Exception as e:
+        click.echo(f"❌ 获取汇总失败: {e}")
 
 def setup_logging():
     """设置日志配置。"""
