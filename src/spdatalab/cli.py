@@ -874,31 +874,30 @@ def refresh_materialized_view(view_name: str):
         raise
 
 @cli.command()
-@click.option('--num-bbox', type=int, default=1000, help='要处理的bbox数量')
-@click.option('--city-filter', help='城市过滤条件（如shanghai）')
+@click.option('--limit', type=int, help='限制分析的收费站数量（可选）')
 @click.option('--use-buffer', is_flag=True, default=True, help='是否使用缓冲区分析')
 @click.option('--buffer-distance', type=float, default=100.0, help='缓冲区距离（米）')
 @click.option('--analysis-id', help='自定义分析ID')
 @click.option('--export-qgis', is_flag=True, help='导出QGIS可视化视图')
 @click.option('--max-trajectory-records', type=int, default=10000, help='最大轨迹记录数')
-def analyze_toll_stations(num_bbox: int, city_filter: str, use_buffer: bool, 
+def analyze_toll_stations(limit: int, use_buffer: bool, 
                          buffer_distance: float, analysis_id: str, export_qgis: bool,
                          max_trajectory_records: int):
     """
     分析收费站（intersectiontype=2）及其范围内的轨迹数据
     
     功能：
-    1. 查找intersectiontype=2的收费站数据
+    1. 直接查找intersectiontype=2的收费站数据（不依赖bbox）
     2. 分析收费站范围内的轨迹数据
     3. 按dataset_name聚合轨迹统计
     4. 可选导出QGIS可视化视图
     
     示例：
         # 基础分析
-        spdatalab analyze-toll-stations --num-bbox 500
+        spdatalab analyze-toll-stations
         
-        # 指定城市分析
-        spdatalab analyze-toll-stations --city-filter shanghai --use-buffer
+        # 限制分析数量
+        spdatalab analyze-toll-stations --limit 100
         
         # 自定义缓冲区和导出QGIS
         spdatalab analyze-toll-stations --buffer-distance 200 --export-qgis
@@ -916,8 +915,7 @@ def analyze_toll_stations(num_bbox: int, city_filter: str, use_buffer: bool,
     
     click.echo("🚀 开始收费站轨迹分析...")
     click.echo(f"📋 分析参数:")
-    click.echo(f"   - bbox数量: {num_bbox}")
-    click.echo(f"   - 城市过滤: {city_filter or '无限制'}")
+    click.echo(f"   - 收费站限制: {limit or '无限制'}")
     click.echo(f"   - 使用缓冲区: {'是' if use_buffer else '否'}")
     if use_buffer:
         click.echo(f"   - 缓冲区距离: {buffer_distance}米")
@@ -932,8 +930,7 @@ def analyze_toll_stations(num_bbox: int, city_filter: str, use_buffer: bool,
         
         # 执行分析
         toll_stations, trajectory_results, final_analysis_id = analyze_toll_station_trajectories(
-            num_bbox=num_bbox,
-            city_filter=city_filter,
+            limit=limit,
             use_buffer=use_buffer,
             buffer_distance_meters=buffer_distance,
             config=config
@@ -946,9 +943,9 @@ def analyze_toll_stations(num_bbox: int, city_filter: str, use_buffer: bool,
         if toll_stations.empty:
             click.echo("⚠️ 未找到收费站数据")
             click.echo("\n💡 可能的原因:")
-            click.echo("   - 指定的城市没有收费站数据")
-            click.echo("   - 数据库连接问题")
-            click.echo("   - bbox数据不足")
+            click.echo("   - intersection表中没有intersectiontype=2的数据")
+            click.echo("   - 远程数据库连接问题")
+            click.echo("   - full_intersection表不存在或为空")
             return
         
         click.echo(f"\n✅ 分析完成！")
@@ -956,11 +953,11 @@ def analyze_toll_stations(num_bbox: int, city_filter: str, use_buffer: bool,
         click.echo(f"📍 找到收费站: {len(toll_stations)} 个")
         
         # 显示收费站统计
-        if 'city_id' in toll_stations.columns:
-            city_stats = toll_stations['city_id'].value_counts()
-            click.echo(f"\n🏙️ 城市分布:")
-            for city, count in city_stats.head(10).items():
-                click.echo(f"   {city}: {count} 个收费站")
+        if 'intersectionsubtype' in toll_stations.columns:
+            subtype_stats = toll_stations['intersectionsubtype'].value_counts()
+            click.echo(f"\n🏛️ 收费站子类型分布:")
+            for subtype, count in subtype_stats.head(10).items():
+                click.echo(f"   子类型{subtype}: {count} 个收费站")
         
         # 显示轨迹分析结果
         if not trajectory_results.empty:

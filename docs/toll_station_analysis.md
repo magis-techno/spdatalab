@@ -32,11 +32,11 @@
 ### 命令行使用
 
 ```bash
-# 基础分析 - 分析1000个bbox
-spdatalab analyze-toll-stations --num-bbox 1000
+# 基础分析 - 查找所有收费站
+spdatalab analyze-toll-stations
 
-# 指定城市分析
-spdatalab analyze-toll-stations --city-filter shanghai --use-buffer
+# 限制分析收费站数量
+spdatalab analyze-toll-stations --limit 1000
 
 # 自定义缓冲区距离并导出QGIS视图
 spdatalab analyze-toll-stations --buffer-distance 200 --export-qgis
@@ -52,8 +52,7 @@ from spdatalab.fusion.toll_station_analysis import analyze_toll_station_trajecto
 
 # 一站式分析
 toll_stations, trajectory_results, analysis_id = analyze_toll_station_trajectories(
-    num_bbox=1000,
-    city_filter="shanghai", 
+    limit=1000,
     use_buffer=True,
     buffer_distance_meters=100.0
 )
@@ -68,10 +67,9 @@ print(f"分析了 {len(trajectory_results)} 个数据集-收费站组合")
 
 系统通过以下步骤发现收费站：
 
-1. **构建空间索引**：基于现有的bbox数据构建与intersection的空间关系
-2. **筛选收费站**：查找`intersectiontype=2`的路口
-3. **几何处理**：为每个收费站生成缓冲区几何（可选）
-4. **数据存储**：将收费站信息存储到`toll_station_analysis`表
+1. **直接查询**：直接从`full_intersection`表查找`intersectiontype=2`的收费站
+2. **几何处理**：为每个收费站生成缓冲区几何（可选）
+3. **数据存储**：将收费站信息存储到`toll_station_analysis`表
 
 ### 2. 轨迹数据分析
 
@@ -102,8 +100,6 @@ config = TollStationAnalysisConfig(
 |------|------|------|
 | id | SERIAL | 主键 |
 | analysis_id | VARCHAR(100) | 分析ID |
-| scene_token | VARCHAR(255) | 场景令牌 |
-| city_id | VARCHAR(100) | 城市ID |
 | intersection_id | BIGINT | 路口ID |
 | intersectiontype | INTEGER | 路口类型（2=收费站） |
 | intersectionsubtype | INTEGER | 路口子类型 |
@@ -229,9 +225,9 @@ for city, data in results.items():
 ### 常见问题
 
 1. **未找到收费站数据**
-   - 检查bbox数据是否充足
-   - 确认指定城市是否有数据
-   - 验证数据库连接
+   - 检查full_intersection表是否存在
+   - 确认表中有intersectiontype=2的数据
+   - 验证远程数据库连接
 
 2. **轨迹查询缓慢**
    - 减小缓冲区距离

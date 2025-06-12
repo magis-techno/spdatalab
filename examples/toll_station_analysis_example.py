@@ -14,7 +14,7 @@
 环境要求：
     - local_pg数据库连接正常
     - 远程数据库连接正常
-    - 已有bbox数据和intersection数据
+    - 已有intersection数据（full_intersection表）
     - 已有ddi_data_points轨迹数据
 """
 
@@ -50,8 +50,7 @@ def basic_analysis_example():
     # 使用默认配置进行分析
     try:
         toll_stations, trajectory_results, analysis_id = analyze_toll_station_trajectories(
-            num_bbox=500,           # 分析500个bbox
-            city_filter=None,       # 不限制城市
+            limit=500,              # 限制分析500个收费站
             use_buffer=True,        # 使用缓冲区
             buffer_distance_meters=100.0  # 缓冲区100米
         )
@@ -62,12 +61,12 @@ def basic_analysis_example():
         if not toll_stations.empty:
             print(f"🚗 轨迹分析结果: {len(trajectory_results)} 个数据集-收费站组合")
             
-            # 显示收费站信息
-            print("\n📋 收费站详情:")
-            if 'city_id' in toll_stations.columns:
-                city_stats = toll_stations['city_id'].value_counts()
-                for city, count in city_stats.head(5).items():
-                    print(f"   {city}: {count} 个收费站")
+                    # 显示收费站信息
+        print("\n📋 收费站详情:")
+        if 'intersectionsubtype' in toll_stations.columns:
+            subtype_stats = toll_stations['intersectionsubtype'].value_counts()
+            for subtype, count in subtype_stats.head(5).items():
+                print(f"   子类型{subtype}: {count} 个收费站")
             
             # 显示轨迹统计
             if not trajectory_results.empty:
@@ -105,16 +104,15 @@ def advanced_analysis_example():
     try:
         analyzer = TollStationAnalyzer(config)
         
-        # 1. 查找收费站（指定城市）
+        # 1. 查找收费站
         print("🔍 步骤1: 查找收费站...")
         toll_stations, analysis_id = analyzer.find_toll_stations(
-            num_bbox=1000,
-            city_filter="shanghai",  # 仅分析上海地区
-            analysis_id="shanghai_toll_analysis"
+            limit=1000,
+            analysis_id="toll_analysis_advanced"
         )
         
         if toll_stations.empty:
-            print("⚠️ 未找到收费站数据，可能没有上海的数据或数据库连接问题")
+            print("⚠️ 未找到收费站数据，可能数据库连接问题或intersection表为空")
             return None
         
         print(f"✅ 找到 {len(toll_stations)} 个收费站")
@@ -156,44 +154,44 @@ def city_comparison_example():
     print("收费站轨迹分析 - 城市对比")
     print("=" * 60)
     
-    cities = ["shanghai", "beijing", "shenzhen"]
+    # 注意：由于去除了城市过滤，这里演示不同限制数量的对比
+    limits = [100, 200, 500]
     analysis_results = {}
     
-    for city in cities:
+    for limit in limits:
         try:
-            print(f"\n🏙️ 分析城市: {city}")
+            print(f"\n📊 分析收费站数量限制: {limit}")
             
             toll_stations, trajectory_results, analysis_id = analyze_toll_station_trajectories(
-                num_bbox=300,
-                city_filter=city,
+                limit=limit,
                 use_buffer=True,
                 buffer_distance_meters=150.0
             )
             
             if not toll_stations.empty:
                 summary = get_toll_station_analysis_summary(analysis_id)
-                analysis_results[city] = {
+                analysis_results[f"limit_{limit}"] = {
                     'analysis_id': analysis_id,
                     'toll_stations': len(toll_stations),
                     'datasets': summary.get('unique_datasets', 0),
                     'trajectories': summary.get('total_trajectories', 0),
                     'points': summary.get('total_points', 0)
                 }
-                print(f"   ✅ {city}: {len(toll_stations)} 个收费站")
+                print(f"   ✅ 限制{limit}: {len(toll_stations)} 个收费站")
             else:
-                print(f"   ⚠️ {city}: 未找到数据")
+                print(f"   ⚠️ 限制{limit}: 未找到数据")
                 
         except Exception as e:
-            print(f"   ❌ {city}: 分析失败 - {e}")
+            print(f"   ❌ 限制{limit}: 分析失败 - {e}")
     
     # 对比结果
     if analysis_results:
-        print(f"\n📊 城市对比结果:")
-        print(f"{'城市':<12} {'收费站':<8} {'数据集':<8} {'轨迹数':<12} {'数据点':<12}")
+        print(f"\n📊 不同限制数量的对比结果:")
+        print(f"{'限制数量':<12} {'收费站':<8} {'数据集':<8} {'轨迹数':<12} {'数据点':<12}")
         print("-" * 60)
         
-        for city, results in analysis_results.items():
-            print(f"{city:<12} {results['toll_stations']:<8} {results['datasets']:<8} "
+        for limit_key, results in analysis_results.items():
+            print(f"{limit_key:<12} {results['toll_stations']:<8} {results['datasets']:<8} "
                   f"{results['trajectories']:<12,} {results['points']:<12,}")
     
     return analysis_results
