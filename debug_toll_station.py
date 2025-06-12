@@ -161,7 +161,7 @@ def debug_trajectory_query(buffered_geom):
             LIMIT 1
         """)
         
-        with analyzer.remote_engine.connect() as conn:
+        with analyzer.trajectory_engine.connect() as conn:
             basic_info = conn.execute(basic_info_sql).fetchone()
         
         if basic_info:
@@ -183,7 +183,7 @@ def debug_trajectory_query(buffered_geom):
             )
         """)
         
-        with analyzer.remote_engine.connect() as conn:
+        with analyzer.trajectory_engine.connect() as conn:
             intersect_count = conn.execute(simple_intersect_sql).scalar()
         
         print(f"   相交的轨迹点数: {intersect_count:,}")
@@ -210,7 +210,7 @@ def debug_trajectory_query(buffered_geom):
                 LIMIT 10
             """)
             
-            with analyzer.remote_engine.connect() as conn:
+            with analyzer.trajectory_engine.connect() as conn:
                 trajectory_results = pd.read_sql(detailed_sql, conn)
             
             print(f"\n📋 找到的数据集:")
@@ -235,7 +235,7 @@ def debug_trajectory_query(buffered_geom):
                 WHERE point_lla IS NOT NULL
             """)
             
-            with analyzer.remote_engine.connect() as conn:
+            with analyzer.trajectory_engine.connect() as conn:
                 bbox_result = conn.execute(bbox_sql).fetchone()
             
             if bbox_result:
@@ -253,7 +253,7 @@ def debug_trajectory_query(buffered_geom):
                 LIMIT 1
             """)
             
-            with analyzer.remote_engine.connect() as conn:
+            with analyzer.trajectory_engine.connect() as conn:
                 crs_result = conn.execute(crs_sql).fetchone()
             
             if crs_result:

@@ -23,6 +23,7 @@ class TollStationAnalysisConfig:
     """收费站分析配置"""
     local_dsn: str = "postgresql+psycopg://postgres:postgres@local_pg:5432/postgres"
     remote_dsn: str = "postgresql+psycopg://**:**@10.170.30.193:9001/rcdatalake_gy1"
+    trajectory_dsn: str = "postgresql+psycopg://**:**@10.170.30.193:9001/dataset_gy1"
     # 收费站专用表配置
     toll_station_table: str = "toll_station_analysis"
     trajectory_results_table: str = "toll_station_trajectories"
@@ -53,6 +54,11 @@ class TollStationAnalyzer:
         )
         self.remote_engine = create_engine(
             self.config.remote_dsn,
+            future=True,
+            connect_args={"client_encoding": "utf8"}
+        )
+        self.trajectory_engine = create_engine(
+            self.config.trajectory_dsn,
             future=True,
             connect_args={"client_encoding": "utf8"}
         )
@@ -316,8 +322,8 @@ class TollStationAnalyzer:
                     LIMIT {self.config.max_trajectory_records // len(toll_stations)}
                 """)
                 
-                # 在远程数据库中执行轨迹查询
-                with self.remote_engine.connect() as conn:
+                # 在轨迹数据库中执行轨迹查询
+                with self.trajectory_engine.connect() as conn:
                     trajectory_result = pd.read_sql(trajectory_sql, conn)
                 
                 if not trajectory_result.empty:
