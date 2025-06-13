@@ -1,32 +1,47 @@
--- Create routes table
+-- 启用PostGIS扩展
+CREATE EXTENSION IF NOT EXISTS postgis;
+
+-- 创建路线表
 CREATE TABLE IF NOT EXISTS routes (
     id SERIAL PRIMARY KEY,
-    route_name VARCHAR(200) NOT NULL,
-    region VARCHAR(100),
-    total_distance FLOAT,
-    is_active BOOLEAN DEFAULT true,
-    allocation_count INTEGER DEFAULT 0,
-    route_metadata JSONB,
+    name VARCHAR(200) NOT NULL,                    -- 路线名称
+    region VARCHAR(100),                           -- 区域
+    total_distance FLOAT,                          -- 总距离(米)
+    is_active BOOLEAN DEFAULT true,                -- 是否激活
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Create route segments table
+-- 创建路线分段表
 CREATE TABLE IF NOT EXISTS route_segments (
     id SERIAL PRIMARY KEY,
     route_id INTEGER REFERENCES routes(id),
-    segment_id INTEGER NOT NULL,
-    gaode_link VARCHAR(500) NOT NULL,
-    route_points TEXT,
-    segment_distance FLOAT,
-    geometry GEOMETRY(LINESTRING, 4326),
+    segment_order INTEGER NOT NULL,                -- 分段顺序
+    gaode_link VARCHAR(500) NOT NULL,              -- 高德地图链接
+    distance FLOAT,                                -- 分段距离(米)
+    start_point GEOMETRY(POINT, 4326),            -- 起点坐标
+    end_point GEOMETRY(POINT, 4326),              -- 终点坐标
+    path GEOMETRY(LINESTRING, 4326),              -- 路线几何
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(route_id, segment_id)
+    UNIQUE(route_id, segment_order)
 );
 
--- Create index on route_id
-CREATE INDEX IF NOT EXISTS idx_route_segments_route_id ON route_segments(route_id);
+-- 创建路线点表（存储详细的路径点）
+CREATE TABLE IF NOT EXISTS route_points (
+    id SERIAL PRIMARY KEY,
+    segment_id INTEGER REFERENCES route_segments(id),
+    point_order INTEGER NOT NULL,                  -- 点的顺序
+    point GEOMETRY(POINT, 4326) NOT NULL,         -- 点的坐标
+    elevation FLOAT,                               -- 海拔高度
+    speed_limit FLOAT,                            -- 限速(km/h)
+    road_type VARCHAR(50),                        -- 道路类型
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(segment_id, point_order)
+);
 
--- Create index on geometry
-CREATE INDEX IF NOT EXISTS idx_route_segments_geometry ON route_segments USING GIST(geometry); 
+-- 创建索引
+CREATE INDEX IF NOT EXISTS idx_route_segments_route_id ON route_segments(route_id);
+CREATE INDEX IF NOT EXISTS idx_route_segments_path ON route_segments USING GIST(path);
+CREATE INDEX IF NOT EXISTS idx_route_points_segment_id ON route_points(segment_id);
+CREATE INDEX IF NOT EXISTS idx_route_points_point ON route_points USING GIST(point); 
