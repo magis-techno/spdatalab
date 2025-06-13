@@ -44,39 +44,51 @@ def migrate_routes():
             cursor.execute(query)
             routes = cursor.fetchall()
             
+            # 打印第一条记录的结构
+            if routes:
+                print("First record type:", type(routes[0]))
+                print("First record:", routes[0])
+                print("First record fields:", [type(field) for field in routes[0]])
+            
             for route_data in routes:
-                # 解析JSON数据
-                route_json = json.loads(route_data[0])  # 第一个字段是JSON字符串
-                
-                # 创建路线记录
-                route = Route(
-                    route_name=route_json['route_name'],
-                    region=route_json['region'],
-                    total_distance=route_json['distance'],
-                    is_active=route_json['is_active'],
-                    allocation_count=route_json['allocation_count']
-                )
-                session.add(route)
-                session.flush()  # 获取route.id
-                
-                # 处理每个分段
-                for segment in route_json['segments']:
-                    # 解析路线点
-                    points = parse_route_points(segment['route_point'])
-                    geometry = create_geometry_from_points(points)
+                try:
+                    # 解析JSON数据
+                    route_json = json.loads(str(route_data[0]))  # 确保转换为字符串
                     
-                    # 创建分段记录
-                    route_segment = RouteSegment(
-                        route_id=route.id,
-                        segment_id=segment['seg_id'],
-                        gaode_link=segment['gaode_link'],
-                        route_points=segment['route_point'],
-                        segment_distance=segment['seg_distance'],
-                        geometry=from_shape(geometry, srid=4326) if geometry else None
+                    # 创建路线记录
+                    route = Route(
+                        route_name=route_json['route_name'],
+                        region=route_json['region'],
+                        total_distance=route_json['distance'],
+                        is_active=route_json['is_active'],
+                        allocation_count=route_json['allocation_count']
                     )
-                    session.add(route_segment)
-                
-                session.commit()
+                    session.add(route)
+                    session.flush()  # 获取route.id
+                    
+                    # 处理每个分段
+                    for segment in route_json['segments']:
+                        # 解析路线点
+                        points = parse_route_points(segment['route_point'])
+                        geometry = create_geometry_from_points(points)
+                        
+                        # 创建分段记录
+                        route_segment = RouteSegment(
+                            route_id=route.id,
+                            segment_id=segment['seg_id'],
+                            gaode_link=segment['gaode_link'],
+                            route_points=segment['route_point'],
+                            segment_distance=segment['seg_distance'],
+                            geometry=from_shape(geometry, srid=4326) if geometry else None
+                        )
+                        session.add(route_segment)
+                    
+                    session.commit()
+                except Exception as e:
+                    print(f"Error processing record: {route_data}")
+                    print(f"Error details: {str(e)}")
+                    session.rollback()
+                    continue
                 
     except Exception as e:
         session.rollback()
