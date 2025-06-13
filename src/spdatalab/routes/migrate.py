@@ -44,30 +44,24 @@ def migrate_routes():
             cursor.execute(query)
             routes = cursor.fetchall()
             
-            # 打印第一条记录的结构
-            if routes:
-                print("First record type:", type(routes[0]))
-                print("First record:", routes[0])
-                print("First record fields:", [type(field) for field in routes[0]])
-            
             for route_data in routes:
                 try:
-                    # 解析JSON数据
-                    route_json = json.loads(str(route_data[0]))  # 确保转换为字符串
+                    # 解析数据
+                    id, route_name, region, distance, is_active, allocation_count, segments = route_data
                     
                     # 创建路线记录
                     route = Route(
-                        route_name=route_json['route_name'],
-                        region=route_json['region'],
-                        total_distance=route_json['distance'],
-                        is_active=route_json['is_active'],
-                        allocation_count=route_json['allocation_count']
+                        route_name=route_name,
+                        region=region,
+                        total_distance=distance,
+                        is_active=is_active,
+                        allocation_count=allocation_count
                     )
                     session.add(route)
                     session.flush()  # 获取route.id
                     
                     # 处理每个分段
-                    for segment in route_json['segments']:
+                    for segment in segments:
                         # 解析路线点
                         points = parse_route_points(segment['route_point'])
                         geometry = create_geometry_from_points(points)
