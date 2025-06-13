@@ -209,9 +209,9 @@ class AmapRouteParser:
         
         if route_info:
             # 更新元数据
-            if route.metadata is None:
-                route.metadata = {}
-            route.metadata.update({
+            if route.route_metadata is None:
+                route.route_metadata = {}
+            route.route_metadata.update({
                 'distance': route_info['distance'],
                 'duration': route_info['duration'],
                 'steps': route_info['steps']

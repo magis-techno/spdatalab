@@ -24,7 +24,7 @@ class Route(Base):
     region = Column(String(100))
     total_distance = Column(Float)
     is_active = Column(Boolean, default=True)
-    metadata = Column(JSON)  # 存储额外的元数据
+    route_metadata = Column(JSON)  # 存储额外的元数据
     geometry = Column(Geometry('LINESTRING', srid=4326))  # 路线几何对象
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

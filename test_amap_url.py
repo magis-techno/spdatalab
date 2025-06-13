@@ -15,11 +15,11 @@ def test_amap_url():
     print(f"URL: {route.url}")
     print(f"Name: {route.name}")
     
-    if route.metadata:
+    if route.route_metadata:
         print("\nMetadata:")
-        print(f"Distance: {route.metadata.get('distance')}")
-        print(f"Duration: {route.metadata.get('duration')}")
-        print(f"Number of steps: {len(route.metadata.get('steps', []))}")
+        print(f"Distance: {route.route_metadata.get('distance')}")
+        print(f"Duration: {route.route_metadata.get('duration')}")
+        print(f"Number of steps: {len(route.route_metadata.get('steps', []))}")
     
     if route.geometry:
         print("\nGeometry:")
