@@ -40,7 +40,7 @@ def migrate_routes():
         # 连接Hive
         with hive_cursor() as cursor:
             # 查询路线数据
-            query = "SELECT * FROM route_info_0607"
+            query = "SELECT * FROM pnc_simulation.route_info_0607"
             cursor.execute(query)
             routes = cursor.fetchall()
             
