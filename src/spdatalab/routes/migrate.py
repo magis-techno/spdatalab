@@ -11,27 +11,27 @@ from geoalchemy2.shape import from_shape
 
 from .models import Base, Route
 from .database import RouteDatabase
+from ..common.io_hive import hive_cursor
 
 class RouteMigrator:
     """处理路线数据迁移的类"""
     
-    def __init__(self, source_connection: str, target_connection: str):
+    def __init__(self, target_connection: str):
         """
         初始化迁移器
         
         Args:
-            source_connection: 源数据库连接字符串
             target_connection: 目标数据库连接字符串
         """
-        self.source_engine = create_engine(source_connection)
         self.target_db = RouteDatabase(target_connection)
         self.target_db.init_db()
         
     def fetch_source_data(self) -> List[Dict[str, Any]]:
         """从源数据库获取数据"""
-        with self.source_engine.connect() as conn:
-            result = conn.execute(text("SELECT * FROM route_info_0607"))
-            return [dict(row) for row in result]
+        with hive_cursor(catalog="dataset_gy1") as cur:
+            cur.execute("SELECT * FROM route_info_0607")
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
             
     def process_segments(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -94,12 +94,11 @@ class RouteMigrator:
                 
 def main():
     """主函数"""
-    # 配置数据库连接
-    source_conn = "postgresql://user:password@host:5432/dataset_gy1"
+    # 配置目标数据库连接
     target_conn = "postgresql://postgres:postgres@localhost:5432/spdatalab"
     
     # 执行迁移
-    migrator = RouteMigrator(source_conn, target_conn)
+    migrator = RouteMigrator(target_conn)
     migrator.migrate()
 
 if __name__ == '__main__':
