@@ -32,7 +32,7 @@ def create_geometry_from_points(points: List[Dict[str, float]]) -> LineString:
 def migrate_routes():
     """从Hive迁移路线数据到PostgreSQL"""
     # 连接PostgreSQL
-    pg_engine = create_engine('postgresql://postgres:postgres@localhost:5432/postgres')
+    pg_engine = create_engine('postgresql://postgres:postgres@local_pg:5432/postgres')
     Session = sessionmaker(bind=pg_engine)
     session = Session()
     
