@@ -21,7 +21,7 @@ class Route(Base):
     total_distance = Column(Float)
     is_active = Column(Boolean, default=True)
     allocation_count = Column(Integer, default=0)
-    route_metadata = Column(Text, nullable=True, comment='Additional route metadata in JSON format')
+    route_metadata = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     

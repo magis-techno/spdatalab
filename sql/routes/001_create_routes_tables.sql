@@ -1,10 +1,11 @@
 -- Create routes table
 CREATE TABLE IF NOT EXISTS routes (
     id SERIAL PRIMARY KEY,
-    source VARCHAR(50) NOT NULL,
-    route_id VARCHAR(100) NOT NULL,
-    url VARCHAR(500) NOT NULL,
-    name VARCHAR(200),
+    route_name VARCHAR(200) NOT NULL,
+    region VARCHAR(100),
+    total_distance FLOAT,
+    is_active BOOLEAN DEFAULT true,
+    allocation_count INTEGER DEFAULT 0,
     route_metadata JSONB,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
