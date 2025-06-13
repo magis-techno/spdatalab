@@ -253,6 +253,7 @@ class TollStationAnalyzer:
     ) -> pd.DataFrame:
         """
         分析收费站范围内的轨迹数据（直接使用原始几何相交）
+        当一个轨迹点落入收费站时，保存该轨迹的完整片段
         
         Args:
             analysis_id: 分析ID
@@ -272,17 +273,15 @@ class TollStationAnalyzer:
             AND geometry IS NOT NULL
         """)
         
-        with self.local_engine.connect() as conn:
-            toll_stations = pd.read_sql(toll_stations_sql, conn)
+        toll_stations = pd.read_sql(toll_stations_sql, self.local_engine)
+        logger.info(f"找到 {len(toll_stations)} 个收费站")
         
         if toll_stations.empty:
-            logger.warning("未找到收费站几何数据")
+            logger.warning("没有找到收费站数据")
             return pd.DataFrame()
         
-        logger.info(f"找到 {len(toll_stations)} 个收费站几何数据")
-        
-        # 2. 为每个收费站查询轨迹数据
-        all_trajectory_results = []
+        # 2. 对每个收费站分析轨迹
+        all_results = []
         
         for _, toll_station in toll_stations.iterrows():
             toll_station_id = toll_station['intersection_id']
@@ -290,142 +289,83 @@ class TollStationAnalyzer:
             
             logger.info(f"分析收费站 {toll_station_id} 的轨迹数据...")
             
-            try:
-                # 分两步查询：先获取统计信息，再生成几何
-                # 步骤1: 获取基本统计信息
-                stats_sql = text(f"""
-                    SELECT 
-                        dataset_name,
-                        COUNT(*) as trajectory_count,
-                        COUNT(*) as point_count,
-                        MIN(timestamp) as min_timestamp,
-                        MAX(timestamp) as max_timestamp,
-                        COUNT(CASE WHEN workstage = 2 THEN 1 END) as workstage_2_count,
-                        ROUND(
-                            COUNT(CASE WHEN workstage = 2 THEN 1 END)::float / COUNT(*)::float * 100, 2
-                        ) as workstage_2_ratio
+            # 2.1 首先找出与收费站相交的轨迹点
+            intersecting_points_sql = text(f"""
+                WITH intersecting_points AS (
+                    SELECT DISTINCT 
+                        scene_token,
+                        dataset_name
                     FROM {self.config.trajectory_table}
                     WHERE ST_Intersects(
-                        point_lla, 
-                        ST_GeomFromText('{geometry_wkt}', 4326)
+                        ST_SetSRID(ST_GeomFromText('{geometry_wkt}'), 4326),
+                        ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)
                     )
-                    GROUP BY dataset_name
-                    HAVING COUNT(*) >= 2
-                    ORDER BY trajectory_count DESC
-                    LIMIT {self.config.max_trajectory_records // len(toll_stations)}
-                """)
+                    LIMIT {self.config.max_trajectory_records}
+                )
+                SELECT 
+                    t.*,
+                    ST_AsText(
+                        ST_SetSRID(
+                            ST_MakeLine(
+                                ST_MakePoint(longitude, latitude) ORDER BY timestamp
+                            ),
+                            4326
+                        )
+                    ) as trajectory_geometry
+                FROM {self.config.trajectory_table} t
+                INNER JOIN intersecting_points ip 
+                    ON t.scene_token = ip.scene_token 
+                    AND t.dataset_name = ip.dataset_name
+                ORDER BY t.scene_token, t.timestamp
+            """)
+            
+            try:
+                # 使用trajectory_engine查询轨迹数据
+                trajectory_data = pd.read_sql(intersecting_points_sql, self.trajectory_engine)
                 
-                # 在轨迹数据库中执行统计查询
-                with self.trajectory_engine.connect() as conn:
-                    trajectory_result = pd.read_sql(stats_sql, conn)
-                
-                # 步骤2: 为每个数据集生成轨迹几何
-                if not trajectory_result.empty:
-                    trajectory_geometries = []
-                    for _, row in trajectory_result.iterrows():
-                        dataset_name = row['dataset_name']
-                        
-                        # 生成该数据集的轨迹线几何
-                        geom_sql = text(f"""
-                            SELECT ST_MakeLine(
-                                ARRAY(
-                                    SELECT point_lla 
-                                    FROM {self.config.trajectory_table}
-                                    WHERE dataset_name = '{dataset_name}'
-                                    AND ST_Intersects(
-                                        point_lla, 
-                                        ST_GeomFromText('{geometry_wkt}', 4326)
-                                    )
-                                    ORDER BY timestamp
-                                    LIMIT 1000
-                                )
-                            ) as trajectory_geometry
-                        """)
-                        
-                        try:
-                            with self.trajectory_engine.connect() as conn:
-                                geom_result = conn.execute(geom_sql).fetchone()
-                                trajectory_geometry = geom_result[0] if geom_result and geom_result[0] else None
-                        except Exception as geom_e:
-                            logger.warning(f"生成数据集 {dataset_name} 轨迹几何失败: {geom_e}")
-                            trajectory_geometry = None
-                        
-                        trajectory_geometries.append(trajectory_geometry)
+                if not trajectory_data.empty:
+                    # 按dataset_name和scene_token分组统计
+                    grouped = trajectory_data.groupby(['dataset_name', 'scene_token']).agg({
+                        'longitude': 'count',  # 轨迹点数量
+                        'trajectory_geometry': 'first'  # 获取轨迹线几何
+                    }).reset_index()
                     
-                    # 添加几何列到结果中
-                    trajectory_result['trajectory_geometry'] = trajectory_geometries
-                
-                if not trajectory_result.empty:
-                    # 添加收费站ID
-                    trajectory_result['toll_station_id'] = toll_station_id
-                    trajectory_result['analysis_id'] = analysis_id
+                    grouped = grouped.rename(columns={'longitude': 'point_count'})
+                    grouped['toll_station_id'] = toll_station_id
+                    grouped['analysis_id'] = analysis_id
                     
-                    all_trajectory_results.append(trajectory_result)
-                    logger.info(f"收费站 {toll_station_id}: 找到 {len(trajectory_result)} 个数据集的轨迹")
+                    all_results.append(grouped)
+                    logger.info(f"收费站 {toll_station_id} 找到 {len(grouped)} 个轨迹片段")
                 else:
-                    logger.info(f"收费站 {toll_station_id}: 未找到轨迹数据")
+                    logger.info(f"收费站 {toll_station_id} 没有找到相交的轨迹数据")
                     
             except Exception as e:
-                logger.error(f"查询收费站 {toll_station_id} 轨迹数据失败: {e}")
+                logger.error(f"查询收费站 {toll_station_id} 的轨迹数据时出错: {e}")
+                continue
+        
+        if not all_results:
+            logger.warning("没有找到任何轨迹数据")
+            return pd.DataFrame()
         
         # 3. 合并所有结果
-        if all_trajectory_results:
-            combined_results = pd.concat(all_trajectory_results, ignore_index=True)
-            
-            # 保存结果到数据库
-            self._save_trajectory_results(combined_results)
-            
-            logger.info(f"轨迹分析完成，共分析 {len(combined_results)} 个数据集-收费站组合")
-            return combined_results
-        else:
-            logger.warning("未找到任何轨迹数据")
-            return pd.DataFrame()
-    
-    def _save_trajectory_results(self, results_df: pd.DataFrame):
-        """保存轨迹分析结果"""
-        if results_df.empty:
-            return
+        final_results = pd.concat(all_results, ignore_index=True)
+        logger.info(f"总共找到 {len(final_results)} 个轨迹片段")
         
+        # 4. 保存结果到数据库
         try:
-            # 使用SQL INSERT来正确处理几何类型
-            for _, row in results_df.iterrows():
-                # 准备几何数据
-                geometry_value = None
-                if row.get('trajectory_geometry') is not None:
-                    # 如果是二进制几何数据，直接使用
-                    geometry_value = row['trajectory_geometry']
-                
-                insert_sql = text(f"""
-                    INSERT INTO {self.config.trajectory_results_table} 
-                    (analysis_id, toll_station_id, dataset_name, trajectory_count, point_count,
-                     min_timestamp, max_timestamp, workstage_2_count, workstage_2_ratio, geometry)
-                    VALUES (
-                        :analysis_id, :toll_station_id, :dataset_name, :trajectory_count, :point_count,
-                        :min_timestamp, :max_timestamp, :workstage_2_count, :workstage_2_ratio, :geometry
-                    )
-                    ON CONFLICT (analysis_id, toll_station_id, dataset_name) DO NOTHING
-                """)
-                
-                params = {
-                    'analysis_id': row['analysis_id'],
-                    'toll_station_id': row['toll_station_id'],
-                    'dataset_name': row['dataset_name'],
-                    'trajectory_count': row['trajectory_count'],
-                    'point_count': row['point_count'],
-                    'min_timestamp': row['min_timestamp'],
-                    'max_timestamp': row['max_timestamp'],
-                    'workstage_2_count': row['workstage_2_count'],
-                    'workstage_2_ratio': row['workstage_2_ratio'],
-                    'geometry': geometry_value
-                }
-                
-                with self.local_engine.connect() as conn:
-                    conn.execute(insert_sql, params)
-                    conn.commit()
-            
-            logger.info(f"成功保存 {len(results_df)} 条轨迹分析结果")
+            final_results.to_sql(
+                self.config.trajectory_results_table,
+                self.local_engine,
+                if_exists='append',
+                index=False,
+                method='multi',
+                chunksize=1000
+            )
+            logger.info(f"成功保存 {len(final_results)} 条轨迹分析结果")
         except Exception as e:
-            logger.error(f"保存轨迹分析结果失败: {e}")
+            logger.error(f"保存轨迹分析结果时出错: {e}")
+        
+        return final_results
     
     def get_analysis_summary(self, analysis_id: str) -> Dict[str, Any]:
         """
