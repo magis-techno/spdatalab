@@ -32,6 +32,20 @@ clean-toll-station:
 	  env PGPASSWORD=postgres \
 	  psql -h local_pg -U postgres -f scripts/clean_toll_station_analysis.sql
 
+# 初始化路线相关表
+init-routes:
+	@echo "初始化路线相关表..."
+	docker compose -f docker/docker-compose.yml exec -T workspace \
+	  env PGPASSWORD=postgres \
+	  psql -h local_pg -U postgres -f sql/routes/001_create_routes_tables.sql
+
+# 清理路线相关表
+clean-routes:
+	@echo "清理路线相关表..."
+	docker compose -f docker/docker-compose.yml exec -T workspace \
+	  env PGPASSWORD=postgres \
+	  psql -h local_pg -U postgres -f sql/routes/002_drop_routes_tables.sql
+
 # 初始化FDW连接（连接远程trajectory和map数据库）
 init-fdw:
 	@echo "初始化FDW连接..."
@@ -58,20 +72,6 @@ clean-fdw:
 	docker compose -f docker/docker-compose.yml exec -T workspace \
 	  env PGPASSWORD=postgres \
 	  psql -h local_pg -U postgres -f sql/cleanup_fdw.sql
-
-# 初始化路线相关表
-init-routes:
-	@echo "初始化路线相关表..."
-	docker compose -f docker/docker-compose.yml exec -T workspace \
-	  env PGPASSWORD=postgres \
-	  psql -h local_pg -U postgres -f sql/routes/create_tables.sql
-
-# 清理路线相关表
-clean-routes:
-	@echo "清理路线相关表..."
-	docker compose -f docker/docker-compose.yml exec -T workspace \
-	  env PGPASSWORD=postgres \
-	  psql -h local_pg -U postgres -f sql/routes/drop_tables.sql
 
 # 显示帮助信息
 help:
@@ -100,4 +100,4 @@ help:
 	@echo "注意："
 	@echo "  使用init-fdw前请先修改sql/init_fdw.sql中的连接参数"
 
-.PHONY: up down psql init-db clean-bbox clean-toll-station init-fdw check-fdw clean-fdw init-routes clean-routes help
+.PHONY: up down psql init-db clean-bbox clean-toll-station init-routes clean-routes init-fdw check-fdw clean-fdw help

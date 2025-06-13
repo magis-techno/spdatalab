@@ -1,5 +1,5 @@
 """
-数据迁移脚本：将现有route_info_0607表中的数据迁移到新的表结构中。
+数据迁移脚本：从Hive数据库迁移路线数据到PostgreSQL
 """
 
 import json
@@ -9,97 +9,80 @@ from sqlalchemy.orm import sessionmaker
 from shapely.geometry import LineString
 from geoalchemy2.shape import from_shape
 
-from .models import Base, Route
-from .database import RouteDatabase
-from ..common.io_hive import hive_cursor
+from ..common.io_hive import HiveConnection
+from .models import Base, Route, RouteSegment
 
-class RouteMigrator:
-    """处理路线数据迁移的类"""
+def parse_route_points(points_str: str) -> List[Dict[str, float]]:
+    """解析路线点字符串为坐标列表"""
+    points = []
+    for line in points_str.strip().split('\n'):
+        if line.strip():
+            # 这里需要根据实际数据格式进行解析
+            # 示例格式：重庆市渝北区G50沪渝高速
+            # 实际实现需要根据具体数据格式调整
+            pass
+    return points
+
+def create_geometry_from_points(points: List[Dict[str, float]]) -> LineString:
+    """从点列表创建LineString几何对象"""
+    if not points:
+        return None
+    return LineString([(p['lon'], p['lat']) for p in points])
+
+def migrate_routes():
+    """从Hive迁移路线数据到PostgreSQL"""
+    # 连接PostgreSQL
+    pg_engine = create_engine('postgresql://postgres:postgres@localhost:5432/postgres')
+    Session = sessionmaker(bind=pg_engine)
+    session = Session()
     
-    def __init__(self, target_connection: str):
-        """
-        初始化迁移器
-        
-        Args:
-            target_connection: 目标数据库连接字符串
-        """
-        self.target_db = RouteDatabase(target_connection)
-        self.target_db.init_db()
-        
-    def fetch_source_data(self) -> List[Dict[str, Any]]:
-        """从源数据库获取数据"""
-        with hive_cursor(catalog="dataset_gy1") as cur:
-            cur.execute("SELECT * FROM route_info_0607")
-            cols = [d[0] for d in cur.description]
-            return [dict(zip(cols, row)) for row in cur.fetchall()]
+    try:
+        # 连接Hive
+        with HiveConnection() as hive_conn:
+            # 查询路线数据
+            query = "SELECT * FROM route_info_0607"
+            hive_conn.execute(query)
+            routes = hive_conn.fetchall()
             
-    def process_segments(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        处理路线分段数据
-        
-        Args:
-            segments: 原始分段数据列表
-            
-        Returns:
-            处理后的分段数据列表
-        """
-        processed_segments = []
-        for segment in segments:
-            # 提取几何信息
-            if 'geometry' in segment:
-                try:
-                    coords = json.loads(segment['geometry'])
-                    if isinstance(coords, list) and len(coords) >= 2:
-                        line = LineString(coords)
-                        segment['geometry'] = from_shape(line, srid=4326)
-                except (json.JSONDecodeError, ValueError):
-                    continue
+            for route_data in routes:
+                # 解析JSON数据
+                route_json = json.loads(route_data[0])  # 假设数据在第一个字段
+                
+                # 创建路线记录
+                route = Route(
+                    route_name=route_json['route_name'],
+                    region=route_json['region'],
+                    total_distance=route_json['distance'],
+                    is_active=route_json['is_active'],
+                    allocation_count=route_json['allocation_count']
+                )
+                session.add(route)
+                session.flush()  # 获取route.id
+                
+                # 处理每个分段
+                for segment in route_json['segments']:
+                    # 解析路线点
+                    points = parse_route_points(segment['route_point'])
+                    geometry = create_geometry_from_points(points)
                     
-            # 提取URL
-            if 'gaode_link' in segment:
-                segment['url'] = segment.pop('gaode_link')
+                    # 创建分段记录
+                    route_segment = RouteSegment(
+                        route_id=route.id,
+                        segment_id=segment['seg_id'],
+                        gaode_link=segment['gaode_link'],
+                        route_points=segment['route_point'],
+                        segment_distance=segment['seg_distance'],
+                        geometry=from_shape(geometry, srid=4326) if geometry else None
+                    )
+                    session.add(route_segment)
                 
-            processed_segments.append(segment)
-            
-        return processed_segments
-        
-    def migrate(self):
-        """执行数据迁移"""
-        # 获取源数据
-        source_data = self.fetch_source_data()
-        
-        # 处理每条路线
-        for route_data in source_data:
-            # 创建路线记录
-            route = Route(
-                source='amap',
-                route_id=str(route_data.get('id', '')),
-                url=route_data.get('gaode_link', ''),
-                name=route_data.get('name', ''),
-                metadata={
-                    'original_data': {
-                        k: v for k, v in route_data.items()
-                        if k not in ['id', 'gaode_link', 'name', 'segments']
-                    }
-                }
-            )
-            
-            # 保存路线
-            if self.target_db.add_route(route):
-                # 处理分段数据
-                segments = self.process_segments(route_data.get('segments', []))
+                session.commit()
                 
-                # TODO: 保存分段数据到route_segments表
-                # 这部分需要根据具体的数据库结构来实现
-                
-def main():
-    """主函数"""
-    # 配置目标数据库连接
-    target_conn = "postgresql://postgres:postgres@localhost:5432/spdatalab"
-    
-    # 执行迁移
-    migrator = RouteMigrator(target_conn)
-    migrator.migrate()
+    except Exception as e:
+        session.rollback()
+        raise e
+    finally:
+        session.close()
 
 if __name__ == '__main__':
-    main() 
+    migrate_routes() 
