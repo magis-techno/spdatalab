@@ -21,7 +21,7 @@ class Route(Base):
     name = Column(String(200), nullable=True, comment='Route name/description')
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-    metadata = Column(Text, nullable=True, comment='Additional route metadata in JSON format')
+    route_metadata = Column(Text, nullable=True, comment='Additional route metadata in JSON format')
     
     def __repr__(self):
         return f"<Route(source='{self.source}', route_id='{self.route_id}')>" 

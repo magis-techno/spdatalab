@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS routes (
     total_distance FLOAT,
     is_active BOOLEAN DEFAULT true,
     allocation_count INTEGER DEFAULT 0,
+    route_metadata JSONB,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
