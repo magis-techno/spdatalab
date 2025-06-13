@@ -61,7 +61,7 @@ def migrate_routes():
                     session.flush()  # 获取route.id
                     
                     # 处理每个分段
-                    for segment in segments:
+                    for i, segment in enumerate(segments, 1):  # 使用enumerate生成唯一的segment_id
                         # 解析路线点
                         points = parse_route_points(segment['route_point'])
                         geometry = create_geometry_from_points(points)
@@ -69,7 +69,7 @@ def migrate_routes():
                         # 创建分段记录
                         route_segment = RouteSegment(
                             route_id=route.id,
-                            segment_id=segment['seg_id'],
+                            segment_id=i,  # 使用新的唯一ID
                             gaode_link=segment['gaode_link'],
                             route_points=segment['route_point'],
                             segment_distance=segment['seg_distance'],
