@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from shapely.geometry import LineString
 from geoalchemy2.shape import from_shape
 
-from ..common.io_hive import HiveConnection
+from ..common.io_hive import hive_cursor
 from .models import Base, Route, RouteSegment
 
 def parse_route_points(points_str: str) -> List[Dict[str, float]]:
@@ -38,11 +38,11 @@ def migrate_routes():
     
     try:
         # 连接Hive
-        with HiveConnection() as hive_conn:
+        with hive_cursor() as cursor:
             # 查询路线数据
             query = "SELECT * FROM route_info_0607"
-            hive_conn.execute(query)
-            routes = hive_conn.fetchall()
+            cursor.execute(query)
+            routes = cursor.fetchall()
             
             for route_data in routes:
                 # 解析JSON数据

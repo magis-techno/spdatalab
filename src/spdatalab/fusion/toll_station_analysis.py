@@ -474,6 +474,7 @@ class TollStationAnalyzer:
         if export_trajectories:
             # 导出轨迹统计数据视图
             trajectory_view = f"qgis_trajectories_{analysis_id.replace('-', '_')}"
+
             
             create_view_sql = text(f"""
                 CREATE OR REPLACE VIEW {trajectory_view} AS
