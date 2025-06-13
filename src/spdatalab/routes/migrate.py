@@ -6,11 +6,11 @@ import json
 from typing import List, Dict, Any
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Point
 from geoalchemy2.shape import from_shape
 
 from ..common.io_hive import hive_cursor
-from .models import Base, Route, RouteSegment
+from .models import Base, Route, RouteSegment, RoutePoint
 
 def parse_route_points(points_str: str) -> List[Dict[str, float]]:
     """解析路线点字符串为坐标列表"""
@@ -51,17 +51,16 @@ def migrate_routes():
                     
                     # 创建路线记录
                     route = Route(
-                        route_name=route_name,
+                        name=route_name,  # 使用新的字段名
                         region=region,
                         total_distance=distance,
-                        is_active=is_active,
-                        allocation_count=allocation_count
+                        is_active=is_active
                     )
                     session.add(route)
                     session.flush()  # 获取route.id
                     
                     # 处理每个分段
-                    for i, segment in enumerate(segments, 1):  # 使用enumerate生成唯一的segment_id
+                    for i, segment in enumerate(segments, 1):
                         # 解析路线点
                         points = parse_route_points(segment['route_point'])
                         geometry = create_geometry_from_points(points)
@@ -69,13 +68,23 @@ def migrate_routes():
                         # 创建分段记录
                         route_segment = RouteSegment(
                             route_id=route.id,
-                            segment_id=i,  # 使用新的唯一ID
+                            segment_order=i,
                             gaode_link=segment['gaode_link'],
-                            route_points=segment['route_point'],
-                            segment_distance=segment['seg_distance'],
-                            geometry=from_shape(geometry, srid=4326) if geometry else None
+                            distance=segment['seg_distance'],
+                            path=from_shape(geometry, srid=4326) if geometry else None
                         )
                         session.add(route_segment)
+                        session.flush()  # 获取segment.id
+                        
+                        # 如果有几何数据，创建路线点记录
+                        if geometry:
+                            for j, (lon, lat) in enumerate(geometry.coords):
+                                point = RoutePoint(
+                                    segment_id=route_segment.id,
+                                    point_order=j + 1,
+                                    point=from_shape(Point(lon, lat), srid=4326)
+                                )
+                                session.add(point)
                     
                     session.commit()
                 except Exception as e:
