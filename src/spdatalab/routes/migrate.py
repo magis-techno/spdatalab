@@ -46,7 +46,7 @@ def migrate_routes():
             
             for route_data in routes:
                 # 解析JSON数据
-                route_json = route_data  # Hive返回的已经是解析好的JSON对象
+                route_json = json.loads(route_data[0])  # 第一个字段是JSON字符串
                 
                 # 创建路线记录
                 route = Route(
