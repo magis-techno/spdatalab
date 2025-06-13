@@ -59,6 +59,20 @@ clean-fdw:
 	  env PGPASSWORD=postgres \
 	  psql -h local_pg -U postgres -f sql/cleanup_fdw.sql
 
+# 初始化路线相关表
+init-routes:
+	@echo "初始化路线相关表..."
+	docker compose -f docker/docker-compose.yml exec -T workspace \
+	  env PGPASSWORD=postgres \
+	  psql -h local_pg -U postgres -f sql/routes/create_tables.sql
+
+# 清理路线相关表
+clean-routes:
+	@echo "清理路线相关表..."
+	docker compose -f docker/docker-compose.yml exec -T workspace \
+	  env PGPASSWORD=postgres \
+	  psql -h local_pg -U postgres -f sql/routes/drop_tables.sql
+
 # 显示帮助信息
 help:
 	@echo "Spatial-Data-Lab 开发环境管理"
@@ -77,6 +91,8 @@ help:
 	@echo "数据管理："
 	@echo "  make clean-bbox        - 清理clips_bbox表"
 	@echo "  make clean-toll-station- 清理收费站分析相关表和视图"
+	@echo "  make init-routes       - 初始化路线相关表"
+	@echo "  make clean-routes      - 清理路线相关表"
 	@echo ""
 	@echo "数据处理请使用命令行工具："
 	@echo "  spdatalab build-dataset-with-bbox [参数]"
@@ -84,4 +100,4 @@ help:
 	@echo "注意："
 	@echo "  使用init-fdw前请先修改sql/init_fdw.sql中的连接参数"
 
-.PHONY: up down psql init-db clean-bbox clean-toll-station init-fdw check-fdw clean-fdw help
+.PHONY: up down psql init-db clean-bbox clean-toll-station init-fdw check-fdw clean-fdw init-routes clean-routes help
