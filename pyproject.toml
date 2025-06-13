@@ -12,6 +12,8 @@ dependencies = [
     "sqlalchemy",
     "psycopg[binary]",
     "python-dotenv",
+    "requests",
+    "shapely",
 ]
 
 [project.optional-dependencies]

@@ -7,6 +7,7 @@ import json
 from typing import List, Dict, Any, Optional, Tuple
 from urllib.parse import urlparse, parse_qs
 from shapely.geometry import LineString, Point
+from .amap import AmapRoute
 
 class AmapRouteParser:
     """高德地图路线解析器"""
@@ -40,7 +41,7 @@ class AmapRouteParser:
     
     def extract_coordinates_from_url(self, url: str) -> Optional[Tuple[List[float], List[float]]]:
         """
-        从高德地图URL中提取起点和终点坐标
+        从URL中直接提取起点和终点坐标
         
         Args:
             url: 高德地图URL
@@ -49,36 +50,35 @@ class AmapRouteParser:
             (起点坐标, 终点坐标) 或 None
         """
         try:
-            # 如果是短链接，先展开
+            # 处理短链接
             if 'surl.amap.com' in url:
                 url = self.expand_short_url(url)
                 if not url:
                     return None
             
             parsed = urlparse(url)
-            if 'amap.com' not in parsed.netloc:
+            query = parse_qs(parsed.query)
+            
+            # 尝试从查询参数中获取坐标
+            if 'src' in query:
+                src = query['src'][0]
+                if ',' in src:
+                    start_coords = [float(x) for x in src.split(',')]
+                else:
+                    return None
+            else:
                 return None
-            
-            # 解析查询参数
-            query_params = parse_qs(parsed.query)
-            
-            # 尝试从不同参数中提取坐标
-            # 1. 从path参数中提取
-            if 'path' in query_params:
-                path = query_params['path'][0]
-                points = path.split(';')
-                if len(points) >= 2:
-                    start = list(map(float, points[0].split(',')))
-                    end = list(map(float, points[-1].split(',')))
-                    return start, end
-            
-            # 2. 从起点终点参数中提取
-            if 's' in query_params and 'd' in query_params:
-                start = list(map(float, query_params['s'][0].split(',')))
-                end = list(map(float, query_params['d'][0].split(',')))
-                return start, end
-            
-            return None
+                
+            if 'dest' in query:
+                dest = query['dest'][0]
+                if ',' in dest:
+                    end_coords = [float(x) for x in dest.split(',')]
+                else:
+                    return None
+            else:
+                return None
+                
+            return (start_coords, end_coords)
         except Exception as e:
             print(f"Error extracting coordinates: {str(e)}")
             return None
@@ -100,22 +100,22 @@ class AmapRouteParser:
               - instruction: 导航指示
               - path: 坐标点列表 [[lon, lat], ...]
         """
-        # 首先尝试直接从URL中提取坐标
+        # 首先尝试直接从URL获取坐标
         coords = self.extract_coordinates_from_url(url)
         if coords:
-            start, end = coords
+            start_coords, end_coords = coords
             return {
-                'distance': None,  # 需要API才能获取准确距离
-                'duration': None,  # 需要API才能获取准确时间
+                'distance': None,  # 需要API才能获取
+                'duration': None,  # 需要API才能获取
                 'steps': [{
                     'distance': None,
                     'duration': None,
-                    'instruction': '从起点到终点',
-                    'path': [start, end]  # 简化为只有起点和终点
+                    'instruction': 'Direct route',
+                    'path': [start_coords, end_coords]
                 }]
             }
-        
-        # 如果没有API密钥，无法获取详细路线信息
+            
+        # 如果没有API密钥，无法获取详细信息
         if not self.api_key:
             return None
             
@@ -182,4 +182,45 @@ class AmapRouteParser:
         """
         if not coordinates:
             return None
-        return LineString(coordinates) 
+        return LineString(coordinates)
+    
+    @classmethod
+    def create_route(cls, url: str, name: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> 'Route':
+        """
+        创建新的Route实例，并尝试获取路线坐标
+        
+        Args:
+            url: 高德地图URL
+            name: 可选的路线名称/描述
+            metadata: 可选的额外元数据
+            
+        Returns:
+            Route实例
+            
+        Raises:
+            ValueError: 如果URL无效或无法提取路线ID
+        """
+        # 使用现有的AmapRoute类创建基本Route实例
+        route = AmapRoute.create_route(url, name, metadata)
+        
+        # 尝试获取路线坐标
+        parser = cls()
+        route_info = parser.get_route_coordinates(url)
+        
+        if route_info:
+            # 更新元数据
+            if route.metadata is None:
+                route.metadata = {}
+            route.metadata.update({
+                'distance': route_info['distance'],
+                'duration': route_info['duration'],
+                'steps': route_info['steps']
+            })
+            
+            # 创建几何对象
+            all_coordinates = []
+            for step in route_info['steps']:
+                all_coordinates.extend(step['path'])
+            route.geometry = parser.create_geometry(all_coordinates)
+        
+        return route 
