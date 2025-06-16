@@ -5,28 +5,31 @@ def test_amap_url():
     short_url = "https://surl.amap.com/25cT71TW75Y"
     print(f"\nTesting short URL: {short_url}")
     
-    # 创建路线实例
-    route = AmapRouteParser.create_route(short_url, "Test Route")
+    # 创建解析器实例
+    parser = AmapRouteParser()
     
-    # 打印路线信息
-    print("\nRoute information:")
-    print(f"Source: {route.source}")
-    print(f"Route ID: {route.route_id}")
-    print(f"URL: {route.url}")
-    print(f"Name: {route.name}")
+    # 1. 展开短链接
+    expanded_url = parser.expand_short_url(short_url)
+    print(f"\n1. Expanded URL:")
+    print(expanded_url)
     
-    if route.route_metadata:
-        print("\nMetadata:")
-        print(f"Distance: {route.route_metadata.get('distance')}")
-        print(f"Duration: {route.route_metadata.get('duration')}")
-        print(f"Number of steps: {len(route.route_metadata.get('steps', []))}")
-    
-    if route.geometry:
-        print("\nGeometry:")
-        print(f"Type: {type(route.geometry).__name__}")
-        print(f"Number of points: {len(route.geometry.coords)}")
-        print(f"Start point: {route.geometry.coords[0]}")
-        print(f"End point: {route.geometry.coords[-1]}")
+    # 2. 提取坐标
+    coords = parser.extract_coordinates_from_url(short_url)
+    if coords:
+        start_coords, end_coords = coords
+        print(f"\n2. Coordinates:")
+        print(f"Start: {start_coords}")
+        print(f"End: {end_coords}")
+        
+        # 3. 创建几何对象
+        geometry = parser.create_geometry([start_coords, end_coords])
+        if geometry:
+            print(f"\n3. Geometry:")
+            print(f"Type: {type(geometry).__name__}")
+            print(f"Start point: {geometry.coords[0]}")
+            print(f"End point: {geometry.coords[-1]}")
+    else:
+        print("\nFailed to extract coordinates")
 
 if __name__ == "__main__":
     test_amap_url() 
