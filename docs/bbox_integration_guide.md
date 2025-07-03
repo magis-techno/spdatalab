@@ -23,7 +23,13 @@
    - 详细的进度报告
    - 高效的文件I/O
 
-4. **智能格式检测**：
+4. **并行处理支持**：
+   - 多进程并行处理 (ProcessPoolExecutor)
+   - 自动CPU核心数检测
+   - 手动worker数量控制
+   - 按子数据集并行分片处理
+
+5. **智能格式检测**：
    - 自动识别输入文件格式
    - 无需手动指定格式
 
@@ -41,6 +47,39 @@ python src/spdatalab/dataset/bbox.py --input output/dataset.parquet --batch 2000
 
 # 处理文本格式的场景ID列表（向后兼容）
 python src/spdatalab/dataset/bbox.py --input data/scene_ids.txt --batch 500
+```
+
+#### 并行处理用法
+
+```bash
+# 使用默认设置开启并行处理（自动检测CPU核心数）
+python -m spdatalab process-bbox \
+    --input dataset.json \
+    --use-partitioning \
+    --use-parallel
+
+# 手动指定使用4个并行worker
+python -m spdatalab process-bbox \
+    --input dataset.json \
+    --use-partitioning \
+    --use-parallel \
+    --max-workers 4
+
+# 并行处理的完整参数配置
+python -m spdatalab process-bbox \
+    --input dataset.json \
+    --use-partitioning \
+    --use-parallel \
+    --max-workers 6 \
+    --batch 2000 \
+    --insert-batch 1000 \
+    --create-unified-view \
+    --work-dir ./parallel_logs
+
+# 传统顺序处理（对比）
+python -m spdatalab process-bbox \
+    --input dataset.json \
+    --use-partitioning
 ```
 
 #### 进度跟踪和恢复
@@ -82,6 +121,12 @@ python src/spdatalab/dataset/bbox.py \
 - `--work-dir`: 工作目录，默认为 `./bbox_import_logs`，用于存储进度文件
 - `--retry-failed`: 只重试失败的数据，不处理已成功的数据
 - `--show-stats`: 显示处理统计信息并退出，不执行实际处理
+
+#### 并行处理参数
+- `--use-parallel`: 启用并行处理模式
+- `--max-workers`: 并行worker数量，默认为CPU核心数
+- `--use-partitioning`: 启用分表模式（并行处理必需）
+- `--create-unified-view`: 创建统一视图以便查询
 
 ### 编程方式使用
 
@@ -281,9 +326,51 @@ mkdir -p logs/imports/test_20231201
 python bbox.py --input dataset.json --work-dir "./logs/imports/$(date +%Y%m%d_%H%M%S)"
 ```
 
-### 3. 并发处理
+### 3. 并行处理（推荐）
 
-对于超大型数据集（1000万+场景），可以考虑分片并行处理：
+使用内置的并行处理功能：
+
+```bash
+# 基础并行处理
+python -m spdatalab process-bbox \
+    --input dataset.json \
+    --use-partitioning \
+    --use-parallel
+
+# 指定并行worker数量
+python -m spdatalab process-bbox \
+    --input dataset.json \
+    --use-partitioning \
+    --use-parallel \
+    --max-workers 4
+
+# 完整的并行处理配置
+python -m spdatalab process-bbox \
+    --input dataset.json \
+    --use-partitioning \
+    --use-parallel \
+    --max-workers 6 \
+    --batch 2000 \
+    --insert-batch 1000 \
+    --create-unified-view \
+    --work-dir ./parallel_logs
+```
+
+#### 并行处理的最佳实践
+
+根据数据规模选择合适的设置：
+
+| 数据规模 | 推荐设置 | 命令参数 |
+|----------|----------|----------|
+| 小数据集（<50万记录） | 顺序处理 | `--use-partitioning`（不使用`--use-parallel`） |
+| 中等数据集（50万-200万记录） | 并行处理，worker数量 = CPU核心数的一半 | `--use-partitioning --use-parallel --max-workers 4` |
+| 大数据集（>200万记录） | 并行处理，worker数量 = CPU核心数 | `--use-partitioning --use-parallel`（让系统自动检测） |
+| 服务器环境 | 限制worker数量避免影响其他服务 | `--use-partitioning --use-parallel --max-workers 6` |
+| 开发测试环境 | 使用较少worker避免系统过载 | `--use-partitioning --use-parallel --max-workers 2` |
+
+### 4. 手动分片处理（高级用法）
+
+对于超大型数据集（1000万+场景），可以考虑手动分片并行处理：
 
 ```python
 # 分割数据集
@@ -322,7 +409,7 @@ for i, part in enumerate(parts):
     )
 ```
 
-### 4. 数据库优化
+### 5. 数据库优化
 
 - **索引优化**：程序会自动创建必要的索引
 - **唯一约束**：自动处理重复数据，支持断点续传
@@ -399,6 +486,87 @@ for i, part in enumerate(parts):
 - 进度文件: ./logs/bbox_import/progress.json
 ```
 
+## 并行处理架构说明
+
+### 并行化策略
+- **按子数据集(subdataset)进行并行处理**：每个worker处理一个完整的子数据集
+- **避免数据库连接竞争**：每个worker使用独立的数据库连接
+- **事务隔离**：避免不同worker间的事务冲突
+
+### 性能优势
+- **CPU密集型任务并行化**：数据处理、转换等操作并行执行
+- **I/O操作并行化**：数据库查询、插入操作并行执行
+- **减少总体处理时间**：大数据集处理速度提升2-6倍
+
+### 注意事项
+- **数据库连接池限制**：每个worker需要独立的数据库连接
+- **内存使用量增加**：多进程同时运行会增加内存占用
+- **子数据集数量限制**：不适合子数据集数量很少的场景
+
+### 监控指标
+- **独立进度跟踪**：每个worker的处理进度独立显示
+- **性能提升计算**：总体性能提升倍数自动计算
+- **吞吐量对比**：处理时间和吞吐量对比统计
+
+## 故障排除指南
+
+### 并行处理比顺序处理慢
+**可能原因**：
+- 数据量太小，多进程开销大于收益
+- worker数量设置过多，资源竞争激烈
+- 数据库连接限制
+
+**解决方案**：
+- 减少max-workers数量
+- 对小数据集使用顺序处理
+- 检查数据库连接池配置
+
+### 内存使用过高
+**可能原因**：
+- worker数量过多
+- batch-size设置过大
+- 大量数据同时加载到内存
+
+**解决方案**：
+- 减少max-workers
+- 减少batch-size
+- 增加系统内存或使用更小的批次处理
+
+### 某些worker进程卡住
+**可能原因**：
+- 数据库连接超时
+- 某个子数据集数据异常
+- 进程间死锁
+
+**解决方案**：
+- 检查数据库连接状态
+- 查看worker进程日志
+- 重启处理，跳过问题数据集
+
+## 性能对比测试
+
+使用专用的性能测试脚本：
+
+```bash
+# 对比并行和顺序处理性能
+python test_parallel_performance.py \
+    --dataset-file dataset.json \
+    --test-mode both \
+    --batch-size 1000 \
+    --max-workers 4
+
+# 仅测试并行处理
+python test_parallel_performance.py \
+    --dataset-file dataset.json \
+    --test-mode parallel \
+    --max-workers 6
+
+# 仅测试顺序处理
+python test_parallel_performance.py \
+    --dataset-file dataset.json \
+    --test-mode sequential
+```
+
 ## 常见问题
 
 ### 1. 依赖问题
@@ -470,4 +638,42 @@ python examples/bbox_usage_example.py --mode recovery
 
 # 性能测试
 python examples/bbox_usage_example.py --mode benchmark
-``` 
+```
+
+## 并行处理演示
+
+运行并行处理功能演示脚本：
+
+```bash
+# 查看并行处理功能演示
+python demo_parallel_commands.py
+```
+
+该脚本包含：
+- 并行处理命令演示
+- 性能对比测试方法
+- 最佳实践建议
+- 架构说明
+- 故障排除指南
+
+## 关键新功能总结
+
+✅ **多进程并行处理** (ProcessPoolExecutor)  
+✅ **自动CPU核心数检测**  
+✅ **手动worker数量控制**  
+✅ **独立进度跟踪**  
+✅ **性能提升监控**  
+✅ **智能错误处理**  
+
+### 预期性能提升
+
+- **大数据集处理速度提升 2-6倍**
+- **CPU资源充分利用**
+- **总体处理时间显著减少**
+
+### 相关文件
+
+- **性能测试**: `python test_parallel_performance.py`
+- **开发计划**: `DEVELOPMENT_PLAN.md`
+- **核心实现**: `src/spdatalab/dataset/bbox.py`
+- **演示脚本**: `demo_parallel_commands.py` 

@@ -364,8 +364,29 @@ def load_scene_ids(file_path):
     elif file_path.suffix.lower() == '.parquet':
         return load_scene_ids_from_parquet(file_path)
     else:
-        # 默认按文本格式处理
-        return load_scene_ids_from_text(file_path)
+        # 对于其他格式，先检测是否为URL格式
+        try:
+            from ..dataset.dataset_manager import DatasetManager
+            dataset_manager = DatasetManager()
+            
+            # 检测文件格式
+            file_format = dataset_manager.detect_file_format(str(file_path))
+            
+            if file_format == 'url':
+                print(f"检测到URL格式，使用URL处理模式")
+                return dataset_manager.extract_scene_ids_from_urls(str(file_path))
+            elif file_format == 'jsonl_path':
+                print(f"检测到JSONL路径格式，使用传统处理模式")
+                return load_scene_ids_from_text(file_path)
+            else:
+                # 格式未知，尝试文本格式
+                print(f"未知格式，尝试文本格式处理")
+                return load_scene_ids_from_text(file_path)
+                
+        except Exception as e:
+            print(f"智能格式检测失败: {str(e)}，回退到文本格式")
+            # 如果智能检测失败，回退到原始的文本格式处理
+            return load_scene_ids_from_text(file_path)
 
 def fetch_meta(tokens):
     """批量获取场景元数据"""
