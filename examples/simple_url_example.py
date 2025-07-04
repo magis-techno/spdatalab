@@ -24,8 +24,7 @@ def main():
     
     # 直接放URL，无需@duplicate后缀
     urls = [
-        "https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119535",
-        "https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119536"
+        "https://",
     ]
     
     with open(index_file, 'w', encoding='utf-8') as f:

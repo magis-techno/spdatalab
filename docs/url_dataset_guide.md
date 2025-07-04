@@ -24,9 +24,7 @@ URL → dataName → defect_id → scene_id → 边界框数据
 ## 支持的URL格式
 
 URL示例：
-```
-https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119535
-```
+
 
 从中提取的dataName为：`10000_ddi-application-667754027299119535`
 
@@ -36,21 +34,14 @@ https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/even
 
 每行包含一个问题单URL：
 
-```
-https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119535
-https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119536
-https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119537
-```
+
 
 ### 2. 索引文件格式
 
 支持多种格式：
 
 **URL格式（推荐）：** 直接放URL，无需@duplicate后缀
-```
-https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119535
-https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119536
-```
+
 
 **传统格式：** 路径+重复因子
 ```

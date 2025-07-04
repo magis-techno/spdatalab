@@ -83,7 +83,6 @@ class DatasetManager:
         
         Args:
             url: 问题单URL，例如：
-                https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119535
                 
         Returns:
             dataName值，如 '10000_ddi-application-667754027299119535'，失败时返回None
@@ -118,11 +117,12 @@ class DatasetManager:
             logger.error(f"解析URL失败: {url}, 错误: {str(e)}")
             return None
             
-    def query_defect_id_by_dataname(self, dataname: str) -> Optional[str]:
+    def query_defect_id_by_dataname(self, dataname: str, original_url: str = None) -> Optional[str]:
         """通过dataName查询defect_id。
         
         Args:
             dataname: dataName值，如 '10000_ddi-application-667754027299119535'
+            original_url: 原始URL（用于错误信息显示）
             
         Returns:
             defect_id值，如 'DI20250116151107D21104779'，失败时返回None
@@ -139,18 +139,26 @@ class DatasetManager:
                     logger.debug(f"dataName {dataname} -> defect_id {defect_id}")
                     return defect_id
                 else:
-                    logger.warning(f"未找到dataName对应的defect_id: {dataname}")
+                    error_msg = f"未找到dataName对应的defect_id: {dataname}"
+                    if original_url:
+                        error_msg += f"\n  原始URL: {original_url}"
+                    logger.warning(error_msg)
                     return None
                     
         except Exception as e:
-            logger.error(f"查询defect_id失败，dataName: {dataname}, 错误: {str(e)}")
+            error_msg = f"查询defect_id失败，dataName: {dataname}, 错误: {str(e)}"
+            if original_url:
+                error_msg += f"\n  原始URL: {original_url}"
+            logger.error(error_msg)
             return None
             
-    def query_scene_ids_by_defect_id(self, defect_id: str) -> List[str]:
+    def query_scene_ids_by_defect_id(self, defect_id: str, dataname: str = None, original_url: str = None) -> List[str]:
         """通过defect_id查询scene_id列表。
         
         Args:
             defect_id: defect_id值，如 'DI20250116151107D21104779'
+            dataname: dataName值（用于错误信息显示）
+            original_url: 原始URL（用于错误信息显示）
             
         Returns:
             scene_id列表
@@ -163,11 +171,24 @@ class DatasetManager:
                 results = cur.fetchall()
                 
                 scene_ids = [result[0] for result in results]
-                logger.info(f"defect_id {defect_id} -> {len(scene_ids)} scene_ids")
+                if scene_ids:
+                    logger.info(f"defect_id {defect_id} -> {len(scene_ids)} scene_ids")
+                else:
+                    error_msg = f"defect_id未找到对应scene_id: {defect_id}"
+                    if dataname:
+                        error_msg += f"\n  dataName: {dataname}"
+                    if original_url:
+                        error_msg += f"\n  原始URL: {original_url}"
+                    logger.warning(error_msg)
                 return scene_ids
                 
         except Exception as e:
-            logger.error(f"查询scene_id失败，defect_id: {defect_id}, 错误: {str(e)}")
+            error_msg = f"查询scene_id失败，defect_id: {defect_id}, 错误: {str(e)}"
+            if dataname:
+                error_msg += f"\n  dataName: {dataname}"
+            if original_url:
+                error_msg += f"\n  原始URL: {original_url}"
+            logger.error(error_msg)
             return []
             
     def extract_scene_ids_from_urls(self, file_path: str) -> List[str]:
@@ -198,14 +219,14 @@ class DatasetManager:
                         continue
                     
                     # 查询defect_id
-                    defect_id = self.query_defect_id_by_dataname(dataname)
+                    defect_id = self.query_defect_id_by_dataname(dataname, original_url=line)
                     if not defect_id:
                         logger.warning(f"第 {line_num} 行dataName未找到对应defect_id: {dataname}")
                         self.stats['failed_files'] += 1
                         continue
                     
                     # 查询scene_ids
-                    line_scene_ids = self.query_scene_ids_by_defect_id(defect_id)
+                    line_scene_ids = self.query_scene_ids_by_defect_id(defect_id, dataname=dataname, original_url=line)
                     if line_scene_ids:
                         scene_ids.extend(line_scene_ids)
                         self.stats['processed_files'] += 1

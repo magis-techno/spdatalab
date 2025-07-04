@@ -737,7 +737,7 @@ def group_scenes_by_subdataset(dataset_file: str) -> Dict[str, List[str]]:
     """按子数据集分组scene_ids
     
     Args:
-        dataset_file: dataset文件路径（JSON/Parquet格式）
+        dataset_file: dataset文件路径（JSON/Parquet/URL格式）
         
     Returns:
         字典，key为子数据集名称，value为scene_ids列表
@@ -746,32 +746,169 @@ def group_scenes_by_subdataset(dataset_file: str) -> Dict[str, List[str]]:
     
     try:
         dataset_manager = DatasetManager()
-        dataset = dataset_manager.load_dataset(dataset_file)
         
-        groups = {}
-        total_scenes = 0
+        # 检测文件格式
+        file_format = dataset_manager.detect_file_format(dataset_file)
         
-        print(f"从数据集文件加载: {dataset_file}")
-        print(f"数据集名称: {dataset.name}")
-        print(f"子数据集数量: {len(dataset.subdatasets)}")
-        
-        for subdataset in dataset.subdatasets:
-            subdataset_name = subdataset.name
-            scene_ids = subdataset.scene_ids
+        if file_format == 'url':
+            print(f"检测到URL格式，从URL文件创建分组: {dataset_file}")
+            return group_scenes_from_url_file(dataset_file)
+        else:
+            # 原有的数据集加载逻辑
+            dataset = dataset_manager.load_dataset(dataset_file)
             
-            if scene_ids:
-                groups[subdataset_name] = scene_ids
-                total_scenes += len(scene_ids)
-                print(f"  {subdataset_name}: {len(scene_ids)} 个场景")
-            else:
-                print(f"  {subdataset_name}: 无场景数据，跳过")
-        
-        print(f"总计: {len(groups)} 个有效子数据集，{total_scenes} 个场景")
-        return groups
+            groups = {}
+            total_scenes = 0
+            
+            print(f"从数据集文件加载: {dataset_file}")
+            print(f"数据集名称: {dataset.name}")
+            print(f"子数据集数量: {len(dataset.subdatasets)}")
+            
+            for subdataset in dataset.subdatasets:
+                subdataset_name = subdataset.name
+                scene_ids = subdataset.scene_ids
+                
+                if scene_ids:
+                    groups[subdataset_name] = scene_ids
+                    total_scenes += len(scene_ids)
+                    print(f"  {subdataset_name}: {len(scene_ids)} 个场景")
+                else:
+                    print(f"  {subdataset_name}: 无场景数据，跳过")
+            
+            print(f"总计: {len(groups)} 个有效子数据集，{total_scenes} 个场景")
+            return groups
         
     except Exception as e:
         print(f"分组scene_ids失败: {str(e)}")
         raise
+
+def group_scenes_from_url_file(url_file: str) -> Dict[str, List[str]]:
+    """从URL文件创建场景分组
+    
+    Args:
+        url_file: URL文件路径
+        
+    Returns:
+        字典，key为子数据集名称，value为scene_ids列表
+    """
+    from ..dataset.dataset_manager import DatasetManager
+    from ..common.file_utils import open_file
+    import re
+    from pathlib import Path
+    
+    dataset_manager = DatasetManager()
+    groups = {}
+    total_scenes = 0
+    
+    # 从文件名提取基础数据集名称
+    base_dataset_name = extract_dataset_name_from_filename(url_file)
+    print(f"从URL文件创建分组: {url_file}")
+    print(f"使用数据集基础名称: {base_dataset_name}")
+    
+    try:
+        with open_file(url_file, 'r') as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                # 提取dataName
+                dataname = dataset_manager.extract_dataname_from_url(line)
+                if not dataname:
+                    print(f"第 {line_num} 行URL解析失败，跳过: {line}")
+                    continue
+                
+                # 根据dataName和基础数据集名称确定子数据集名称
+                subdataset_name = determine_subdataset_name_from_dataname(dataname, base_dataset_name)
+                
+                # 查询defect_id
+                defect_id = dataset_manager.query_defect_id_by_dataname(dataname, original_url=line)
+                if not defect_id:
+                    print(f"第 {line_num} 行dataName未找到对应defect_id，跳过: {dataname}")
+                    continue
+                
+                # 查询scene_ids
+                line_scene_ids = dataset_manager.query_scene_ids_by_defect_id(defect_id, dataname=dataname, original_url=line)
+                if line_scene_ids:
+                    if subdataset_name not in groups:
+                        groups[subdataset_name] = []
+                    groups[subdataset_name].extend(line_scene_ids)
+                    total_scenes += len(line_scene_ids)
+                    print(f"第 {line_num} 行: {dataname} -> {len(line_scene_ids)} scene_ids -> {subdataset_name}")
+                else:
+                    print(f"第 {line_num} 行defect_id未找到对应scene_id，跳过: {defect_id}")
+                    
+        print(f"URL文件处理完成:")
+        for subdataset_name, scene_ids in groups.items():
+            print(f"  {subdataset_name}: {len(scene_ids)} 个场景")
+        print(f"总计: {len(groups)} 个子数据集，{total_scenes} 个场景")
+        
+        return groups
+        
+    except Exception as e:
+        print(f"处理URL文件失败: {url_file}, 错误: {str(e)}")
+        raise
+
+def extract_dataset_name_from_filename(file_path: str) -> str:
+    """从文件路径提取数据集基础名称
+    
+    Args:
+        file_path: 文件路径，如 'data/problem_ticket_20250703.txt'
+        
+    Returns:
+        数据集基础名称，如 'problem_ticket_20250703'
+    """
+    from pathlib import Path
+    import re
+    
+    # 获取文件名（不含路径和扩展名）
+    filename = Path(file_path).stem
+    
+    # 清理文件名，确保符合表名规范
+    # 移除或替换特殊字符
+    clean_name = re.sub(r'[^a-zA-Z0-9_]', '_', filename)
+    
+    # 处理连续下划线
+    clean_name = re.sub(r'_+', '_', clean_name)
+    clean_name = clean_name.strip('_')
+    
+    # 转换为小写（PostgreSQL表名最佳实践）
+    clean_name = clean_name.lower()
+    
+    # 确保不为空
+    if not clean_name:
+        clean_name = "url_dataset"
+    
+    # 确保以字母开头
+    if clean_name[0].isdigit():
+        clean_name = "ds_" + clean_name
+    
+    return clean_name
+
+def determine_subdataset_name_from_dataname(dataname: str, base_dataset_name: str = None) -> str:
+    """根据dataName和基础数据集名称确定子数据集名称
+    
+    Args:
+        dataname: dataName值，如 '10000_ddi-application-667754027299119535'
+        base_dataset_name: 基础数据集名称，如 'problem_ticket_20250703'
+        
+    Returns:
+        子数据集名称
+    """
+    if base_dataset_name is None:
+        base_dataset_name = "url_dataset"
+    
+    # 提取前缀作为分组依据
+    if '_' in dataname:
+        # 使用第一段作为分组
+        prefix = dataname.split('_')[0]
+        return f"{base_dataset_name}_{prefix}"
+    else:
+        # 如果没有下划线，按长度分组
+        if len(dataname) > 20:
+            return f"{base_dataset_name}_long"
+        else:
+            return f"{base_dataset_name}_short"
 
 def batch_create_tables_for_subdatasets(eng, subdataset_names: List[str]) -> Dict[str, str]:
     """批量为子数据集创建分表
@@ -1890,15 +2027,79 @@ def run(input_path, batch=1000, insert_batch=1000, create_table=False, retry_fai
         print(f"- 失败记录: {tracker.failed_file}")
         print(f"- 进度文件: {tracker.progress_file}")
 
+def detect_input_format_for_partitioning(input_path: str) -> bool:
+    """检测输入文件是否应该使用分表模式
+    
+    Args:
+        input_path: 输入文件路径
+        
+    Returns:
+        是否应该使用分表模式
+    """
+    try:
+        from .dataset_manager import DatasetManager
+        dataset_manager = DatasetManager()
+        
+        # 检测文件格式
+        file_format = dataset_manager.detect_file_format(input_path)
+        
+        # URL格式或JSON/Parquet格式（数据集格式）应该使用分表模式
+        if file_format == 'url':
+            print("📋 检测到URL格式，将使用分表模式处理")
+            return True
+        elif input_path.endswith(('.json', '.parquet')):
+            print("📋 检测到数据集格式，将使用分表模式处理")
+            return True
+        else:
+            print("📋 使用传统模式处理")
+            return False
+            
+    except Exception as e:
+        print(f"⚠️ 格式检测失败: {str(e)}，使用传统模式")
+        return False
+
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(description='从数据集文件生成边界框数据')
-    ap.add_argument('--input', required=True, help='输入文件路径（支持JSON/Parquet/文本格式）')
+    ap.add_argument('--input', required=True, help='输入文件路径（支持JSON/Parquet/URL/文本格式）')
     ap.add_argument('--batch', type=int, default=1000, help='处理批次大小')
     ap.add_argument('--insert-batch', type=int, default=1000, help='插入批次大小')
     ap.add_argument('--create-table', action='store_true', help='创建表（如果不存在）。默认假设表已通过SQL脚本创建')
     ap.add_argument('--retry-failed', action='store_true', help='是否只重试失败的数据')
     ap.add_argument('--work-dir', default='./bbox_import_logs', help='工作目录，用于存储日志和进度文件')
     ap.add_argument('--show-stats', action='store_true', help='显示处理统计信息并退出')
+    ap.add_argument('--force-traditional', action='store_true', help='强制使用传统模式（不使用分表）')
+    ap.add_argument('--force-partitioning', action='store_true', help='强制使用分表模式')
     
     args = ap.parse_args()
-    run(args.input, args.batch, args.insert_batch, args.create_table, args.retry_failed, args.work_dir, args.show_stats)
+    
+    # 智能选择处理模式
+    if args.force_traditional:
+        print("🔧 用户强制使用传统模式")
+        run(args.input, args.batch, args.insert_batch, args.create_table, args.retry_failed, args.work_dir, args.show_stats)
+    elif args.force_partitioning:
+        print("🔧 用户强制使用分表模式")
+        run_with_partitioning(
+            args.input, 
+            batch=args.batch, 
+            insert_batch=args.insert_batch, 
+            work_dir=args.work_dir,
+            create_unified_view_flag=True,
+            use_parallel=True
+        )
+    else:
+        # 自动检测并选择合适的模式
+        should_use_partitioning = detect_input_format_for_partitioning(args.input)
+        
+        if should_use_partitioning:
+            print("🚀 自动选择分表模式")
+            run_with_partitioning(
+                args.input, 
+                batch=args.batch, 
+                insert_batch=args.insert_batch, 
+                work_dir=args.work_dir,
+                create_unified_view_flag=True,
+                use_parallel=True
+            )
+        else:
+            print("🔧 自动选择传统模式")
+            run(args.input, args.batch, args.insert_batch, args.create_table, args.retry_failed, args.work_dir, args.show_stats)
