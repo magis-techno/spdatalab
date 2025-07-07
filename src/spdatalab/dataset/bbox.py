@@ -2456,137 +2456,6 @@ def run_issue_tickets_processing(input_path, batch=1000, insert_batch=1000, work
         print(f"- 失败记录: {tracker.failed_file}")
         print(f"- 进度文件: {tracker.progress_file}")
 
-def detect_input_format_for_partitioning(input_path: str) -> bool:
-    """检测输入文件是否应该使用分表模式
-    
-    Args:
-        input_path: 输入文件路径
-        
-    Returns:
-        是否应该使用分表模式
-    """
-    try:
-        from .dataset_manager import DatasetManager
-        dataset_manager = DatasetManager()
-        
-        # 检测文件格式
-        file_format = dataset_manager.detect_file_format(input_path)
-        
-        # URL格式或JSON/Parquet格式（数据集格式）应该使用分表模式
-        if file_format == 'url':
-            print("📋 检测到URL格式，将使用分表模式处理")
-            return True
-        elif input_path.endswith(('.json', '.parquet')):
-            print("📋 检测到数据集格式，将使用分表模式处理")
-            return True
-        else:
-            print("📋 使用传统模式处理")
-            return False
-            
-    except Exception as e:
-        print(f"⚠️ 格式检测失败: {str(e)}，使用传统模式")
-        return False
-
-def run_with_mode(input_path, mode='bbox', batch=1000, insert_batch=1000, work_dir="./bbox_import_logs", 
-                  create_table=True, trajectory_table=None):
-    """根据模式运行处理
-    
-    Args:
-        input_path: 输入文件路径
-        mode: 处理模式，'bbox', 'trajectory', 'both'
-        batch: 处理批次大小
-        insert_batch: 插入批次大小
-        work_dir: 工作目录
-        create_table: 是否创建表
-        trajectory_table: 轨迹表名
-    """
-    global interrupted
-    setup_signal_handlers()
-    
-    print(f"=== {mode.upper()} 模式处理开始 ===")
-    print(f"输入文件: {input_path}")
-    print(f"处理模式: {mode}")
-    print(f"工作目录: {work_dir}")
-    
-    eng = create_engine(LOCAL_DSN, future=True)
-    
-    # 检测是否应该使用分表模式
-    should_use_partitioning = detect_input_format_for_partitioning(input_path)
-    
-    if mode == 'bbox':
-        # 只生成bbox
-        if should_use_partitioning:
-            run_with_partitioning(input_path, batch, insert_batch, work_dir, 
-                                create_unified_view_flag=True, use_parallel=True)
-        else:
-            run(input_path, batch, insert_batch, create_table, False, work_dir, False)
-            
-    elif mode == 'trajectory':
-        # 只生成轨迹
-        print("⚠️  轨迹模式需要先生成bbox，然后基于bbox生成轨迹")
-        print("建议使用 'both' 模式，或者先运行bbox模式，再使用轨迹生成功能")
-        
-        # 先检查是否有现有的bbox数据
-        check_bbox_sql = text("SELECT COUNT(*) FROM information_schema.tables WHERE table_name LIKE 'clips_bbox%'")
-        with eng.connect() as conn:
-            result = conn.execute(check_bbox_sql)
-            bbox_table_count = result.scalar()
-        
-        if bbox_table_count == 0:
-            print("没有找到bbox表，将先生成bbox数据...")
-            if should_use_partitioning:
-                run_with_partitioning(input_path, batch, insert_batch, work_dir, 
-                                    create_unified_view_flag=True, use_parallel=True)
-            else:
-                run(input_path, batch, insert_batch, create_table, False, work_dir, False)
-        
-        # 基于所有bbox生成轨迹
-        print("\n=== 开始生成轨迹数据 ===")
-        trajectory_generator = TrajectoryGenerator()
-        
-        # 使用适当的表名
-        if trajectory_table:
-            table_name = trajectory_table
-        else:
-            table_name = "clips_trajectory"
-        
-        try:
-            # 为所有bbox生成轨迹
-            trajectory_count = trajectory_generator.generate_trajectories_for_bbox_selection(
-                eng, "1=1", table_name  # 1=1表示选择所有记录
-            )
-            print(f"✅ 成功生成 {trajectory_count} 条轨迹")
-        except Exception as e:
-            print(f"❌ 轨迹生成失败: {str(e)}")
-        
-    elif mode == 'both':
-        # 同时生成bbox和轨迹
-        # 先生成bbox
-        if should_use_partitioning:
-            run_with_partitioning(input_path, batch, insert_batch, work_dir, 
-                                create_unified_view_flag=True, use_parallel=True)
-        else:
-            run(input_path, batch, insert_batch, create_table, False, work_dir, False)
-        
-        # 再生成轨迹
-        print("\n=== 开始生成轨迹数据 ===")
-        trajectory_generator = TrajectoryGenerator()
-        
-        if trajectory_table:
-            table_name = trajectory_table
-        else:
-            table_name = "clips_trajectory"
-        
-        try:
-            trajectory_count = trajectory_generator.generate_trajectories_for_bbox_selection(
-                eng, "1=1", table_name
-            )
-            print(f"✅ 成功生成 {trajectory_count} 条轨迹")
-        except Exception as e:
-            print(f"❌ 轨迹生成失败: {str(e)}")
-    else:
-        raise ValueError(f"不支持的模式: {mode}，支持的模式: 'bbox', 'trajectory', 'both'")
-
 def run_trajectory_generation_from_scenes(scene_list, trajectory_table="clips_trajectory", 
                                        input_format="list"):
     """基于场景列表生成轨迹（简化版，推荐使用）
@@ -2695,7 +2564,7 @@ def run_trajectory_generation(scene_input, trajectory_table="clips_trajectory", 
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(description='从数据集文件生成边界框数据')
-    ap.add_argument('--input', required=True, help='输入文件路径（支持JSON/Parquet/URL/文本格式）')
+    ap.add_argument('--input', help='输入文件路径（支持JSON/Parquet/URL/文本格式）')
     ap.add_argument('--batch', type=int, default=1000, help='处理批次大小')
     ap.add_argument('--insert-batch', type=int, default=1000, help='插入批次大小')
     ap.add_argument('--create-table', action='store_true', help='创建表（如果不存在）。默认假设表已通过SQL脚本创建')
@@ -2707,24 +2576,19 @@ if __name__ == '__main__':
     ap.add_argument('--issue-tickets', action='store_true', help='专门处理问题单URL文件（含责任模块、问题描述等额外属性）')
     ap.add_argument('--issue-table', default='clips_bbox_issues', help='问题单表名（仅在 --issue-tickets 模式下使用）')
     
-    # 新增的模式参数
-    ap.add_argument('--mode', choices=['bbox', 'trajectory', 'both'], default='bbox', 
-                    help='处理模式：bbox（仅边界框），trajectory（仅轨迹），both（两者）')
-    ap.add_argument('--trajectory-table', default='clips_trajectory', 
-                    help='轨迹表名（仅在轨迹模式下使用）')
-    
-    # 简化的轨迹生成参数
+    # 轨迹生成参数
     ap.add_argument('--generate-trajectories', action='store_true', 
                     help='基于场景列表生成轨迹（独立模式）')
     ap.add_argument('--scenes', 
                     help='场景列表，支持：1) 文件路径（每行一个scene_token）2) 逗号分隔的scene_token列表')
+    ap.add_argument('--trajectory-table', default='clips_trajectory', 
+                    help='轨迹表名（仅在轨迹生成模式下使用）')
     
     args = ap.parse_args()
     
-    # 轨迹生成独立模式
+    # 检查参数的合法性
     if args.generate_trajectories:
-        print("🎯 基于场景列表的轨迹生成模式")
-        
+        # 轨迹生成模式，不需要--input参数
         if not args.scenes:
             print("❌ 轨迹生成模式需要指定 --scenes 参数")
             print("使用方法:")
@@ -2733,6 +2597,20 @@ if __name__ == '__main__':
             print("  # 直接指定场景列表") 
             print("  python -m spdatalab.dataset.bbox --generate-trajectories --scenes 'token1,token2,token3'")
             sys.exit(1)
+    else:
+        # 其他模式，需要--input参数
+        if not args.input:
+            print("❌ 需要指定 --input 参数")
+            print("使用方法:")
+            print("  # 生成bbox数据")
+            print("  python -m spdatalab.dataset.bbox --input data/scenes.txt")
+            print("  # 问题单处理")
+            print("  python -m spdatalab.dataset.bbox --input data/issues.txt --issue-tickets")
+            sys.exit(1)
+    
+    # 轨迹生成独立模式
+    if args.generate_trajectories:
+        print("🎯 基于场景列表的轨迹生成模式")
         
         # 解析场景输入
         scene_input = args.scenes
@@ -2768,23 +2646,14 @@ if __name__ == '__main__':
             create_table=args.create_table
         )
         
-    # 新的模式系统
-    elif args.mode != 'bbox' or args.trajectory_table != 'clips_trajectory':
-        print(f"🎯 使用 {args.mode} 模式")
-        run_with_mode(
-            args.input,
-            mode=args.mode,
-            batch=args.batch,
-            insert_batch=args.insert_batch,
-            work_dir=args.work_dir,
-            create_table=args.create_table,
-            trajectory_table=args.trajectory_table
-        )
+    # 统计信息模式
+    elif args.show_stats:
+        run(args.input, args.batch, args.insert_batch, args.create_table, args.retry_failed, args.work_dir, args.show_stats)
         
-    # 原有的智能选择处理模式
+    # 强制指定处理模式
     elif args.force_traditional:
         print("🔧 用户强制使用传统模式")
-        run(args.input, args.batch, args.insert_batch, args.create_table, args.retry_failed, args.work_dir, args.show_stats)
+        run(args.input, args.batch, args.insert_batch, args.create_table, args.retry_failed, args.work_dir, False)
     elif args.force_partitioning:
         print("🔧 用户强制使用分表模式")
         run_with_partitioning(
@@ -2796,7 +2665,7 @@ if __name__ == '__main__':
             use_parallel=True
         )
     else:
-        # 自动检测并选择合适的模式
+        # 自动检测并选择合适的模式（默认bbox生成）
         should_use_partitioning = detect_input_format_for_partitioning(args.input)
         
         if should_use_partitioning:
@@ -2811,4 +2680,4 @@ if __name__ == '__main__':
             )
         else:
             print("🔧 自动选择传统模式")
-            run(args.input, args.batch, args.insert_batch, args.create_table, args.retry_failed, args.work_dir, args.show_stats)
+            run(args.input, args.batch, args.insert_batch, args.create_table, args.retry_failed, args.work_dir, False)
