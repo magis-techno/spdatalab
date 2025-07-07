@@ -16,6 +16,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import threading
 import time
 import os
+from .trajectory_generator import TrajectoryGenerator
 
 # 检查是否有parquet支持
 try:
@@ -2486,6 +2487,212 @@ def detect_input_format_for_partitioning(input_path: str) -> bool:
         print(f"⚠️ 格式检测失败: {str(e)}，使用传统模式")
         return False
 
+def run_with_mode(input_path, mode='bbox', batch=1000, insert_batch=1000, work_dir="./bbox_import_logs", 
+                  create_table=True, trajectory_table=None):
+    """根据模式运行处理
+    
+    Args:
+        input_path: 输入文件路径
+        mode: 处理模式，'bbox', 'trajectory', 'both'
+        batch: 处理批次大小
+        insert_batch: 插入批次大小
+        work_dir: 工作目录
+        create_table: 是否创建表
+        trajectory_table: 轨迹表名
+    """
+    global interrupted
+    setup_signal_handlers()
+    
+    print(f"=== {mode.upper()} 模式处理开始 ===")
+    print(f"输入文件: {input_path}")
+    print(f"处理模式: {mode}")
+    print(f"工作目录: {work_dir}")
+    
+    eng = create_engine(LOCAL_DSN, future=True)
+    
+    # 检测是否应该使用分表模式
+    should_use_partitioning = detect_input_format_for_partitioning(input_path)
+    
+    if mode == 'bbox':
+        # 只生成bbox
+        if should_use_partitioning:
+            run_with_partitioning(input_path, batch, insert_batch, work_dir, 
+                                create_unified_view_flag=True, use_parallel=True)
+        else:
+            run(input_path, batch, insert_batch, create_table, False, work_dir, False)
+            
+    elif mode == 'trajectory':
+        # 只生成轨迹
+        print("⚠️  轨迹模式需要先生成bbox，然后基于bbox生成轨迹")
+        print("建议使用 'both' 模式，或者先运行bbox模式，再使用轨迹生成功能")
+        
+        # 先检查是否有现有的bbox数据
+        check_bbox_sql = text("SELECT COUNT(*) FROM information_schema.tables WHERE table_name LIKE 'clips_bbox%'")
+        with eng.connect() as conn:
+            result = conn.execute(check_bbox_sql)
+            bbox_table_count = result.scalar()
+        
+        if bbox_table_count == 0:
+            print("没有找到bbox表，将先生成bbox数据...")
+            if should_use_partitioning:
+                run_with_partitioning(input_path, batch, insert_batch, work_dir, 
+                                    create_unified_view_flag=True, use_parallel=True)
+            else:
+                run(input_path, batch, insert_batch, create_table, False, work_dir, False)
+        
+        # 基于所有bbox生成轨迹
+        print("\n=== 开始生成轨迹数据 ===")
+        trajectory_generator = TrajectoryGenerator()
+        
+        # 使用适当的表名
+        if trajectory_table:
+            table_name = trajectory_table
+        else:
+            table_name = "clips_trajectory"
+        
+        try:
+            # 为所有bbox生成轨迹
+            trajectory_count = trajectory_generator.generate_trajectories_for_bbox_selection(
+                eng, "1=1", table_name  # 1=1表示选择所有记录
+            )
+            print(f"✅ 成功生成 {trajectory_count} 条轨迹")
+        except Exception as e:
+            print(f"❌ 轨迹生成失败: {str(e)}")
+        
+    elif mode == 'both':
+        # 同时生成bbox和轨迹
+        # 先生成bbox
+        if should_use_partitioning:
+            run_with_partitioning(input_path, batch, insert_batch, work_dir, 
+                                create_unified_view_flag=True, use_parallel=True)
+        else:
+            run(input_path, batch, insert_batch, create_table, False, work_dir, False)
+        
+        # 再生成轨迹
+        print("\n=== 开始生成轨迹数据 ===")
+        trajectory_generator = TrajectoryGenerator()
+        
+        if trajectory_table:
+            table_name = trajectory_table
+        else:
+            table_name = "clips_trajectory"
+        
+        try:
+            trajectory_count = trajectory_generator.generate_trajectories_for_bbox_selection(
+                eng, "1=1", table_name
+            )
+            print(f"✅ 成功生成 {trajectory_count} 条轨迹")
+        except Exception as e:
+            print(f"❌ 轨迹生成失败: {str(e)}")
+    else:
+        raise ValueError(f"不支持的模式: {mode}，支持的模式: 'bbox', 'trajectory', 'both'")
+
+def run_trajectory_generation_from_scenes(scene_list, trajectory_table="clips_trajectory", 
+                                       input_format="list"):
+    """基于场景列表生成轨迹（简化版，推荐使用）
+    
+    Args:
+        scene_list: 场景列表，支持多种格式：
+            - List[str]: scene_token列表
+            - str: 文件路径（每行一个scene_token）
+        trajectory_table: 轨迹表名
+        input_format: 输入格式，'list' 或 'file'
+    """
+    eng = create_engine(LOCAL_DSN, future=True)
+    trajectory_generator = TrajectoryGenerator()
+    
+    # 处理输入
+    if input_format == "file":
+        # 从文件读取scene列表
+        scene_tokens = []
+        try:
+            with open(scene_list, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):  # 支持注释行
+                        scene_tokens.append(line)
+            print(f"📄 从文件 {scene_list} 读取了 {len(scene_tokens)} 个场景")
+        except Exception as e:
+            print(f"❌ 读取场景文件失败: {str(e)}")
+            return 0
+    else:
+        # 直接使用列表
+        scene_tokens = scene_list if isinstance(scene_list, list) else [scene_list]
+        print(f"📋 处理 {len(scene_tokens)} 个指定场景")
+    
+    if not scene_tokens:
+        print("⚠️  没有找到有效的场景")
+        return 0
+    
+    # 创建轨迹表（如果不存在）
+    if not trajectory_generator.create_trajectory_table_if_not_exists(eng, trajectory_table):
+        raise Exception("无法创建轨迹表")
+    
+    try:
+        print("🔄 正在获取轨迹数据...")
+        
+        # 获取轨迹数据
+        trajectory_df = trajectory_generator.fetch_trajectory_data(scene_tokens)
+        
+        if trajectory_df.empty:
+            print("⚠️  没有找到轨迹数据")
+            return 0
+        
+        print(f"📊 获取到 {len(trajectory_df)} 个轨迹点")
+        
+        # 处理轨迹数据
+        print("🔄 正在处理轨迹数据...")
+        trajectory_gdf = trajectory_generator.process_trajectory_data(trajectory_df)
+        
+        if trajectory_gdf.empty:
+            print("⚠️  轨迹数据处理失败")
+            return 0
+        
+        # 插入到轨迹表
+        print(f"🔄 正在插入 {len(trajectory_gdf)} 条轨迹到表 {trajectory_table}")
+        
+        trajectory_gdf.to_postgis(
+            trajectory_table,
+            eng,
+            if_exists='append',
+            index=False
+        )
+        
+        print(f"✅ 成功生成 {len(trajectory_gdf)} 条轨迹")
+        return len(trajectory_gdf)
+        
+    except Exception as e:
+        print(f"❌ 轨迹生成失败: {str(e)}")
+        return 0
+
+# 删除复杂的run_trajectory_generation函数，替换为简单版本
+def run_trajectory_generation(scene_input, trajectory_table="clips_trajectory", input_format="auto"):
+    """运行轨迹生成（简化版）
+    
+    Args:
+        scene_input: 场景输入，支持：
+            - List[str]: scene_token列表  
+            - str: 文件路径或单个scene_token
+        trajectory_table: 轨迹表名
+        input_format: 输入格式，'auto', 'list', 'file'
+    """
+    # 自动检测输入格式
+    if input_format == "auto":
+        if isinstance(scene_input, list):
+            input_format = "list"
+        elif isinstance(scene_input, str):
+            # 检查是否为文件路径
+            from pathlib import Path
+            if Path(scene_input).exists():
+                input_format = "file"
+            else:
+                input_format = "list"
+                scene_input = [scene_input]  # 转换为列表
+        else:
+            raise ValueError("不支持的输入格式")
+    
+    return run_trajectory_generation_from_scenes(scene_input, trajectory_table, input_format)
+
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(description='从数据集文件生成边界框数据')
     ap.add_argument('--input', required=True, help='输入文件路径（支持JSON/Parquet/URL/文本格式）')
@@ -2500,10 +2707,57 @@ if __name__ == '__main__':
     ap.add_argument('--issue-tickets', action='store_true', help='专门处理问题单URL文件（含责任模块、问题描述等额外属性）')
     ap.add_argument('--issue-table', default='clips_bbox_issues', help='问题单表名（仅在 --issue-tickets 模式下使用）')
     
+    # 新增的模式参数
+    ap.add_argument('--mode', choices=['bbox', 'trajectory', 'both'], default='bbox', 
+                    help='处理模式：bbox（仅边界框），trajectory（仅轨迹），both（两者）')
+    ap.add_argument('--trajectory-table', default='clips_trajectory', 
+                    help='轨迹表名（仅在轨迹模式下使用）')
+    
+    # 简化的轨迹生成参数
+    ap.add_argument('--generate-trajectories', action='store_true', 
+                    help='基于场景列表生成轨迹（独立模式）')
+    ap.add_argument('--scenes', 
+                    help='场景列表，支持：1) 文件路径（每行一个scene_token）2) 逗号分隔的scene_token列表')
+    
     args = ap.parse_args()
     
+    # 轨迹生成独立模式
+    if args.generate_trajectories:
+        print("🎯 基于场景列表的轨迹生成模式")
+        
+        if not args.scenes:
+            print("❌ 轨迹生成模式需要指定 --scenes 参数")
+            print("使用方法:")
+            print("  # 从文件读取场景列表")
+            print("  python -m spdatalab.dataset.bbox --generate-trajectories --scenes scene_list.txt")
+            print("  # 直接指定场景列表") 
+            print("  python -m spdatalab.dataset.bbox --generate-trajectories --scenes 'token1,token2,token3'")
+            sys.exit(1)
+        
+        # 解析场景输入
+        scene_input = args.scenes
+        
+        # 检查是否为逗号分隔的列表
+        if ',' in scene_input and not Path(scene_input).exists():
+            # 逗号分隔的列表
+            scene_tokens = [s.strip() for s in scene_input.split(',') if s.strip()]
+            trajectory_count = run_trajectory_generation(
+                scene_tokens, 
+                trajectory_table=args.trajectory_table,
+                input_format="list"
+            )
+        else:
+            # 文件路径或单个token
+            trajectory_count = run_trajectory_generation(
+                scene_input,
+                trajectory_table=args.trajectory_table,
+                input_format="auto"
+            )
+        
+        print(f"✅ 轨迹生成完成，共生成 {trajectory_count} 条轨迹")
+        
     # 问题单专用处理模式
-    if args.issue_tickets:
+    elif args.issue_tickets:
         print("🎯 使用问题单专用处理模式")
         run_issue_tickets_processing(
             args.input,
@@ -2513,7 +2767,21 @@ if __name__ == '__main__':
             table_name=args.issue_table,
             create_table=args.create_table
         )
-    # 智能选择处理模式（原有逻辑）
+        
+    # 新的模式系统
+    elif args.mode != 'bbox' or args.trajectory_table != 'clips_trajectory':
+        print(f"🎯 使用 {args.mode} 模式")
+        run_with_mode(
+            args.input,
+            mode=args.mode,
+            batch=args.batch,
+            insert_batch=args.insert_batch,
+            work_dir=args.work_dir,
+            create_table=args.create_table,
+            trajectory_table=args.trajectory_table
+        )
+        
+    # 原有的智能选择处理模式
     elif args.force_traditional:
         print("🔧 用户强制使用传统模式")
         run(args.input, args.batch, args.insert_batch, args.create_table, args.retry_failed, args.work_dir, args.show_stats)
