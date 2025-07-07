@@ -2058,6 +2058,434 @@ def detect_input_format_for_partitioning(input_path: str) -> bool:
         print(f"⚠️ 格式检测失败: {str(e)}，使用传统模式")
         return False
 
+def create_issue_bbox_table_if_not_exists(eng, table_name='clips_bbox_issues'):
+    """创建问题单专用的bbox表结构 - 包含URL、责任模块、问题描述等额外字段"""
+    # 检查表是否已存在
+    check_table_sql = text(f"""
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables 
+            WHERE table_schema = 'public' 
+            AND table_name = '{table_name}'
+        );
+    """)
+    
+    try:
+        with eng.connect() as conn:
+            result = conn.execute(check_table_sql)
+            table_exists = result.scalar()
+            
+            if table_exists:
+                print(f"问题单表 {table_name} 已存在，跳过创建")
+                return True
+                
+            print(f"问题单表 {table_name} 不存在，开始创建...")
+            
+            # 问题单专用表结构
+            create_sql = text(f"""
+                CREATE TABLE {table_name}(
+                    id serial PRIMARY KEY,
+                    scene_token text,
+                    data_name text UNIQUE,
+                    event_id text,
+                    city_id text,
+                    "timestamp" bigint,
+                    all_good boolean,
+                    url text NOT NULL,
+                    module text DEFAULT '',
+                    description text DEFAULT '',
+                    dataname text,
+                    defect_id text
+                );
+            """)
+            
+            # 使用PostGIS添加几何列
+            add_geom_sql = text(f"""
+                SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'POLYGON', 2);
+            """)
+            
+            # 添加几何约束
+            constraint_sql = text(f"""
+                ALTER TABLE {table_name} ADD CONSTRAINT check_{table_name}_geom_type 
+                    CHECK (ST_GeometryType(geometry) IN ('ST_Polygon', 'ST_Point'));
+            """)
+            
+            # 创建索引
+            index_sql = text(f"""
+                CREATE INDEX idx_{table_name}_geometry ON {table_name} USING GIST(geometry);
+                CREATE INDEX idx_{table_name}_data_name ON {table_name}(data_name);
+                CREATE INDEX idx_{table_name}_scene_token ON {table_name}(scene_token);
+                CREATE INDEX idx_{table_name}_url ON {table_name}(url);
+                CREATE INDEX idx_{table_name}_module ON {table_name}(module);
+                CREATE INDEX idx_{table_name}_dataname ON {table_name}(dataname);
+                CREATE INDEX idx_{table_name}_defect_id ON {table_name}(defect_id);
+            """)
+            
+            # 执行SQL语句，需要分步提交
+            conn.execute(create_sql)
+            conn.commit()  # 先提交表创建
+            
+            # 执行PostGIS相关操作
+            conn.execute(add_geom_sql)
+            conn.execute(constraint_sql)
+            conn.commit()  # 提交几何列和约束
+            
+            # 创建索引
+            conn.execute(index_sql)
+            conn.commit()  # 最后提交索引
+            
+            print(f"成功创建问题单表 {table_name} 及相关索引")
+            return True
+            
+    except Exception as e:
+        print(f"创建问题单表时出错: {str(e)}")
+        return False
+
+def batch_insert_issue_data_to_postgis(gdf, url_attributes_map, eng, table_name='clips_bbox_issues', batch_size=1000, tracker=None, batch_num=None):
+    """批量插入问题单数据到PostGIS，包含URL、责任模块、问题描述等额外字段"""
+    total_rows = len(gdf)
+    inserted_rows = 0
+    successful_tokens = []
+    
+    # 为GeoDataFrame添加额外的问题单字段
+    enhanced_gdf = gdf.copy()
+    enhanced_gdf['url'] = enhanced_gdf['scene_token'].map(lambda x: url_attributes_map.get(x, {}).get('url', ''))
+    enhanced_gdf['module'] = enhanced_gdf['scene_token'].map(lambda x: url_attributes_map.get(x, {}).get('module', ''))
+    enhanced_gdf['description'] = enhanced_gdf['scene_token'].map(lambda x: url_attributes_map.get(x, {}).get('description', ''))
+    enhanced_gdf['dataname'] = enhanced_gdf['scene_token'].map(lambda x: url_attributes_map.get(x, {}).get('dataname', ''))
+    enhanced_gdf['defect_id'] = enhanced_gdf['scene_token'].map(lambda x: url_attributes_map.get(x, {}).get('defect_id', ''))
+    
+    # 分批插入
+    for i in range(0, total_rows, batch_size):
+        batch_gdf = enhanced_gdf.iloc[i:i+batch_size]
+        batch_tokens = batch_gdf['scene_token'].tolist()
+        
+        try:
+            # 直接插入，让数据库处理重复
+            batch_gdf.to_postgis(
+                table_name, 
+                eng, 
+                if_exists='append', 
+                index=False
+            )
+            inserted_rows += len(batch_gdf)
+            successful_tokens.extend(batch_tokens)
+            print(f'[问题单批量插入] 已插入: {inserted_rows}/{total_rows} 行到 {table_name}')
+            
+        except Exception as e:
+            error_str = str(e).lower()
+            
+            # 如果是重复键违反约束，尝试逐行插入
+            if 'unique' in error_str or 'duplicate' in error_str or 'constraint' in error_str:
+                print(f'[问题单批量插入] 批次 {i//batch_size + 1} 遇到重复数据，进行逐行插入')
+                
+                for idx, row in batch_gdf.iterrows():
+                    scene_token = row['scene_token']
+                    try:
+                        # 创建单行GeoDataFrame
+                        single_gdf = gpd.GeoDataFrame(
+                            [row.drop('geometry')], 
+                            geometry=[row.geometry], 
+                            crs=4326
+                        )
+                        single_gdf.to_postgis(table_name, eng, if_exists='append', index=False)
+                        inserted_rows += 1
+                        successful_tokens.append(scene_token)
+                    except Exception as row_e:
+                        row_error_str = str(row_e).lower()
+                        if 'unique' in row_error_str or 'duplicate' in row_error_str:
+                            # 重复数据，不记录为失败，只是跳过
+                            print(f'[跳过重复] scene_token: {scene_token}')
+                            successful_tokens.append(scene_token)  # 视为成功（已存在）
+                        else:
+                            # 其他类型的错误才记录为失败
+                            error_msg = f'插入失败: {str(row_e)}'
+                            print(f'[插入错误] scene_token: {scene_token}: {error_msg}')
+                            if tracker:
+                                tracker.save_failed_record(scene_token, error_msg, batch_num, "database_insert")
+            else:
+                # 非重复数据问题，记录为失败
+                print(f'[问题单批量插入错误] 批次 {i//batch_size + 1}: {str(e)}')
+                for token in batch_tokens:
+                    if tracker:
+                        tracker.save_failed_record(token, f"批量插入异常: {str(e)}", batch_num, "database_insert")
+    
+    # 批量保存成功的tokens
+    if tracker and successful_tokens:
+        tracker.save_successful_batch(successful_tokens, batch_num)
+    
+    return inserted_rows
+
+def extract_scene_data_with_attributes_from_url_file(url_file: str) -> List[Dict[str, str]]:
+    """从URL文件提取场景数据及属性信息
+    
+    Args:
+        url_file: URL文件路径
+        
+    Returns:
+        包含scene_id和属性信息的字典列表
+    """
+    from ..dataset.dataset_manager import DatasetManager
+    
+    dataset_manager = DatasetManager()
+    return dataset_manager.extract_scene_ids_from_urls_with_attributes(url_file)
+
+def detect_input_format_for_partitioning(input_path: str) -> bool:
+    """检测输入文件是否应该使用分表模式
+    
+    Args:
+        input_path: 输入文件路径
+        
+    Returns:
+        是否应该使用分表模式
+    """
+    try:
+        from .dataset_manager import DatasetManager
+        dataset_manager = DatasetManager()
+        
+        # 检测文件格式
+        file_format = dataset_manager.detect_file_format(input_path)
+        
+        # URL格式或JSON/Parquet格式（数据集格式）应该使用分表模式
+        if file_format == 'url':
+            print("📋 检测到URL格式，将使用分表模式处理")
+            return True
+        elif input_path.endswith(('.json', '.parquet')):
+            print("📋 检测到数据集格式，将使用分表模式处理")
+            return True
+        else:
+            print("📋 使用传统模式处理")
+            return False
+            
+    except Exception as e:
+        print(f"⚠️ 格式检测失败: {str(e)}，使用传统模式")
+        return False
+
+def run_issue_tickets_processing(input_path, batch=1000, insert_batch=1000, work_dir="./bbox_import_logs", 
+                                table_name='clips_bbox_issues', create_table=True):
+    """专门处理问题单URL文件的处理函数
+    
+    Args:
+        input_path: 输入URL文件路径（含额外属性）
+        batch: 处理批次大小
+        insert_batch: 插入批次大小
+        work_dir: 工作目录
+        table_name: 问题单表名
+        create_table: 是否创建表
+    """
+    global interrupted
+    
+    # 设置信号处理器
+    setup_signal_handlers()
+    
+    print(f"=== 问题单URL处理开始 ===")
+    print(f"输入文件: {input_path}")
+    print(f"目标表: {table_name}")
+    print(f"工作目录: {work_dir}")
+    print(f"批次大小: {batch}")
+    print(f"插入批次大小: {insert_batch}")
+    
+    eng = create_engine(LOCAL_DSN, future=True)
+    
+    # 创建问题单表（如果需要）
+    if create_table:
+        if not create_issue_bbox_table_if_not_exists(eng, table_name):
+            print("创建问题单表失败，退出")
+            return
+    
+    # 初始化进度跟踪器
+    tracker = LightweightProgressTracker(work_dir)
+    
+    try:
+        # 从URL文件提取场景数据和属性
+        print("\n=== 步骤1: 提取场景数据和属性 ===")
+        scene_data_list = extract_scene_data_with_attributes_from_url_file(input_path)
+        
+        if not scene_data_list:
+            print("没有找到有效的场景数据")
+            return
+        
+        print(f"提取到 {len(scene_data_list)} 条场景记录")
+        
+        # 构建场景ID列表和属性映射
+        scene_ids = [item['scene_id'] for item in scene_data_list]
+        url_attributes_map = {item['scene_id']: item for item in scene_data_list}
+        
+        # 获取需要处理的场景ID
+        remaining_scene_ids = tracker.get_remaining_tokens(scene_ids)
+        if not remaining_scene_ids:
+            print("所有场景已处理完成")
+            return
+        
+        print(f"需要处理 {len(remaining_scene_ids)} 个场景")
+        
+        total_processed = 0
+        total_inserted = 0
+        
+        # 分批处理
+        print(f"\n=== 步骤2: 分批处理场景数据 ===")
+        for batch_num, token_batch in enumerate(chunk(remaining_scene_ids, batch), 1):
+            # 检查中断信号
+            if interrupted:
+                print(f"\n程序被中断，已处理 {batch_num-1} 个批次")
+                break
+                
+            print(f"[批次 {batch_num}] 处理 {len(token_batch)} 个场景")
+            
+            # 获取元数据
+            try:
+                meta = fetch_meta(token_batch)
+                if meta.empty:
+                    print(f"[批次 {batch_num}] 没有找到元数据，跳过")
+                    for token in token_batch:
+                        tracker.save_failed_record(token, "无法获取元数据", batch_num, "fetch_meta")
+                    continue
+                    
+                print(f"[批次 {batch_num}] 获取到 {len(meta)} 条元数据")
+                
+            except Exception as e:
+                print(f"[批次 {batch_num}] 获取元数据失败: {str(e)}")
+                for token in token_batch:
+                    tracker.save_failed_record(token, f"获取元数据异常: {str(e)}", batch_num, "fetch_meta")
+                continue
+            
+            # 检查中断信号
+            if interrupted:
+                break
+            
+            # 获取边界框和几何对象
+            try:
+                bbox_gdf = fetch_bbox_with_geometry(meta.data_name.tolist(), eng)
+                if bbox_gdf.empty:
+                    print(f"[批次 {batch_num}] 没有找到边界框数据，跳过")
+                    for token in meta.scene_token:
+                        tracker.save_failed_record(token, "无法获取边界框数据", batch_num, "fetch_bbox")
+                    continue
+                    
+                print(f"[批次 {batch_num}] 获取到 {len(bbox_gdf)} 条边界框数据")
+                
+            except Exception as e:
+                print(f"[批次 {batch_num}] 获取边界框失败: {str(e)}")
+                for token in meta.scene_token:
+                    tracker.save_failed_record(token, f"获取边界框异常: {str(e)}", batch_num, "fetch_bbox")
+                continue
+            
+            # 检查中断信号
+            if interrupted:
+                break
+            
+            # 合并数据
+            try:
+                merged = meta.merge(bbox_gdf, left_on='data_name', right_on='dataset_name', how='inner')
+                if merged.empty:
+                    print(f"[批次 {batch_num}] 合并后数据为空，跳过")
+                    for token in meta.scene_token:
+                        tracker.save_failed_record(token, "元数据与边界框数据无法匹配", batch_num, "data_merge")
+                    continue
+                    
+                print(f"[批次 {batch_num}] 合并后得到 {len(merged)} 条记录")
+                
+                # 创建最终的GeoDataFrame
+                final_gdf = gpd.GeoDataFrame(
+                    merged[['scene_token', 'data_name', 'event_id', 'city_id', 'timestamp', 'all_good']], 
+                    geometry=merged['geometry'], 
+                    crs=4326
+                )
+                
+            except Exception as e:
+                print(f"[批次 {batch_num}] 数据合并失败: {str(e)}")
+                for token in meta.scene_token:
+                    tracker.save_failed_record(token, f"数据合并异常: {str(e)}", batch_num, "data_merge")
+                continue
+            
+            # 检查中断信号
+            if interrupted:
+                break
+            
+            # 批量插入到问题单表
+            try:
+                batch_inserted = batch_insert_issue_data_to_postgis(
+                    final_gdf, url_attributes_map, eng, 
+                    table_name=table_name,
+                    batch_size=insert_batch, 
+                    tracker=tracker, 
+                    batch_num=batch_num
+                )
+                total_inserted += batch_inserted
+                total_processed += len(final_gdf)
+                
+                print(f"[批次 {batch_num}] 完成，插入 {batch_inserted} 条记录到 {table_name}")
+                print(f"[累计进度] 已处理: {total_processed}, 已插入: {total_inserted}")
+                
+                # 每10个批次保存一次进度
+                if batch_num % 10 == 0:
+                    tracker.save_progress(len(remaining_scene_ids), total_processed, total_inserted, batch_num)
+                
+            except Exception as e:
+                print(f"[批次 {batch_num}] 插入数据库失败: {str(e)}")
+                for token in final_gdf.scene_token:
+                    tracker.save_failed_record(token, f"批量插入异常: {str(e)}", batch_num, "batch_insert")
+                continue
+                
+    except KeyboardInterrupt:
+        print(f"\n程序被用户中断")
+        interrupted = True
+    except Exception as e:
+        print(f"\n程序遇到未预期的错误: {str(e)}")
+    finally:
+        # 最终保存进度和刷新缓冲区
+        tracker.finalize()
+        if 'total_processed' in locals() and 'total_inserted' in locals():
+            tracker.save_progress(len(scene_ids), total_processed, total_inserted, batch_num if 'batch_num' in locals() else 0)
+        
+        # 显示最终统计
+        stats = tracker.get_statistics()
+        
+        if interrupted:
+            print(f"问题单处理优雅退出！已处理: {total_processed} 条记录，成功插入: {total_inserted} 条记录")
+        else:
+            print(f"问题单处理完成！总计处理: {total_processed} 条记录，成功插入: {total_inserted} 条记录")
+        
+        print(f"\n=== 最终统计 ===")
+        print(f"成功处理: {stats['success_count']} 个场景")
+        print(f"失败场景: {stats['failed_count']} 个")
+        print(f"问题单表: {table_name}")
+        
+        print(f"\n状态文件位置:")
+        print(f"- 成功记录: {tracker.success_file}")
+        print(f"- 失败记录: {tracker.failed_file}")
+        print(f"- 进度文件: {tracker.progress_file}")
+
+def detect_input_format_for_partitioning(input_path: str) -> bool:
+    """检测输入文件是否应该使用分表模式
+    
+    Args:
+        input_path: 输入文件路径
+        
+    Returns:
+        是否应该使用分表模式
+    """
+    try:
+        from .dataset_manager import DatasetManager
+        dataset_manager = DatasetManager()
+        
+        # 检测文件格式
+        file_format = dataset_manager.detect_file_format(input_path)
+        
+        # URL格式或JSON/Parquet格式（数据集格式）应该使用分表模式
+        if file_format == 'url':
+            print("📋 检测到URL格式，将使用分表模式处理")
+            return True
+        elif input_path.endswith(('.json', '.parquet')):
+            print("📋 检测到数据集格式，将使用分表模式处理")
+            return True
+        else:
+            print("📋 使用传统模式处理")
+            return False
+            
+    except Exception as e:
+        print(f"⚠️ 格式检测失败: {str(e)}，使用传统模式")
+        return False
+
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(description='从数据集文件生成边界框数据')
     ap.add_argument('--input', required=True, help='输入文件路径（支持JSON/Parquet/URL/文本格式）')
@@ -2069,11 +2497,24 @@ if __name__ == '__main__':
     ap.add_argument('--show-stats', action='store_true', help='显示处理统计信息并退出')
     ap.add_argument('--force-traditional', action='store_true', help='强制使用传统模式（不使用分表）')
     ap.add_argument('--force-partitioning', action='store_true', help='强制使用分表模式')
+    ap.add_argument('--issue-tickets', action='store_true', help='专门处理问题单URL文件（含责任模块、问题描述等额外属性）')
+    ap.add_argument('--issue-table', default='clips_bbox_issues', help='问题单表名（仅在 --issue-tickets 模式下使用）')
     
     args = ap.parse_args()
     
-    # 智能选择处理模式
-    if args.force_traditional:
+    # 问题单专用处理模式
+    if args.issue_tickets:
+        print("🎯 使用问题单专用处理模式")
+        run_issue_tickets_processing(
+            args.input,
+            batch=args.batch,
+            insert_batch=args.insert_batch,
+            work_dir=args.work_dir,
+            table_name=args.issue_table,
+            create_table=args.create_table
+        )
+    # 智能选择处理模式（原有逻辑）
+    elif args.force_traditional:
         print("🔧 用户强制使用传统模式")
         run(args.input, args.batch, args.insert_batch, args.create_table, args.retry_failed, args.work_dir, args.show_stats)
     elif args.force_partitioning:

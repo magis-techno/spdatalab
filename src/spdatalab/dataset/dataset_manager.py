@@ -191,8 +191,131 @@ class DatasetManager:
             logger.error(error_msg)
             return []
             
+    def parse_url_line_with_attributes(self, line: str) -> Optional[Dict[str, str]]:
+        """解析包含额外属性的URL行。
+        
+        支持的格式：
+        1. URL\t责任模块\t问题描述
+        2. URL (兼容原格式)
+        
+        Args:
+            line: URL行，可能包含tab分隔的额外属性
+            
+        Returns:
+            包含url, module, description等字段的字典，失败时返回None
+        """
+        line = line.strip()
+        if not line:
+            return None
+            
+        try:
+            # 按tab分割
+            parts = line.split('\t')
+            
+            url = parts[0].strip()
+            if not url.startswith(('http://', 'https://')):
+                logger.warning(f"无效的URL格式: {url}")
+                return None
+            
+            # 提取基本信息
+            result = {
+                'url': url,
+                'module': '',
+                'description': ''
+            }
+            
+            # 解析额外属性
+            if len(parts) >= 2:
+                result['module'] = parts[1].strip()
+                
+            if len(parts) >= 3:
+                description = parts[2].strip()
+                # 去除描述中的引号（如果有）
+                if description.startswith('"') and description.endswith('"'):
+                    description = description[1:-1]
+                result['description'] = description
+            
+            logger.debug(f"解析URL行: {result}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"解析URL行失败: {line}, 错误: {str(e)}")
+            return None
+
+    def extract_scene_ids_from_urls_with_attributes(self, file_path: str) -> List[Dict[str, str]]:
+        """从URL文件中提取scene_id列表以及相关属性。
+        
+        Args:
+            file_path: URL文件路径，每行可能包含URL和额外属性
+            
+        Returns:
+            包含scene_id和属性信息的字典列表
+        """
+        result_data = []
+        
+        try:
+            with open_file(file_path, 'r') as f:
+                for line_num, line in enumerate(f, 1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                        
+                    self.stats['total_files'] += 1
+                    
+                    # 解析URL行和属性
+                    url_data = self.parse_url_line_with_attributes(line)
+                    if not url_data:
+                        logger.warning(f"第 {line_num} 行解析失败: {line}")
+                        self.stats['failed_files'] += 1
+                        continue
+                    
+                    url = url_data['url']
+                    
+                    # 提取dataName
+                    dataname = self.extract_dataname_from_url(url)
+                    if not dataname:
+                        logger.warning(f"第 {line_num} 行URL解析失败: {url}")
+                        self.stats['failed_files'] += 1
+                        continue
+                    
+                    # 查询defect_id
+                    defect_id = self.query_defect_id_by_dataname(dataname, original_url=url)
+                    if not defect_id:
+                        logger.warning(f"第 {line_num} 行dataName未找到对应defect_id: {dataname}")
+                        self.stats['failed_files'] += 1
+                        continue
+                    
+                    # 查询scene_ids
+                    scene_ids = self.query_scene_ids_by_defect_id(defect_id, dataname=dataname, original_url=url)
+                    if scene_ids:
+                        # 为每个scene_id创建记录，包含属性信息
+                        for scene_id in scene_ids:
+                            result_data.append({
+                                'scene_id': scene_id,
+                                'url': url,
+                                'dataname': dataname,
+                                'defect_id': defect_id,
+                                'module': url_data['module'],
+                                'description': url_data['description']
+                            })
+                        
+                        self.stats['processed_files'] += 1
+                        self.stats['total_scenes'] += len(scene_ids)
+                        logger.info(f"第 {line_num} 行: URL -> {len(scene_ids)} scene_ids, 模块: {url_data['module']}")
+                    else:
+                        logger.warning(f"第 {line_num} 行defect_id未找到对应scene_id: {defect_id}")
+                        self.stats['failed_files'] += 1
+                        
+            logger.info(f"URL文件处理完成: 总计提取 {len(result_data)} 条记录")
+            
+        except Exception as e:
+            logger.error(f"处理URL文件失败: {file_path}, 错误: {str(e)}")
+            raise
+            
+        return result_data
+
     def extract_scene_ids_from_urls(self, file_path: str) -> List[str]:
-        """从URL文件中提取scene_id列表。
+        """从URL文件中提取scene_id列表（原有方法，保持兼容性）。
         
         Args:
             file_path: URL文件路径，每行一个URL
@@ -251,7 +374,7 @@ class DatasetManager:
             file_path: 文件路径
             
         Returns:
-            文件格式：'url', 'jsonl_path', 'unknown'
+            文件格式：'url', 'url_with_attributes', 'jsonl_path', 'unknown'
         """
         try:
             with open_file(file_path, 'r') as f:
@@ -269,18 +392,25 @@ class DatasetManager:
                 
             # 检测是否为URL格式
             url_count = 0
+            url_with_attributes_count = 0
             jsonl_path_count = 0
             
             for line in sample_lines:
                 # URL格式检测
                 if line.startswith(('http://', 'https://')) and 'dataName=' in line:
-                    url_count += 1
+                    # 检查是否包含tab分隔的额外属性
+                    if '\t' in line:
+                        url_with_attributes_count += 1
+                    else:
+                        url_count += 1
                 # JSONL路径格式检测（现有格式）
                 elif ('obs://' in line or '/god/' in line) and '@duplicate' in line:
                     jsonl_path_count += 1
                     
             # 判断主要格式
-            if url_count > len(sample_lines) * 0.7:  # 70%以上是URL
+            if url_with_attributes_count > len(sample_lines) * 0.7:  # 70%以上是带属性的URL
+                return 'url_with_attributes'
+            elif url_count > len(sample_lines) * 0.7:  # 70%以上是URL
                 return 'url'
             elif jsonl_path_count > len(sample_lines) * 0.7:  # 70%以上是jsonl路径
                 return 'jsonl_path'
@@ -381,6 +511,10 @@ class DatasetManager:
         if file_format == 'url':
             # URL格式处理
             return self.extract_scene_ids_from_urls(file_path)
+        elif file_format == 'url_with_attributes':
+            # 带属性的URL格式，只返回scene_id列表以保持兼容性
+            result_data = self.extract_scene_ids_from_urls_with_attributes(file_path)
+            return [item['scene_id'] for item in result_data]
         elif file_format == 'jsonl_path':
             # 现有JSONL路径格式处理
             return self._extract_scene_ids_from_jsonl_path(file_path)

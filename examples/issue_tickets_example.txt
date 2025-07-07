@@ -1,0 +1,6 @@
+https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119535	基础巡航	"左转窄桥，内切验证有剐蹭护栏风险"
+https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=90000_ddi-application-667754027299119536	智能泊车	"自动泊车精度不足，需要优化算法"
+https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119537	基础巡航	"右转时识别盲区车辆延迟"
+https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=20000_ddi-application-667754027299119538	车道变更	"变道决策过于保守，影响通行效率"
+https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119539	基础巡航
+https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=30000_ddi-application-667754027299119540 
