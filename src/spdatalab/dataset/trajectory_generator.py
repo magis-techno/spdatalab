@@ -115,8 +115,16 @@ class TrajectoryGenerator:
             
         print(f"🔍 正在查询 {len(scene_tokens)} 个场景的轨迹数据...")
         
+        # 可能的表名列表（按优先级顺序）
+        possible_tables = [
+            "public.ddi_data_points",
+            "ddi_data_points",
+            "public.clips_data_points",
+            "clips_data_points"
+        ]
+        
         # 获取轨迹点数据
-        sql = """
+        sql_template = """
         SELECT 
             id,
             dataset_name,
@@ -125,29 +133,46 @@ class TrajectoryGenerator:
             ST_Z(point_lla) as alt,
             "timestamp",
             workstage
-        FROM public.ddi_data_points 
+        FROM {} 
         WHERE dataset_name = ANY(%(scene_tokens)s)
         ORDER BY dataset_name, "timestamp"
         """
         
-        try:
-            with hive_cursor() as cur:
-                cur.execute(sql, {"scene_tokens": scene_tokens})
-                cols = [d[0] for d in cur.description]
-                result_df = pd.DataFrame(cur.fetchall(), columns=cols)
+        # 尝试不同的表名
+        for table_name in possible_tables:
+            try:
+                sql = sql_template.format(table_name)
+                print(f"🔍 尝试使用表: {table_name}")
                 
-                if not result_df.empty:
-                    unique_scenes = result_df['dataset_name'].nunique()
-                    print(f"✅ 找到 {unique_scenes} 个场景的 {len(result_df)} 个轨迹点")
+                with hive_cursor() as cur:
+                    cur.execute(sql, {"scene_tokens": scene_tokens})
+                    cols = [d[0] for d in cur.description]
+                    result_df = pd.DataFrame(cur.fetchall(), columns=cols)
+                    
+                    if not result_df.empty:
+                        unique_scenes = result_df['dataset_name'].nunique()
+                        print(f"✅ 使用表 {table_name} 找到 {unique_scenes} 个场景的 {len(result_df)} 个轨迹点")
+                        return result_df
+                    else:
+                        print(f"⚠️  表 {table_name} 中没有找到轨迹数据")
+                        
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "does not exist" in error_msg or "relation" in error_msg:
+                    print(f"❌ 表 {table_name} 不存在，尝试下一个表...")
+                    continue
                 else:
-                    print("⚠️  没有找到轨迹数据")
-                
-                return result_df
-                
-        except Exception as e:
-            logger.error(f"获取轨迹数据失败: {str(e)}")
-            print(f"❌ 获取轨迹数据失败: {str(e)}")
-            return pd.DataFrame()
+                    logger.error(f"查询表 {table_name} 失败: {str(e)}")
+                    print(f"❌ 查询表 {table_name} 失败: {str(e)}")
+                    continue
+        
+        # 如果所有表都尝试失败，返回空DataFrame
+        print("❌ 所有可能的表都不存在或无数据，请检查数据库配置")
+        print("💡 提示：请确保以下表之一存在并包含轨迹数据:")
+        for table in possible_tables:
+            print(f"   - {table}")
+        
+        return pd.DataFrame()
     
     def process_trajectory_data(self, trajectory_df: pd.DataFrame) -> gpd.GeoDataFrame:
         """处理轨迹数据，构建轨迹线。

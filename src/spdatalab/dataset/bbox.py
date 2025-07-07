@@ -2296,6 +2296,11 @@ def run_issue_tickets_processing(input_path, batch=1000, insert_batch=1000, work
     # 初始化进度跟踪器
     tracker = LightweightProgressTracker(work_dir)
     
+    # 初始化统计变量（在函数开始时就初始化，避免UnboundLocalError）
+    total_processed = 0
+    total_inserted = 0
+    scene_ids = []
+    
     try:
         # 从URL文件提取场景数据和属性
         print("\n=== 步骤1: 提取场景数据和属性 ===")
@@ -2318,9 +2323,6 @@ def run_issue_tickets_processing(input_path, batch=1000, insert_batch=1000, work
             return
         
         print(f"需要处理 {len(remaining_scene_ids)} 个场景")
-        
-        total_processed = 0
-        total_inserted = 0
         
         # 分批处理
         print(f"\n=== 步骤2: 分批处理场景数据 ===")
