@@ -7,7 +7,6 @@ import json
 import re
 from dataclasses import dataclass, asdict
 from datetime import datetime
-from urllib.parse import urlparse, parse_qs
 
 try:
     import pandas as pd
@@ -33,7 +32,7 @@ logger = logging.getLogger(__name__)
 class SubDataset:
     """子数据集信息。"""
     name: str  # 子数据集名称，如 lane_change_1_sub_ddi_2773412e2e_2025_05_18_11_07_59
-    obs_path: str  # OBS路径或URL
+    obs_path: str  # OBS路径
     duplication_factor: int  # 倍增因子
     scene_count: int = 0  # 场景数量
     scene_ids: List[str] = None  # 场景ID列表
@@ -67,379 +66,244 @@ class Dataset:
 class DatasetManager:
     """数据集管理器。"""
     
-    def __init__(self):
-        """初始化数据集管理器。"""
+    def __init__(self, defect_mode: bool = False):
+        """初始化数据集管理器。
+        
+        Args:
+            defect_mode: 是否启用问题单模式
+        """
+        self.defect_mode = defect_mode
         self.stats = {
             'total_files': 0,
             'processed_files': 0,
             'failed_files': 0,
             'total_scenes': 0,
             'failed_scenes': 0,
-            'total_subdatasets': 0
+            'total_subdatasets': 0,
+            'defect_query_failed': 0,
+            'defect_no_scene': 0
         }
         
-    def extract_dataname_from_url(self, url: str) -> Optional[str]:
-        """从URL中提取dataName部分。
+    def parse_defect_url(self, url: str) -> Optional[str]:
+        """从问题单URL中提取数据名称。
         
         Args:
-            url: 问题单URL，例如：
-                
+            url: 问题单URL
+            
         Returns:
-            dataName值，如 '10000_ddi-application-667754027299119535'，失败时返回None
+            提取的数据名称，如果解析失败则返回None
         """
         try:
-            # 解析URL，处理fragment中的查询参数
-            parsed = urlparse(url)
-            
-            # 检查fragment部分是否包含查询参数
-            if parsed.fragment and '?' in parsed.fragment:
-                # 提取fragment中的查询字符串部分
-                fragment_query = parsed.fragment.split('?', 1)[1]
-                query_params = parse_qs(fragment_query)
-                
-                # 获取dataName参数
-                if 'dataName' in query_params:
-                    data_name = query_params['dataName'][0]
-                    logger.debug(f"从URL提取dataName: {data_name}")
-                    return data_name
-            
-            # 如果fragment中没有找到，检查普通查询参数
-            query_params = parse_qs(parsed.query)
-            if 'dataName' in query_params:
-                data_name = query_params['dataName'][0]
-                logger.debug(f"从URL查询参数提取dataName: {data_name}")
+            # 正则匹配 dataName=xxx 部分
+            pattern = r'dataName=([^&]+)'
+            match = re.search(pattern, url)
+            if match:
+                data_name = match.group(1)
+                logger.debug(f"从URL提取数据名称: {url} -> {data_name}")
                 return data_name
-                
-            logger.warning(f"URL中未找到dataName参数: {url}")
-            return None
-            
+            else:
+                logger.warning(f"无法从URL中提取数据名称: {url}")
+                return None
         except Exception as e:
             logger.error(f"解析URL失败: {url}, 错误: {str(e)}")
             return None
-            
-    def query_defect_id_by_dataname(self, dataname: str, original_url: str = None) -> Optional[str]:
-        """通过dataName查询defect_id。
+    
+    def query_defect_data(self, data_name: str) -> Optional[str]:
+        """查询问题单数据获取scene_id。
         
         Args:
-            dataname: dataName值，如 '10000_ddi-application-667754027299119535'
-            original_url: 原始URL（用于错误信息显示）
+            data_name: 数据名称
             
         Returns:
-            defect_id值，如 'DI20250116151107D21104779'，失败时返回None
+            scene_id，如果查询失败则返回None
         """
-        sql = "SELECT defect_id FROM elasticsearch_ros.ods_ddi_index002_datalake WHERE id = %(dataname)s"
-        
         try:
+            # 第一步：通过data_name查询defect_id
+            defect_id = None
+            sql1 = "SELECT defect_id FROM elasticsearch_ros.ods_ddi_index002_datalake WHERE id = %(data_name)s"
+            
             with hive_cursor() as cur:
-                cur.execute(sql, {"dataname": dataname})
+                cur.execute(sql1, {"data_name": data_name})
                 result = cur.fetchone()
-                
                 if result:
                     defect_id = result[0]
-                    logger.debug(f"dataName {dataname} -> defect_id {defect_id}")
-                    return defect_id
+                    logger.debug(f"查询到defect_id: {data_name} -> {defect_id}")
                 else:
-                    error_msg = f"未找到dataName对应的defect_id: {dataname}"
-                    if original_url:
-                        error_msg += f"\n  原始URL: {original_url}"
-                    logger.warning(error_msg)
+                    logger.warning(f"未找到defect_id: {data_name}")
+                    self.stats['defect_query_failed'] += 1
                     return None
-                    
-        except Exception as e:
-            error_msg = f"查询defect_id失败，dataName: {dataname}, 错误: {str(e)}"
-            if original_url:
-                error_msg += f"\n  原始URL: {original_url}"
-            logger.error(error_msg)
+            
+            # 第二步：通过defect_id查询scene_id
+            if defect_id:
+                sql2 = "SELECT id FROM transform.ods_t_data_fragment_datalake WHERE origin_source_id = %(defect_id)s"
+                
+                with hive_cursor() as cur:
+                    cur.execute(sql2, {"defect_id": defect_id})
+                    result = cur.fetchone()
+                    if result:
+                        scene_id = result[0]
+                        logger.debug(f"查询到scene_id: {defect_id} -> {scene_id}")
+                        return scene_id
+                    else:
+                        logger.warning(f"未找到scene_id: {defect_id}")
+                        self.stats['defect_no_scene'] += 1
+                        return None
+            
             return None
             
-    def query_scene_ids_by_defect_id(self, defect_id: str, dataname: str = None, original_url: str = None) -> List[str]:
-        """通过defect_id查询scene_id列表。
-        
-        Args:
-            defect_id: defect_id值，如 'DI20250116151107D21104779'
-            dataname: dataName值（用于错误信息显示）
-            original_url: 原始URL（用于错误信息显示）
-            
-        Returns:
-            scene_id列表
-        """
-        sql = "SELECT id FROM transform.ods_t_data_fragment_datalake WHERE origin_source_id = %(defect_id)s"
-        
-        try:
-            with hive_cursor() as cur:
-                cur.execute(sql, {"defect_id": defect_id})
-                results = cur.fetchall()
-                
-                scene_ids = [result[0] for result in results]
-                if scene_ids:
-                    logger.info(f"defect_id {defect_id} -> {len(scene_ids)} scene_ids")
-                else:
-                    error_msg = f"defect_id未找到对应scene_id: {defect_id}"
-                    if dataname:
-                        error_msg += f"\n  dataName: {dataname}"
-                    if original_url:
-                        error_msg += f"\n  原始URL: {original_url}"
-                    logger.warning(error_msg)
-                return scene_ids
-                
         except Exception as e:
-            error_msg = f"查询scene_id失败，defect_id: {defect_id}, 错误: {str(e)}"
-            if dataname:
-                error_msg += f"\n  dataName: {dataname}"
-            if original_url:
-                error_msg += f"\n  原始URL: {original_url}"
-            logger.error(error_msg)
-            return []
-            
-    def parse_url_line_with_attributes(self, line: str) -> Optional[Dict[str, str]]:
-        """解析包含额外属性的URL行。
-        
-        支持的格式：
-        1. URL\t责任模块\t问题描述
-        2. URL (兼容原格式)
+            logger.error(f"查询问题单数据失败: {data_name}, 错误: {str(e)}")
+            self.stats['defect_query_failed'] += 1
+            return None
+    
+    def parse_defect_line(self, line: str) -> Optional[Dict]:
+        """解析问题单文件的一行，支持额外属性。
         
         Args:
-            line: URL行，可能包含tab分隔的额外属性
+            line: 文件中的一行，格式为 url 或 url|key1=value1|key2=value2
             
         Returns:
-            包含url, module, description等字段的字典，失败时返回None
+            包含URL和额外属性的字典，如果解析失败则返回None
         """
         line = line.strip()
         if not line:
             return None
             
         try:
-            # 按tab分割
-            parts = line.split('\t')
-            
+            # 按|分割，第一部分是URL，后面是属性
+            parts = line.split('|')
             url = parts[0].strip()
-            if not url.startswith(('http://', 'https://')):
-                logger.warning(f"无效的URL格式: {url}")
+            
+            if not url:
                 return None
             
-            # 提取基本信息
+            # 解析额外属性
+            attributes = {}
+            for part in parts[1:]:
+                if '=' in part:
+                    key, value = part.split('=', 1)
+                    attributes[key.strip()] = value.strip()
+                else:
+                    # 如果没有等号，将整个部分作为键，值为True
+                    attributes[part.strip()] = True
+            
             result = {
                 'url': url,
-                'module': '',
-                'description': ''
+                'attributes': attributes
             }
             
-            # 解析额外属性
-            if len(parts) >= 2:
-                result['module'] = parts[1].strip()
-                
-            if len(parts) >= 3:
-                description = parts[2].strip()
-                # 去除描述中的引号（如果有）
-                if description.startswith('"') and description.endswith('"'):
-                    description = description[1:-1]
-                result['description'] = description
-            
-            logger.debug(f"解析URL行: {result}")
+            logger.debug(f"解析问题单行: {line[:50]}... -> URL + {len(attributes)} 个属性")
             return result
             
         except Exception as e:
-            logger.error(f"解析URL行失败: {line}, 错误: {str(e)}")
+            logger.error(f"解析问题单行失败: {line}, 错误: {str(e)}")
             return None
-
-    def extract_scene_ids_from_urls_with_attributes(self, file_path: str) -> List[Dict[str, str]]:
-        """从URL文件中提取scene_id列表以及相关属性。
+    
+    def build_dataset_from_defect_urls(self, defect_file: str, dataset_name: str, 
+                                     description: str = "") -> Dataset:
+        """从问题单URL文件构建数据集。
         
         Args:
-            file_path: URL文件路径，每行可能包含URL和额外属性
+            defect_file: 问题单URL文件路径
+            dataset_name: 数据集名称
+            description: 数据集描述
             
         Returns:
-            包含scene_id和属性信息的字典列表
+            Dataset对象
         """
-        result_data = []
+        dataset = Dataset(
+            name=dataset_name, 
+            description=description,
+            metadata={'data_type': 'defect', 'source_file': defect_file}
+        )
+        
+        logger.info(f"开始处理问题单文件: {defect_file}")
         
         try:
-            with open_file(file_path, 'r') as f:
+            with open_file(defect_file, 'r') as f:
                 for line_num, line in enumerate(f, 1):
-                    line = line.strip()
-                    if not line:
+                    # 解析行内容
+                    parsed = self.parse_defect_line(line)
+                    if parsed is None:
+                        if line.strip():  # 只对非空行记录警告
+                            logger.warning(f"问题单文件第 {line_num} 行解析失败: {line[:50]}...")
                         continue
-                        
+                    
+                    url = parsed['url']
+                    attributes = parsed['attributes']
                     self.stats['total_files'] += 1
                     
-                    # 解析URL行和属性
-                    url_data = self.parse_url_line_with_attributes(line)
-                    if not url_data:
-                        logger.warning(f"第 {line_num} 行解析失败: {line}")
-                        self.stats['failed_files'] += 1
-                        continue
-                    
-                    url = url_data['url']
-                    
-                    # 提取dataName
-                    dataname = self.extract_dataname_from_url(url)
-                    if not dataname:
+                    # 从URL提取数据名称
+                    data_name = self.parse_defect_url(url)
+                    if data_name is None:
                         logger.warning(f"第 {line_num} 行URL解析失败: {url}")
                         self.stats['failed_files'] += 1
                         continue
                     
-                    # 查询defect_id
-                    defect_id = self.query_defect_id_by_dataname(dataname, original_url=url)
-                    if not defect_id:
-                        logger.warning(f"第 {line_num} 行dataName未找到对应defect_id: {dataname}")
+                    # 查询数据库获取scene_id
+                    scene_id = self.query_defect_data(data_name)
+                    if scene_id is None:
+                        logger.warning(f"第 {line_num} 行查询scene_id失败: {data_name}")
                         self.stats['failed_files'] += 1
                         continue
                     
-                    # 查询scene_ids
-                    scene_ids = self.query_scene_ids_by_defect_id(defect_id, dataname=dataname, original_url=url)
-                    if scene_ids:
-                        # 为每个scene_id创建记录，包含属性信息
-                        for scene_id in scene_ids:
-                            result_data.append({
-                                'scene_id': scene_id,
-                                'url': url,
-                                'dataname': dataname,
-                                'defect_id': defect_id,
-                                'module': url_data['module'],
-                                'description': url_data['description']
-                            })
-                        
-                        self.stats['processed_files'] += 1
-                        self.stats['total_scenes'] += len(scene_ids)
-                        logger.info(f"第 {line_num} 行: URL -> {len(scene_ids)} scene_ids, 模块: {url_data['module']}")
-                    else:
-                        logger.warning(f"第 {line_num} 行defect_id未找到对应scene_id: {defect_id}")
-                        self.stats['failed_files'] += 1
-                        
-            logger.info(f"URL文件处理完成: 总计提取 {len(result_data)} 条记录")
-            
+                    # 构建子数据集元数据
+                    metadata = {
+                        'data_type': 'defect',
+                        'original_url': url,
+                        'data_name': data_name,
+                        'line_number': line_num
+                    }
+                    
+                    # 添加额外属性
+                    metadata.update(attributes)
+                    
+                    # 创建子数据集
+                    subdataset = SubDataset(
+                        name=data_name,
+                        obs_path=url,  # 使用原始URL作为obs_path
+                        duplication_factor=1,  # 问题单通常不需要倍增
+                        scene_count=1,
+                        scene_ids=[scene_id],
+                        metadata=metadata
+                    )
+                    
+                    dataset.subdatasets.append(subdataset)
+                    dataset.total_unique_scenes += 1
+                    dataset.total_scenes += 1
+                    
+                    self.stats['processed_files'] += 1
+                    self.stats['total_scenes'] += 1
+                    self.stats['total_subdatasets'] += 1
+                    
+                    logger.info(f"添加问题单数据: {data_name} -> {scene_id} (第{line_num}行)")
+                    
         except Exception as e:
-            logger.error(f"处理URL文件失败: {file_path}, 错误: {str(e)}")
+            logger.error(f"处理问题单文件 {defect_file} 失败: {str(e)}")
             raise
-            
-        return result_data
-
-    def extract_scene_ids_from_urls(self, file_path: str) -> List[str]:
-        """从URL文件中提取scene_id列表（原有方法，保持兼容性）。
         
-        Args:
-            file_path: URL文件路径，每行一个URL
-            
-        Returns:
-            scene_id列表
-        """
-        scene_ids = []
+        # 输出统计信息
+        logger.info(f"问题单数据集构建完成:")
+        logger.info(f"- 数据集名称: {dataset.name}")
+        logger.info(f"- 子数据集数量: {len(dataset.subdatasets)}")
+        logger.info(f"- 总场景数: {dataset.total_scenes}")
+        logger.info(f"- 成功处理行数: {self.stats['processed_files']}")
+        logger.info(f"- 失败行数: {self.stats['failed_files']}")
+        logger.info(f"- 查询失败次数: {self.stats['defect_query_failed']}")
+        logger.info(f"- 无scene_id次数: {self.stats['defect_no_scene']}")
         
-        try:
-            with open_file(file_path, 'r') as f:
-                for line_num, line in enumerate(f, 1):
-                    line = line.strip()
-                    if not line:
-                        continue
-                        
-                    self.stats['total_files'] += 1
-                    
-                    # 提取dataName
-                    dataname = self.extract_dataname_from_url(line)
-                    if not dataname:
-                        logger.warning(f"第 {line_num} 行URL解析失败: {line}")
-                        self.stats['failed_files'] += 1
-                        continue
-                    
-                    # 查询defect_id
-                    defect_id = self.query_defect_id_by_dataname(dataname, original_url=line)
-                    if not defect_id:
-                        logger.warning(f"第 {line_num} 行dataName未找到对应defect_id: {dataname}")
-                        self.stats['failed_files'] += 1
-                        continue
-                    
-                    # 查询scene_ids
-                    line_scene_ids = self.query_scene_ids_by_defect_id(defect_id, dataname=dataname, original_url=line)
-                    if line_scene_ids:
-                        scene_ids.extend(line_scene_ids)
-                        self.stats['processed_files'] += 1
-                        self.stats['total_scenes'] += len(line_scene_ids)
-                        logger.info(f"第 {line_num} 行: URL -> {len(line_scene_ids)} scene_ids")
-                    else:
-                        logger.warning(f"第 {line_num} 行defect_id未找到对应scene_id: {defect_id}")
-                        self.stats['failed_files'] += 1
-                        
-            logger.info(f"URL文件处理完成: 总计提取 {len(scene_ids)} 个scene_id")
-            
-        except Exception as e:
-            logger.error(f"处理URL文件失败: {file_path}, 错误: {str(e)}")
-            raise
-            
-        return scene_ids
-        
-    def detect_file_format(self, file_path: str) -> str:
-        """检测文件格式类型。
-        
-        Args:
-            file_path: 文件路径
-            
-        Returns:
-            文件格式：'url', 'url_with_attributes', 'jsonl_path', 'unknown'
-        """
-        try:
-            with open_file(file_path, 'r') as f:
-                # 读取前几行进行格式检测
-                sample_lines = []
-                for i, line in enumerate(f):
-                    line = line.strip()
-                    if line:
-                        sample_lines.append(line)
-                    if i >= 10:  # 只检查前10行
-                        break
-                        
-            if not sample_lines:
-                return 'unknown'
-                
-            # 检测是否为URL格式
-            url_count = 0
-            url_with_attributes_count = 0
-            jsonl_path_count = 0
-            
-            for line in sample_lines:
-                # URL格式检测
-                if line.startswith(('http://', 'https://')) and 'dataName=' in line:
-                    # 检查是否包含tab分隔的额外属性
-                    if '\t' in line:
-                        url_with_attributes_count += 1
-                    else:
-                        url_count += 1
-                # JSONL路径格式检测（现有格式）
-                elif ('obs://' in line or '/god/' in line) and '@duplicate' in line:
-                    jsonl_path_count += 1
-                    
-            # 判断主要格式
-            if url_with_attributes_count > len(sample_lines) * 0.7:  # 70%以上是带属性的URL
-                return 'url_with_attributes'
-            elif url_count > len(sample_lines) * 0.7:  # 70%以上是URL
-                return 'url'
-            elif jsonl_path_count > len(sample_lines) * 0.7:  # 70%以上是jsonl路径
-                return 'jsonl_path'
-            else:
-                return 'unknown'
-                
-        except Exception as e:
-            logger.error(f"检测文件格式失败: {file_path}, 错误: {str(e)}")
-            return 'unknown'
+        return dataset
         
     def extract_subdataset_name(self, obs_path: str) -> str:
-        """从OBS路径或URL中提取子数据集名称。
+        """从OBS路径中提取子数据集名称。
         
         Args:
-            obs_path: OBS路径或URL
+            obs_path: OBS路径
             
         Returns:
             子数据集名称
         """
         try:
-            # 如果是URL，提取dataName作为子数据集名称
-            if obs_path.startswith(('http://', 'https://')):
-                dataname = self.extract_dataname_from_url(obs_path)
-                if dataname:
-                    return f"url_{dataname}"
-                else:
-                    return "url_unknown"
-            
-            # 原有的OBS路径处理逻辑
             # 使用正则表达式提取子数据集名称
             # 匹配模式：/god/(子数据集名称)/train_god_...
             pattern = r'/god/([^/]+)/train_god_'
@@ -461,78 +325,29 @@ class DatasetManager:
             return Path(obs_path).parent.name
             
     def parse_index_line(self, line: str) -> Optional[Tuple[str, int]]:
-        """解析索引文件中的一行，支持多种格式。
+        """解析索引文件中的一行。
         
         Args:
-            line: 索引文件中的一行，支持以下格式：
-                - obs_path@duplicateN (现有格式)
-                - https://example.com/... (URL格式，自动识别)
+            line: 索引文件中的一行，格式为 obs_path@duplicateN
             
         Returns:
-            包含 obs_path/url 和 duplication_factor 的元组，如果解析失败则返回 None
+            包含 obs_path 和 duplication_factor 的元组，如果解析失败则返回 None
         """
         line = line.strip()
         if not line:
             return None
             
         try:
-            # 检查是否为URL格式（直接以http/https开头）
-            if line.startswith(('http://', 'https://')):
-                # URL格式，duplication_factor默认为1
-                return line, 1
-            
-            # 传统格式：obs_path@duplicateN
-            if '@' in line:
-                obs_path, factor_str = line.split('@', 1)
-                # 处理 duplicateN 格式
-                factor = int(factor_str.replace('duplicate', ''))
-                return obs_path, factor
-            else:
-                # 如果没有@符号，可能是纯路径，默认duplication_factor为1
-                return line, 1
-                
+            obs_path, factor_str = line.split('@')
+            # 处理 duplicateN 格式
+            factor = int(factor_str.replace('duplicate', ''))
+            return obs_path, factor
         except Exception as e:
             logger.error(f"解析索引行失败: {line}, 错误: {str(e)}")
             return None
             
     def extract_scene_ids_from_file(self, file_path: str) -> List[str]:
-        """从文件中提取scene_id列表，自动检测文件格式。
-        
-        Args:
-            file_path: 文件路径
-            
-        Returns:
-            scene_id列表
-        """
-        # 检测文件格式
-        file_format = self.detect_file_format(file_path)
-        logger.info(f"检测到文件格式: {file_format} ({file_path})")
-        
-        if file_format == 'url':
-            # URL格式处理
-            return self.extract_scene_ids_from_urls(file_path)
-        elif file_format == 'url_with_attributes':
-            # 带属性的URL格式，只返回scene_id列表以保持兼容性
-            result_data = self.extract_scene_ids_from_urls_with_attributes(file_path)
-            return [item['scene_id'] for item in result_data]
-        elif file_format == 'jsonl_path':
-            # 现有JSONL路径格式处理
-            return self._extract_scene_ids_from_jsonl_path(file_path)
-        else:
-            # 尝试两种格式，优先尝试现有格式
-            logger.warning(f"未能识别文件格式，尝试现有JSONL路径格式: {file_path}")
-            try:
-                return self._extract_scene_ids_from_jsonl_path(file_path)
-            except Exception as e1:
-                logger.warning(f"JSONL路径格式失败: {str(e1)}，尝试URL格式")
-                try:
-                    return self.extract_scene_ids_from_urls(file_path)
-                except Exception as e2:
-                    logger.error(f"所有格式尝试失败: JSONL={str(e1)}, URL={str(e2)}")
-                    raise Exception(f"无法处理文件格式: {file_path}")
-                    
-    def _extract_scene_ids_from_jsonl_path(self, file_path: str) -> List[str]:
-        """从shrink文件路径中提取scene_id列表（原有逻辑）。
+        """从shrink文件中提取scene_id列表。
         
         Args:
             file_path: shrink文件路径
@@ -560,8 +375,31 @@ class DatasetManager:
         return scene_ids
         
     def build_dataset_from_index(self, index_file: str, dataset_name: str, 
-                                description: str = "") -> Dataset:
-        """从索引文件构建数据集，支持多种格式。
+                                description: str = "", defect_mode: bool = None) -> Dataset:
+        """从索引文件构建数据集。
+        
+        Args:
+            index_file: 索引文件路径
+            dataset_name: 数据集名称
+            description: 数据集描述
+            defect_mode: 是否启用问题单模式，None表示使用初始化时的设置
+            
+        Returns:
+            Dataset对象
+        """
+        # 确定处理模式
+        use_defect_mode = defect_mode if defect_mode is not None else self.defect_mode
+        
+        if use_defect_mode:
+            logger.info(f"使用问题单模式处理: {index_file}")
+            return self.build_dataset_from_defect_urls(index_file, dataset_name, description)
+        else:
+            logger.info(f"使用标准模式处理: {index_file}")
+            return self._build_dataset_from_index_original(index_file, dataset_name, description)
+    
+    def _build_dataset_from_index_original(self, index_file: str, dataset_name: str, 
+                                         description: str = "") -> Dataset:
+        """从索引文件构建数据集（原始实现）。
         
         Args:
             index_file: 索引文件路径
@@ -581,14 +419,14 @@ class DatasetManager:
                         logger.warning(f"索引文件第 {line_num} 行解析失败")
                         continue
                         
-                    obs_path_or_url, factor = result
+                    obs_path, factor = result
                     self.stats['total_files'] += 1
                     
                     # 提取子数据集名称
-                    subdataset_name = self.extract_subdataset_name(obs_path_or_url)
+                    subdataset_name = self.extract_subdataset_name(obs_path)
                     
-                    # 提取场景ID（支持自动格式检测）
-                    scene_ids = self.extract_scene_ids_from_file(obs_path_or_url)
+                    # 提取场景ID
+                    scene_ids = self.extract_scene_ids_from_file(obs_path)
                     scene_count = len(scene_ids)
                     
                     if scene_count > 0:
@@ -599,7 +437,7 @@ class DatasetManager:
                         # 创建子数据集
                         subdataset = SubDataset(
                             name=subdataset_name,
-                            obs_path=obs_path_or_url,  # 可能是URL
+                            obs_path=obs_path,
                             duplication_factor=factor,
                             scene_count=scene_count,
                             scene_ids=scene_ids

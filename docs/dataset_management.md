@@ -9,6 +9,27 @@
 - Parquet格式适合大规模数据（400万+场景ID）
 - 高效的压缩和查询性能
 - 自动格式检测和转换
+- 支持多种数据源类型（标准训练数据、问题单数据）
+
+## 数据源类型
+
+### 1. 标准训练数据模式（默认）
+- **数据来源**：OBS存储的shrink文件
+- **索引格式**：`obs_path@duplicateN`
+- **场景提取**：直接从shrink文件中提取scene_id
+- **适用场景**：常规训练数据集构建
+
+### 2. 问题单数据模式 🆕
+- **数据来源**：问题单系统的URL链接
+- **索引格式**：问题单URL或URL+属性
+- **场景提取**：通过数据库查询获取scene_id
+- **适用场景**：问题单数据分析和处理
+
+#### 问题单数据处理流程
+1. **URL解析** → 提取数据名称（如 `10000_ddi-application-667754027299119535`）
+2. **第一次查询** → 通过数据名称从 `elasticsearch_ros.ods_ddi_index002_datalake` 获取 `defect_id`
+3. **第二次查询** → 通过 `defect_id` 从 `transform.ods_t_data_fragment_datalake` 获取 `scene_id`
+4. **数据集构建** → 生成与bbox兼容的数据集格式
 
 ## 格式选择指南
 
@@ -37,6 +58,16 @@ Parquet格式支持：
 ```bash
 # 安装parquet格式依赖
 pip install pandas pyarrow
+```
+
+问题单数据模式要求：
+```bash
+# 问题单模式需要数据库访问权限
+# 确保可以访问以下数据库表：
+# - elasticsearch_ros.ods_ddi_index002_datalake
+# - transform.ods_t_data_fragment_datalake
+# 
+# 数据库连接通过 spdatalab.common.io_hive.hive_cursor 建立
 ```
 
 ## 数据结构设计
@@ -73,7 +104,7 @@ class Dataset:
 
 ## 使用方法
 
-### 1. 从索引文件构建数据集
+### 1. 从索引文件构建数据集（标准训练数据）
 
 索引文件格式：每行包含一个OBS路径和倍增因子
 ```
@@ -118,7 +149,109 @@ manager.save_dataset(dataset, "datasets/dataset.json", format='json')
 manager.save_dataset(dataset, "datasets/dataset.parquet", format='parquet')
 ```
 
-### 2. 查看数据集信息
+### 2. 从问题单URL构建数据集 🆕
+
+#### 输入文件格式
+
+**基础格式**（当前支持）：
+```
+https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119535
+https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119536
+https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119537
+```
+
+**扩展格式**（支持额外属性）：
+```
+https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119535|priority=high|region=beijing|type=lane_change
+https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119536|priority=low|region=shanghai|type=intersection
+```
+
+#### 使用命令行工具
+
+```bash
+# 构建问题单数据集 - JSON格式
+python -m spdatalab.cli build-dataset \
+    --index-file defect_urls.txt \
+    --dataset-name "DefectDataset" \
+    --description "问题单数据集" \
+    --output datasets/defect_dataset.json \
+    --defect-mode
+
+# 构建问题单数据集 - Parquet格式
+python -m spdatalab.cli build-dataset \
+    --index-file defect_urls.txt \
+    --dataset-name "DefectDataset" \
+    --description "问题单数据集" \
+    --output datasets/defect_dataset.parquet \
+    --format parquet \
+    --defect-mode
+```
+
+#### 使用Python API
+
+```python
+from spdatalab.dataset.dataset_manager import DatasetManager
+
+# 方法1：创建时指定问题单模式
+manager = DatasetManager(defect_mode=True)
+dataset = manager.build_dataset_from_index(
+    "defect_urls.txt",
+    "DefectDataset",
+    "问题单数据集"
+)
+
+# 方法2：运行时指定问题单模式
+manager = DatasetManager()
+dataset = manager.build_dataset_from_index(
+    "defect_urls.txt",
+    "DefectDataset",
+    "问题单数据集",
+    defect_mode=True
+)
+
+# 保存数据集
+manager.save_dataset(dataset, "datasets/defect_dataset.json", format='json')
+```
+
+#### 问题单数据集特点
+
+- **无倍增因子**：问题单数据通常不需要重复，`duplication_factor` 默认为 1
+- **丰富的元数据**：包含原始URL、数据名称、行号以及自定义属性
+- **数据库依赖**：需要访问Hive数据库来查询scene_id
+- **错误处理**：详细的统计信息，包括查询失败和无scene_id的情况
+
+#### 输出格式示例
+
+```json
+{
+  "name": "DefectDataset",
+  "description": "问题单数据集",
+  "metadata": {
+    "data_type": "defect",
+    "source_file": "defect_urls.txt"
+  },
+  "subdatasets": [
+    {
+      "name": "10000_ddi-application-667754027299119535",
+      "obs_path": "https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119535",
+      "duplication_factor": 1,
+      "scene_count": 1,
+      "scene_ids": ["632c1e86c95a42c9a3b6c83257ed3f82"],
+      "metadata": {
+        "data_type": "defect",
+        "original_url": "https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119535",
+        "data_name": "10000_ddi-application-667754027299119535",
+        "line_number": 1,
+        "priority": "high",
+        "region": "beijing",
+        "type": "lane_change"
+      }
+    }
+  ]
+}
+```
+
+### 3. 查看数据集信息
 
 ```bash
 # 显示数据集详细信息（自动检测格式）
@@ -147,7 +280,7 @@ python -m spdatalab.cli dataset-stats --dataset-file datasets/dataset.parquet
   ...
 ```
 
-### 3. 列出场景ID
+### 4. 列出场景ID
 
 ```bash
 # 列出所有场景ID（不含倍增）
@@ -166,7 +299,7 @@ python -m spdatalab.cli list-scenes \
     --dataset-file datasets/dataset.parquet
 ```
 
-### 4. 导出场景ID为Parquet格式
+### 5. 导出场景ID为Parquet格式
 
 ```bash
 # 导出唯一场景ID（不含倍增）
@@ -181,7 +314,7 @@ python -m spdatalab.cli export-scene-ids \
     --include-duplicates
 ```
 
-### 5. 查询Parquet数据集
+### 6. 查询Parquet数据集
 
 ```bash
 # 查询所有数据
@@ -205,7 +338,7 @@ python -m spdatalab.cli query-parquet \
     --output filtered_results.parquet
 ```
 
-### 6. Python API 使用示例
+### 7. Python API 使用示例
 
 ```python
 from spdatalab.dataset.dataset_manager import DatasetManager
@@ -317,8 +450,15 @@ def choose_format(scene_count):
 - 使用描述性的数据集名称
 - 包含版本信息或日期
 - 添加有意义的描述
+- 问题单数据集建议使用 `defect_` 前缀
 
-### 4. 性能优化
+### 4. 问题单数据处理
+- 确保数据库连接正常
+- 监控查询失败率，及时处理异常URL
+- 使用扩展属性格式记录问题单的重要信息
+- 定期清理和更新问题单数据集
+
+### 5. 性能优化
 ```python
 # 对于非常大的数据集，可以分批构建
 def build_large_dataset_in_batches(index_files, dataset_name):
@@ -337,7 +477,7 @@ def build_large_dataset_in_batches(index_files, dataset_name):
     return merged_dataset
 ```
 
-### 5. 查询优化
+### 6. 查询优化
 ```python
 # 使用pandas进行复杂查询
 import pandas as pd
@@ -386,6 +526,67 @@ def complex_query_example(parquet_file):
    dataset = manager.load_dataset('dataset.json')
    manager.save_dataset(dataset, 'dataset.parquet', format='parquet')
    "
+   ```
+
+4. **问题单数据库连接失败**
+   ```python
+   # 检查数据库连接
+   from spdatalab.common.io_hive import hive_cursor
+   
+   try:
+       with hive_cursor() as cur:
+           cur.execute("SELECT 1")
+           print("数据库连接正常")
+   except Exception as e:
+       print(f"数据库连接失败: {e}")
+   ```
+
+5. **问题单URL解析失败**
+   ```python
+   # 检查URL格式
+   url = "https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119535"
+   
+   import re
+   pattern = r'dataName=([^&]+)'
+   match = re.search(pattern, url)
+   if match:
+       data_name = match.group(1)
+       print(f"提取的数据名称: {data_name}")
+   else:
+       print("URL格式不正确")
+   ```
+
+6. **问题单查询无结果**
+   ```python
+   # 手动检查数据是否存在
+   from spdatalab.common.io_hive import hive_cursor
+   
+   data_name = "10000_ddi-application-667754027299119535"
+   
+   with hive_cursor() as cur:
+       # 检查第一步查询
+       cur.execute(
+           "SELECT defect_id FROM elasticsearch_ros.ods_ddi_index002_datalake WHERE id = %s",
+           (data_name,)
+       )
+       result = cur.fetchone()
+       if result:
+           defect_id = result[0]
+           print(f"找到defect_id: {defect_id}")
+           
+           # 检查第二步查询
+           cur.execute(
+               "SELECT id FROM transform.ods_t_data_fragment_datalake WHERE origin_source_id = %s",
+               (defect_id,)
+           )
+           result = cur.fetchone()
+           if result:
+               scene_id = result[0]
+               print(f"找到scene_id: {scene_id}")
+           else:
+               print(f"未找到scene_id，defect_id: {defect_id}")
+       else:
+           print(f"未找到defect_id，data_name: {data_name}")
    ```
 
 ### 日志配置
@@ -470,4 +671,189 @@ def validate_dataset_integrity(parquet_file):
         'has_nulls': null_counts.any(),
         'has_duplicates': len(duplicates) > 0
     }
-``` 
+```
+
+### 4. 问题单数据处理
+```python
+def process_defect_urls_with_retry(url_file, max_retries=3):
+    """处理问题单URL，支持重试机制。"""
+    from spdatalab.dataset.dataset_manager import DatasetManager
+    
+    manager = DatasetManager(defect_mode=True)
+    failed_urls = []
+    
+    for retry in range(max_retries):
+        try:
+            dataset = manager.build_dataset_from_index(
+                url_file,
+                f"DefectDataset_retry_{retry}",
+                "问题单数据集"
+            )
+            
+            # 检查失败率
+            stats = manager.stats
+            fail_rate = stats['failed_files'] / stats['total_files'] if stats['total_files'] > 0 else 0
+            
+            if fail_rate > 0.1:  # 失败率超过10%
+                print(f"警告: 失败率过高 ({fail_rate:.2%})，建议检查数据库连接")
+            
+            return dataset
+            
+        except Exception as e:
+            print(f"第 {retry + 1} 次尝试失败: {e}")
+            if retry == max_retries - 1:
+                raise
+    
+    return None
+
+def analyze_defect_dataset(dataset_file):
+    """分析问题单数据集的统计信息。"""
+    from spdatalab.dataset.dataset_manager import DatasetManager
+    
+    manager = DatasetManager()
+    dataset = manager.load_dataset(dataset_file)
+    
+    # 统计问题单属性
+    attributes_stats = {}
+    
+    for subdataset in dataset.subdatasets:
+        metadata = subdataset.metadata
+        
+        # 统计各种属性
+        for key, value in metadata.items():
+            if key.startswith('data_') or key in ['original_url', 'line_number']:
+                continue  # 跳过系统字段
+                
+            if key not in attributes_stats:
+                attributes_stats[key] = {}
+            
+            if value not in attributes_stats[key]:
+                attributes_stats[key][value] = 0
+            attributes_stats[key][value] += 1
+    
+    # 打印统计结果
+    print("问题单数据集分析:")
+    print(f"总计问题单数量: {len(dataset.subdatasets)}")
+    print(f"总计场景数: {dataset.total_scenes}")
+    
+    for attr, values in attributes_stats.items():
+        print(f"\n{attr} 分布:")
+        for value, count in sorted(values.items(), key=lambda x: x[1], reverse=True):
+            print(f"  {value}: {count}")
+    
+    return attributes_stats
+```
+
+## 问题单数据处理完整示例
+
+### 1. 准备问题单URL文件
+
+创建 `defect_urls.txt` 文件：
+```
+https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119535|priority=high|region=beijing|type=lane_change
+https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119536|priority=medium|region=shanghai|type=intersection
+https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119537|priority=low|region=guangzhou|type=merging
+```
+
+### 2. 构建问题单数据集
+
+```python
+from spdatalab.dataset.dataset_manager import DatasetManager
+import logging
+
+# 启用详细日志
+logging.basicConfig(level=logging.INFO)
+
+# 创建数据集管理器
+manager = DatasetManager(defect_mode=True)
+
+# 构建数据集
+dataset = manager.build_dataset_from_index(
+    "defect_urls.txt",
+    "DefectAnalysisDataset",
+    "问题单分析数据集 v1.0"
+)
+
+# 保存数据集
+manager.save_dataset(dataset, "defect_dataset.json", format='json')
+manager.save_dataset(dataset, "defect_dataset.parquet", format='parquet')
+
+print(f"数据集构建完成，包含 {len(dataset.subdatasets)} 个问题单")
+```
+
+### 3. 数据集分析
+
+```python
+# 加载数据集
+dataset = manager.load_dataset("defect_dataset.json")
+
+# 获取统计信息
+stats = manager.get_dataset_stats(dataset)
+print("数据集统计信息:")
+for key, value in stats.items():
+    print(f"  {key}: {value}")
+
+# 分析问题单属性
+analyze_defect_dataset("defect_dataset.parquet")
+
+# 输出所有场景ID
+scene_ids = manager.list_scene_ids(dataset)
+print(f"\n提取的场景ID:")
+for i, scene_id in enumerate(scene_ids, 1):
+    print(f"  {i}. {scene_id}")
+```
+
+### 4. 与bbox集成使用
+
+```python
+# 导出为bbox兼容格式
+with open("bbox_scene_ids.txt", "w") as f:
+    for scene_id in scene_ids:
+        f.write(f"{scene_id}\n")
+
+print("场景ID已导出为bbox兼容格式: bbox_scene_ids.txt")
+```
+
+### 5. 处理失败的问题单
+
+```python
+# 检查处理统计
+print(f"处理统计:")
+print(f"  总计处理: {manager.stats['total_files']} 个URL")
+print(f"  成功处理: {manager.stats['processed_files']} 个")
+print(f"  失败处理: {manager.stats['failed_files']} 个")
+print(f"  数据库查询失败: {manager.stats['defect_query_failed']} 个")
+print(f"  无scene_id: {manager.stats['defect_no_scene']} 个")
+
+# 如果失败率过高，进行故障排除
+if manager.stats['failed_files'] > 0:
+    print(f"\n失败率: {manager.stats['failed_files']/manager.stats['total_files']:.2%}")
+    print("建议检查:")
+    print("  1. 数据库连接是否正常")
+    print("  2. URL格式是否正确")
+    print("  3. 数据是否存在于数据库中")
+```
+
+### 6. 命令行使用
+
+```bash
+# 构建问题单数据集
+python -m spdatalab.cli build-dataset \
+    --index-file defect_urls.txt \
+    --dataset-name "DefectAnalysisDataset" \
+    --description "问题单分析数据集 v1.0" \
+    --output defect_dataset.parquet \
+    --format parquet \
+    --defect-mode
+
+# 查看数据集信息
+python -m spdatalab.cli dataset-info \
+    --dataset-file defect_dataset.parquet
+
+# 导出场景ID
+python -m spdatalab.cli list-scenes \
+    --dataset-file defect_dataset.parquet \
+    --output bbox_scene_ids.txt
+```
+
+这样就完成了从问题单URL到可用于bbox分析的scene_id的完整流程。 
