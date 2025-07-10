@@ -2,34 +2,101 @@
 
 本指南介绍如何使用更新后的 `bbox.py` 模块处理 `dataset_manager` 的输出，生成边界框数据。
 
-## 概述
+## 快速开始
+
+### 标准数据集处理
+```bash
+# 第一阶段：构建数据集
+python -m spdatalab build_dataset --input data/index.txt --dataset-name "my_dataset" --output dataset.json
+
+# 第二阶段：处理边界框
+python src/spdatalab/dataset/bbox.py --input dataset.json --batch 1000
+```
+
+### 问题单数据集处理
+```bash
+# 第一阶段：构建问题单数据集
+python -m spdatalab build_dataset --input defect_urls.txt --dataset-name "defect_dataset" --output defect_dataset.json --defect-mode
+
+# 第二阶段：处理边界框（自动识别并创建动态字段）
+python src/spdatalab/dataset/bbox.py --input defect_dataset.json --batch 500
+```
+
+### 一体化命令（推荐）
+```bash
+# 标准数据集一体化处理
+python -m spdatalab build_dataset_with_bbox --input data/index.txt --dataset-name "my_dataset" --use-partitioning
+
+# 问题单数据集一体化处理
+python -m spdatalab build_dataset_with_bbox --input defect_urls.txt --dataset-name "defect_dataset" --defect-mode --use-partitioning
+```
+
+## 处理流程概述 ⭐ **UPDATED**
+
+系统采用**两阶段处理流程**，实现了数据集构建与边界框处理的分离：
+
+```
+原始数据文件                  统一Dataset文件               PostgreSQL数据库
+    |                            |                           |
+    |                            |                           |
+┌───────────┐               ┌─────────────┐              ┌─────────────┐
+│索引文件   │               │dataset.json │              │分表+ 动态字段│
+│或         │  DatasetManager │或          │  BBox模块     │+           │
+│问题单URLs │  ────────────► │dataset.     │ ────────────► │几何边界框   │
+│          │               │parquet      │              │+           │
+└───────────┘               └─────────────┘              │统一视图     │
+                                                         └─────────────┘
+第一阶段                         中间输出                    第二阶段
+- URL解析                       - 统一格式                  - 自动识别类型
+- 数据库查询                     - 包含metadata              - 动态创建表结构
+- 属性提取                       - 场景ID列表                - 边界框查询
+                                                          - 数据插入
+```
+
+### 第一阶段：DatasetManager（数据集构建）
+- 处理原始数据文件（标准索引文件或问题单URL文件）
+- 执行数据库查询和URL解析
+- 生成统一的dataset文件（JSON/Parquet格式）
+
+### 第二阶段：BBox模块（边界框处理）
+- 读取dataset文件，自动识别数据类型
+- 根据metadata动态创建表结构
+- 查询边界框信息并插入数据库
+
+## 功能特性
 
 更新后的 `bbox.py` 模块支持以下功能：
 
-1. **多格式输入支持**：
-   - JSON格式（dataset_manager的JSON输出）
-   - Parquet格式（dataset_manager的Parquet输出）
-   - 文本格式（向后兼容原有格式）
+1. **统一输入格式**：
+   - 只接受dataset文件作为输入（JSON/Parquet格式）
+   - 自动识别数据集类型（标准数据集 vs 问题单数据集）
+   - 向后兼容文本格式（直接场景ID列表）
 
-2. **智能进度跟踪**：
+2. **问题单数据集支持** ⭐ **NEW**：
+   - 灵活的数据库表结构，支持动态字段
+   - 问题单特有字段自动识别和处理
+   - 标准数据集和问题单数据集的统一处理
+   - 视图中的智能数据类型分离
+
+3. **智能进度跟踪**：
    - 轻量级Parquet状态文件
    - 自动断点续传
    - 失败记录和重试机制
    - 内存缓冲优化
 
-3. **性能优化**：
+4. **性能优化**：
    - 批量数据库插入
    - 错误处理和恢复机制
    - 详细的进度报告
    - 高效的文件I/O
 
-4. **并行处理支持**：
+5. **并行处理支持**：
    - 多进程并行处理 (ProcessPoolExecutor)
    - 自动CPU核心数检测
    - 手动worker数量控制
    - 按子数据集并行分片处理
 
-5. **智能格式检测**：
+6. **智能格式检测**：
    - 自动识别输入文件格式
    - 无需手动指定格式
 
@@ -47,6 +114,38 @@ python src/spdatalab/dataset/bbox.py --input output/dataset.parquet --batch 2000
 
 # 处理文本格式的场景ID列表（向后兼容）
 python src/spdatalab/dataset/bbox.py --input data/scene_ids.txt --batch 500
+```
+
+#### 问题单数据集处理 ⭐ **NEW**
+```bash
+# 第一步：使用dataset_manager生成问题单数据集
+python -m spdatalab build_dataset \
+    --input defect_urls.txt \
+    --dataset-name "defect_analysis_2024" \
+    --output defect_dataset.json \
+    --defect-mode
+
+# 第二步：处理问题单数据集 - 自动识别并创建动态字段
+python src/spdatalab/dataset/bbox.py --input defect_dataset.json --batch 500 --insert-batch 500
+
+# 或者使用一体化命令（包含构建和处理）
+python -m spdatalab build_dataset_with_bbox \
+    --input defect_urls.txt \
+    --dataset-name "defect_analysis_2024" \
+    --defect-mode \
+    --batch 500 \
+    --insert-batch 500 \
+    --use-partitioning \
+    --create-unified-view
+
+# 并行处理已生成的问题单数据集
+python -m spdatalab process-bbox \
+    --input defect_dataset.json \
+    --use-partitioning \
+    --use-parallel \
+    --max-workers 4 \
+    --batch 500 \
+    --insert-batch 500
 ```
 
 #### 并行处理用法
@@ -130,20 +229,24 @@ python src/spdatalab/dataset/bbox.py \
 
 ### 编程方式使用
 
+#### 标准数据集的两阶段处理
+
 ```python
 from spdatalab.dataset.dataset_manager import DatasetManager
 from spdatalab.dataset.bbox import run as bbox_run
 
-# 1. 使用DatasetManager构建数据集
+# === 第一阶段：使用DatasetManager构建标准数据集 ===
+# 1. 构建数据集
 manager = DatasetManager()
 dataset = manager.build_dataset_from_index("data/index.txt", "my_dataset")
 
-# 2. 保存数据集
+# 2. 保存为统一的dataset文件
 manager.save_dataset(dataset, "output/dataset.json", format='json')
 
-# 3. 处理边界框（基本用法）
+# === 第二阶段：使用BBox模块处理dataset文件 ===
+# 3. bbox模块读取dataset文件并处理（基本用法）
 bbox_run(
-    input_path="output/dataset.json",
+    input_path="output/dataset.json",  # 统一的dataset文件输入
     batch=1000,
     insert_batch=500
 )
@@ -171,6 +274,66 @@ bbox_run(
     input_path="output/dataset.json",
     show_stats=True,
     work_dir="./logs/my_import"
+)
+```
+
+#### 问题单数据集的编程方式使用 ⭐ **NEW**
+
+```python
+from spdatalab.dataset.dataset_manager import DatasetManager
+from spdatalab.dataset.bbox import run_with_partitioning
+
+# === 第一阶段：使用DatasetManager构建问题单数据集 ===
+
+# 1. 构建问题单数据集
+manager = DatasetManager(defect_mode=True)
+defect_dataset = manager.build_dataset_from_index(
+    "data/defect_urls.txt", 
+    "defect_analysis_2024",
+    description="问题单数据集用于缺陷分析",
+    defect_mode=True
+)
+
+# 2. 保存问题单数据集
+manager.save_dataset(defect_dataset, "output/defect_dataset.json", format='json')
+
+# 查看问题单数据集统计
+stats = manager.get_dataset_stats(defect_dataset)
+print(f"问题单数据集统计:")
+print(f"- 总子数据集数: {stats['subdataset_count']}")
+print(f"- 总场景数: {stats['total_unique_scenes']}")
+
+# === 第二阶段：使用BBox模块处理数据集文件 ===
+
+# 3. 处理问题单数据集（bbox模块自动识别类型并创建动态字段）
+run_with_partitioning(
+    input_path="output/defect_dataset.json",  # 输入dataset文件
+    batch=500,
+    insert_batch=500,
+    use_parallel=True,
+    max_workers=4,
+    create_unified_view_flag=True
+)
+
+# === 处理包含额外属性的问题单数据 ===
+
+# 处理包含额外属性的问题单文件
+# 输入文件格式：url|priority=high|category=lane_detection
+mixed_dataset = manager.build_dataset_from_index(
+    "data/defect_urls_with_attrs.txt",
+    "defect_with_attributes",
+    defect_mode=True
+)
+manager.save_dataset(mixed_dataset, "output/mixed_defect_dataset.json", format='json')
+
+# bbox模块处理包含动态字段的数据集
+run_with_partitioning(
+    input_path="output/mixed_defect_dataset.json",  # 统一的dataset文件输入
+    batch=300,
+    insert_batch=300,
+    use_parallel=True,
+    max_workers=3,
+    create_unified_view_flag=True
 )
 ```
 
@@ -223,12 +386,138 @@ work_dir/
 | 查询速度 | O(n)线性 | O(1)内存查询 | 100x更快 |
 | 内存占用 | 400MB+ | 50-100MB | 4x更少 |
 
+## 问题单数据集支持详解 ⭐ **NEW**
+
+### 核心特性
+
+1. **动态表结构**：根据问题单数据的metadata自动创建表字段
+2. **灵活字段支持**：支持自定义属性字段，如priority、category等
+3. **数据类型智能推断**：自动识别字段类型（text、integer、boolean等）
+4. **视图分离**：问题单数据表默认不包含在统一视图中，避免数据混淆
+
+### 数据表结构对比
+
+#### 标准数据集表结构
+```sql
+CREATE TABLE clips_bbox_standard_dataset (
+    id serial PRIMARY KEY,
+    scene_token text,
+    data_name text UNIQUE,
+    event_id text,
+    city_id text,
+    timestamp bigint,
+    all_good boolean,
+    data_type text DEFAULT 'standard',
+    geometry geometry(POLYGON, 4326)
+);
+```
+
+#### 问题单数据集表结构（动态字段）
+```sql
+CREATE TABLE clips_bbox_defect_dataset (
+    id serial PRIMARY KEY,
+    scene_token text,
+    data_name text UNIQUE,
+    event_id text,
+    city_id text,
+    timestamp bigint,
+    all_good boolean,
+    data_type text DEFAULT 'defect',
+    original_url text,
+    line_number integer,
+    -- 动态字段示例
+    priority text,
+    category text,
+    severity integer,
+    geometry geometry(POLYGON, 4326)
+);
+```
+
+### 输入文件格式
+
+#### 基本问题单URL文件
+```
+https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119535
+https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119536
+```
+
+#### 包含额外属性的问题单文件
+```
+https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119535|priority=high|category=lane_detection
+https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119536|priority=medium|category=object_detection|severity=3
+```
+
+### 数据处理流程
+
+#### Dataset Manager阶段（数据集构建）
+1. **URL解析**：从问题单URL中提取`dataName`参数
+2. **数据库查询**：
+   - 第一步：通过`dataName`查询`elasticsearch_ros.ods_ddi_index002_datalake`获取`defect_id`
+   - 第二步：通过`defect_id`查询`transform.ods_t_data_fragment_datalake`获取`scene_id`
+3. **属性解析**：解析URL中的额外属性（priority、category等）
+4. **数据集生成**：将结果保存为dataset文件（JSON/Parquet格式）
+
+#### BBox模块阶段（边界框处理）
+1. **数据集读取**：读取dataset文件，自动识别数据类型
+2. **动态字段检测**：分析metadata中的自定义字段
+3. **表结构创建**：根据检测到的字段动态创建表结构
+4. **边界框查询**：查询PostGIS数据库获取边界框信息
+5. **数据插入**：将标准字段和自定义字段一起插入数据库
+
+### 视图管理
+
+#### 标准数据集统一视图
+```sql
+-- 只包含标准数据集的统一视图
+CREATE VIEW clips_bbox_unified AS
+SELECT * FROM clips_bbox_standard_dataset_1
+UNION ALL
+SELECT * FROM clips_bbox_standard_dataset_2
+-- 问题单数据表被自动排除
+```
+
+#### 问题单数据集专用视图
+```sql
+-- 专门用于问题单数据的视图
+CREATE VIEW clips_bbox_defect_unified AS
+SELECT * FROM clips_bbox_defect_dataset_1
+UNION ALL
+SELECT * FROM clips_bbox_defect_dataset_2
+-- 包含所有动态字段
+```
+
+### 使用建议
+
+1. **批次大小**：问题单数据建议使用较小的批次（500-1000）
+2. **并行处理**：问题单数据集适合并行处理，每个URL独立处理
+3. **错误处理**：问题单数据源可能不稳定，建议启用详细的错误跟踪
+4. **字段规划**：提前规划好额外属性字段，避免后续表结构变更
+
+### 查询示例
+
+```sql
+-- 查询高优先级的问题单
+SELECT * FROM clips_bbox_defect_dataset 
+WHERE priority = 'high' AND data_type = 'defect';
+
+-- 按类别统计问题单
+SELECT category, COUNT(*) as count 
+FROM clips_bbox_defect_dataset 
+WHERE data_type = 'defect' 
+GROUP BY category;
+
+-- 查询特定严重级别的问题
+SELECT * FROM clips_bbox_defect_dataset 
+WHERE severity >= 3 AND data_type = 'defect';
+```
+
 ## 完整工作流程
 
-### 方案1：大规模数据处理（推荐）
+### 方案1：大规模标准数据集处理（推荐）
 
 ```python
-# 步骤1：构建数据集
+# === 第一阶段：DatasetManager构建数据集 ===
+# 步骤1：构建标准数据集
 manager = DatasetManager()
 dataset = manager.build_dataset_from_index(
     index_file="data/training_index.txt",
@@ -239,9 +528,10 @@ dataset = manager.build_dataset_from_index(
 # 步骤2：保存为Parquet格式（推荐大数据集）
 manager.save_dataset(dataset, "output/training_dataset.parquet", format='parquet')
 
-# 步骤3：生成边界框数据（带进度跟踪）
+# === 第二阶段：BBox模块处理dataset文件 ===
+# 步骤3：bbox模块读取dataset文件生成边界框数据（带进度跟踪）
 bbox_run(
-    input_path="output/training_dataset.parquet",
+    input_path="output/training_dataset.parquet",  # 统一的dataset文件输入
     batch=1000,         # 每批处理1000个场景
     insert_batch=1000,  # 每批插入1000条记录
     work_dir="./logs/training_import",  # 进度文件目录
@@ -255,9 +545,10 @@ bbox_run(
 ### 方案2：失败恢复处理
 
 ```python
+# === 使用已生成的dataset文件进行失败恢复 ===
 # 查看处理统计
 bbox_run(
-    input_path="output/dataset.parquet",
+    input_path="output/dataset.parquet",  # 统一的dataset文件输入
     show_stats=True,
     work_dir="./logs/import"
 )
@@ -274,7 +565,7 @@ bbox_run(
 
 # 重试失败的数据
 bbox_run(
-    input_path="output/dataset.parquet",
+    input_path="output/dataset.parquet",  # 统一的dataset文件输入
     retry_failed=True,
     work_dir="./logs/import",
     batch=500  # 减小批次大小，提高成功率
@@ -284,6 +575,7 @@ bbox_run(
 ### 方案3：JSON格式工作流程
 
 ```python
+# === 第一阶段：构建中小型数据集 ===
 # 适合中小型数据集或需要人类可读格式
 manager = DatasetManager()
 dataset = manager.build_dataset_from_index(
@@ -295,13 +587,140 @@ dataset = manager.build_dataset_from_index(
 # 保存为JSON格式
 manager.save_dataset(dataset, "output/validation_dataset.json", format='json')
 
+# === 第二阶段：bbox模块处理dataset文件 ===
 # 生成边界框数据
 bbox_run(
-    input_path="output/validation_dataset.json",
+    input_path="output/validation_dataset.json",  # 统一的dataset文件输入
     batch=500,          
     insert_batch=500,
     work_dir="./logs/validation_import"
 )
+```
+
+### 方案4：问题单数据集工作流程 ⭐ **NEW**
+
+```python
+from spdatalab.dataset.dataset_manager import DatasetManager
+from spdatalab.dataset.bbox import run_with_partitioning
+
+# === 第一阶段：使用DatasetManager构建问题单数据集 ===
+# 步骤1：构建问题单数据集
+manager = DatasetManager(defect_mode=True)
+defect_dataset = manager.build_dataset_from_index(
+    index_file="data/defect_urls.txt",
+    dataset_name="defect_analysis_2024_q1",
+    description="2024年Q1问题单数据集，包含优先级和类别信息",
+    defect_mode=True
+)
+
+# 步骤2：保存问题单数据集（推荐JSON格式便于查看）
+manager.save_dataset(defect_dataset, "output/defect_dataset.json", format='json')
+
+# === 第二阶段：使用BBox模块处理数据集文件 ===
+# 步骤3：bbox模块读取dataset文件并自动识别类型，创建动态字段
+run_with_partitioning(
+    input_path="output/defect_dataset.json",  # 统一的dataset文件输入
+    batch=500,                    # 问题单数据建议使用较小批次
+    insert_batch=500,
+    work_dir="./logs/defect_import",
+    create_unified_view_flag=True,  # 创建统一视图
+    use_parallel=True,             # 启用并行处理
+    max_workers=4                  # 限制并行数量
+)
+
+# 步骤4：查看处理结果统计
+print("\n=== 问题单数据集处理统计 ===")
+stats = manager.get_dataset_stats(defect_dataset)
+print(f"总问题单数: {stats['total_unique_scenes']}")
+print(f"子数据集数: {stats['subdataset_count']}")
+
+# 步骤5：验证数据库中的结果
+import psycopg2
+conn = psycopg2.connect("host=local_pg dbname=postgres user=postgres password=postgres")
+cur = conn.cursor()
+
+# 查看问题单数据表
+cur.execute("""
+    SELECT table_name FROM information_schema.tables 
+    WHERE table_name LIKE 'clips_bbox_%' AND table_name != 'clips_bbox'
+    ORDER BY table_name;
+""")
+tables = cur.fetchall()
+print(f"\n创建的数据表: {[t[0] for t in tables]}")
+
+# 查看问题单数据分布
+cur.execute("""
+    SELECT data_type, COUNT(*) as count 
+    FROM clips_bbox_defect_analysis_2024_q1 
+    GROUP BY data_type;
+""")
+data_types = cur.fetchall()
+print(f"数据类型分布: {dict(data_types)}")
+
+cur.close()
+conn.close()
+```
+
+### 方案5：高级问题单数据集处理（包含自定义字段）
+
+```python
+# === 第一阶段：处理包含自定义属性的问题单文件 ===
+# 输入文件格式：url|priority=high|category=lane_detection|severity=3
+
+manager = DatasetManager(defect_mode=True)
+advanced_defect_dataset = manager.build_dataset_from_index(
+    index_file="data/defect_urls_with_attributes.txt",
+    dataset_name="advanced_defect_2024",
+    description="包含优先级、类别和严重程度的问题单数据集",
+    defect_mode=True
+)
+
+# 保存为统一的dataset文件格式
+manager.save_dataset(advanced_defect_dataset, "output/advanced_defect_dataset.json", format='json')
+
+# === 第二阶段：bbox模块处理dataset文件 ===
+# bbox模块自动识别metadata中的动态字段并创建相应表结构
+run_with_partitioning(
+    input_path="output/advanced_defect_dataset.json",  # 统一的dataset文件输入
+    batch=300,                     # 更小的批次，因为包含更多字段
+    insert_batch=300,
+    work_dir="./logs/advanced_defect_import",
+    create_unified_view_flag=True,
+    use_parallel=True,
+    max_workers=3
+)
+
+# 验证动态字段创建
+conn = psycopg2.connect("host=local_pg dbname=postgres user=postgres password=postgres")
+cur = conn.cursor()
+
+# 查看表结构
+cur.execute("""
+    SELECT column_name, data_type 
+    FROM information_schema.columns 
+    WHERE table_name = 'clips_bbox_advanced_defect_2024'
+    ORDER BY ordinal_position;
+""")
+columns = cur.fetchall()
+print(f"\n动态创建的表结构:")
+for col_name, col_type in columns:
+    print(f"  {col_name}: {col_type}")
+
+# 查看数据分布
+cur.execute("""
+    SELECT priority, category, COUNT(*) as count 
+    FROM clips_bbox_advanced_defect_2024 
+    WHERE data_type = 'defect'
+    GROUP BY priority, category
+    ORDER BY count DESC;
+""")
+distribution = cur.fetchall()
+print(f"\n问题单分布:")
+for priority, category, count in distribution:
+    print(f"  {priority} - {category}: {count}")
+
+cur.close()
+conn.close()
 ```
 
 ## 性能优化建议
@@ -615,10 +1034,59 @@ chmod 755 ./logs/bbox_import
 - 状态文件大小约为原数据的20%
 - 400万场景约需要80-120MB磁盘空间
 
+### 5. 问题单数据集相关问题 ⭐ **NEW**
+
+**问题**：问题单URL解析失败
+```
+无法从URL中提取数据名称: https://pre-prod.adscloud.huawei.com/...
+```
+**解决方案**：
+- 检查URL格式是否正确
+- 确认URL中包含`dataName`参数
+- 验证URL编码是否正确
+
+**问题**：问题单数据库查询失败
+```
+查询问题单数据失败: data_name, 错误: connection timeout
+```
+**解决方案**：
+- 检查数据库连接配置
+- 确认有权限访问`elasticsearch_ros.ods_ddi_index002_datalake`和`transform.ods_t_data_fragment_datalake`
+- 验证数据库服务可用性
+
+**问题**：动态字段创建失败
+```
+创建分表时出错: column "priority" cannot be added
+```
+**解决方案**：
+- 检查字段名称是否为PostgreSQL保留字
+- 使用双引号包围特殊字段名
+- 避免使用空格或特殊字符作为字段名
+
+**问题**：问题单数据混入标准数据集视图
+```
+统一视图中包含了问题单数据
+```
+**解决方案**：
+- 确保使用`exclude_defect_tables=True`参数
+- 检查表的`data_type`字段是否正确设置
+- 重新创建统一视图
+
+**问题**：额外属性字段类型错误
+```
+invalid input syntax for type integer: "high"
+```
+**解决方案**：
+- 检查输入文件中的属性值格式
+- 确认数值字段不包含非数值字符
+- 使用正确的分隔符格式：`url|key=value|key2=value2`
+
 ## 示例脚本
 
 完整的示例脚本位于 `examples/bbox_usage_example.py`，包含：
 
+- 标准数据集两阶段处理流程
+- 问题单数据集两阶段处理流程
 - JSON格式完整工作流程
 - Parquet格式完整工作流程
 - 失败恢复处理示例
@@ -627,11 +1095,14 @@ chmod 755 ./logs/bbox_import
 运行示例：
 
 ```bash
-# JSON工作流程
+# 标准数据集JSON工作流程
 python examples/bbox_usage_example.py --mode json
 
-# Parquet工作流程（推荐）
+# 标准数据集Parquet工作流程（推荐）
 python examples/bbox_usage_example.py --mode parquet
+
+# 问题单数据集工作流程
+python examples/bbox_usage_example.py --mode defect
 
 # 失败恢复示例
 python examples/bbox_usage_example.py --mode recovery
@@ -658,6 +1129,13 @@ python demo_parallel_commands.py
 
 ## 关键新功能总结
 
+### 架构改进
+✅ **两阶段处理流程** ⭐ **NEW**  
+✅ **职责分离设计** (DatasetManager + BBox模块)  
+✅ **统一dataset文件输入**  
+✅ **自动数据类型识别**  
+
+### 性能功能
 ✅ **多进程并行处理** (ProcessPoolExecutor)  
 ✅ **自动CPU核心数检测**  
 ✅ **手动worker数量控制**  
@@ -665,15 +1143,49 @@ python demo_parallel_commands.py
 ✅ **性能提升监控**  
 ✅ **智能错误处理**  
 
+### 问题单数据集支持
+✅ **问题单数据集支持** ⭐ **NEW**  
+✅ **动态表结构创建**  
+✅ **灵活字段类型推断**  
+✅ **数据类型智能分离**  
+
 ### 预期性能提升
 
 - **大数据集处理速度提升 2-6倍**
 - **CPU资源充分利用**
 - **总体处理时间显著减少**
 
+### 两阶段处理流程优势
+
+- **职责清晰分离**：数据集构建与边界框处理分离
+- **输入格式统一**：bbox模块只处理dataset文件，简化使用
+- **灵活扩展**：支持不同数据源（标准数据集、问题单等）
+- **向后兼容**：原有处理方式完全保留
+
+### 问题单数据集新功能
+
+- **自动URL解析和数据库查询**（DatasetManager阶段）
+- **动态字段创建和类型推断**（BBox模块阶段）
+- **标准数据集与问题单数据集分离**
+- **灵活的属性支持（priority、category等）**
+- **专用视图管理，避免数据混淆**
+
 ### 相关文件
 
-- **性能测试**: `python test_parallel_performance.py`
-- **开发计划**: `DEVELOPMENT_PLAN.md`
-- **核心实现**: `src/spdatalab/dataset/bbox.py`
-- **演示脚本**: `demo_parallel_commands.py` 
+#### 核心模块
+- **BBox模块**: `src/spdatalab/dataset/bbox.py` - 边界框处理，支持动态字段
+- **DatasetManager**: `src/spdatalab/dataset/dataset_manager.py` - 数据集构建，支持问题单处理
+
+#### 文档
+- **数据集管理文档**: `docs/dataset_management.md` - DatasetManager详细使用指南
+- **开发计划**: `DEVELOPMENT_PLAN.md` - 整体开发计划和进度
+
+#### 测试和演示
+- **性能测试**: `python test_parallel_performance.py` - 并行处理性能测试
+- **并行处理演示**: `demo_parallel_commands.py` - 并行处理功能演示
+- **使用示例**: `examples/bbox_usage_example.py` - 完整使用示例
+
+#### CLI命令
+- **构建数据集**: `python -m spdatalab build_dataset` - DatasetManager命令行接口
+- **处理边界框**: `python -m spdatalab process-bbox` - BBox模块命令行接口
+- **一体化处理**: `python -m spdatalab build_dataset_with_bbox` - 两阶段一体化命令 

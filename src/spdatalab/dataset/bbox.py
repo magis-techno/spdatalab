@@ -637,8 +637,8 @@ def validate_table_name(table_name: str) -> dict:
         'length': len(table_name)
     }
 
-def create_table_for_subdataset(eng, subdataset_name, base_table_name='clips_bbox'):
-    """为特定子数据集创建分表"""
+def create_table_for_subdataset(eng, subdataset_name, subdataset_metadata=None, base_table_name='clips_bbox'):
+    """为特定子数据集创建分表，支持根据metadata动态添加字段"""
     table_name = get_table_name_for_subdataset(subdataset_name)
     
     # 检查表是否已存在
@@ -661,16 +661,51 @@ def create_table_for_subdataset(eng, subdataset_name, base_table_name='clips_bbo
                 
             print(f"创建子数据集分表: {table_name}")
             
-            # 创建与主表相同结构的分表
+            # 基础字段（保持向后兼容）
+            base_fields = [
+                "id serial PRIMARY KEY",
+                "scene_token text",
+                "data_name text UNIQUE", 
+                "event_id text",
+                "city_id text",
+                '"timestamp" bigint',
+                "all_good boolean"
+            ]
+            
+            # 根据metadata动态添加字段
+            dynamic_fields = []
+            if subdataset_metadata:
+                # 检测是否为问题单数据集
+                data_type = subdataset_metadata.get('data_type')
+                if data_type == 'defect':
+                    # 为问题单数据集添加特殊字段
+                    dynamic_fields.append("data_type text DEFAULT 'defect'")
+                    dynamic_fields.append("original_url text")
+                    dynamic_fields.append("line_number integer")
+                    
+                    # 添加其他自定义字段（排除系统字段）
+                    system_fields = {'data_type', 'original_url', 'data_name', 'line_number'}
+                    for key, value in subdataset_metadata.items():
+                        if key not in system_fields and not key.startswith('data_'):
+                            # 推断字段类型
+                            field_type = infer_field_type(value)
+                            dynamic_fields.append(f"{key} {field_type}")
+                            print(f"  添加动态字段: {key} ({field_type})")
+                else:
+                    # 标准数据集，添加data_type标识
+                    dynamic_fields.append("data_type text DEFAULT 'standard'")
+            else:
+                # 向后兼容：没有metadata的情况
+                dynamic_fields.append("data_type text DEFAULT 'standard'")
+            
+            # 组合所有字段
+            all_fields = base_fields + dynamic_fields
+            fields_sql = ",\n                ".join(all_fields)
+            
+            # 创建表的SQL
             create_sql = text(f"""
                 CREATE TABLE {table_name}(
-                    id serial PRIMARY KEY,
-                    scene_token text,
-                    data_name text UNIQUE,
-                    event_id text,
-                    city_id text,
-                    "timestamp" bigint,
-                    all_good boolean
+                {fields_sql}
                 );
             """)
             
@@ -690,6 +725,7 @@ def create_table_for_subdataset(eng, subdataset_name, base_table_name='clips_bbo
                 CREATE INDEX idx_{table_name}_geometry ON {table_name} USING GIST(geometry);
                 CREATE INDEX idx_{table_name}_data_name ON {table_name}(data_name);
                 CREATE INDEX idx_{table_name}_scene_token ON {table_name}(scene_token);
+                CREATE INDEX idx_{table_name}_data_type ON {table_name}(data_type);
             """)
             
             # 执行SQL语句，需要分步提交以确保PostGIS函数能找到表
@@ -706,20 +742,48 @@ def create_table_for_subdataset(eng, subdataset_name, base_table_name='clips_bbo
             conn.commit()  # 最后提交索引
             
             print(f"成功创建分表 {table_name} 及相关索引")
+            if dynamic_fields:
+                print(f"  包含 {len(dynamic_fields)} 个动态字段")
+            
             return True, table_name
             
     except Exception as e:
         print(f"创建分表 {table_name} 时出错: {str(e)}")
         return False, table_name
 
-def group_scenes_by_subdataset(dataset_file: str) -> Dict[str, List[str]]:
-    """按子数据集分组scene_ids
+def infer_field_type(value):
+    """推断字段类型"""
+    if isinstance(value, bool):
+        return "boolean"
+    elif isinstance(value, int):
+        return "integer"
+    elif isinstance(value, float):
+        return "numeric"
+    elif isinstance(value, str):
+        # 尝试检测特殊格式
+        if value.lower() in ('true', 'false'):
+            return "boolean"
+        try:
+            int(value)
+            return "integer"
+        except ValueError:
+            try:
+                float(value)
+                return "numeric"
+            except ValueError:
+                return "text"
+    else:
+        return "text"
+
+def group_scenes_by_subdataset(dataset_file: str) -> Dict[str, Dict]:
+    """按子数据集分组scene_ids，包含metadata信息
     
     Args:
         dataset_file: dataset文件路径（JSON/Parquet格式）
         
     Returns:
-        字典，key为子数据集名称，value为scene_ids列表
+        字典，key为子数据集名称，value为包含scene_ids和metadata的字典
+        格式：{subdataset_name: {'scene_ids': [...], 'metadata': {...}}}
     """
     from ..dataset.dataset_manager import DatasetManager
     
@@ -737,11 +801,26 @@ def group_scenes_by_subdataset(dataset_file: str) -> Dict[str, List[str]]:
         for subdataset in dataset.subdatasets:
             subdataset_name = subdataset.name
             scene_ids = subdataset.scene_ids
+            metadata = subdataset.metadata or {}
             
             if scene_ids:
-                groups[subdataset_name] = scene_ids
+                groups[subdataset_name] = {
+                    'scene_ids': scene_ids,
+                    'metadata': metadata
+                }
                 total_scenes += len(scene_ids)
-                print(f"  {subdataset_name}: {len(scene_ids)} 个场景")
+                
+                # 显示数据集类型
+                data_type = metadata.get('data_type', 'standard')
+                type_info = f" (类型: {data_type})"
+                if data_type == 'defect':
+                    dynamic_fields = [k for k in metadata.keys() 
+                                    if k not in {'data_type', 'original_url', 'data_name', 'line_number'} 
+                                    and not k.startswith('data_')]
+                    if dynamic_fields:
+                        type_info += f", 动态字段: {len(dynamic_fields)}个"
+                
+                print(f"  {subdataset_name}: {len(scene_ids)} 个场景{type_info}")
             else:
                 print(f"  {subdataset_name}: 无场景数据，跳过")
         
@@ -752,12 +831,13 @@ def group_scenes_by_subdataset(dataset_file: str) -> Dict[str, List[str]]:
         print(f"分组scene_ids失败: {str(e)}")
         raise
 
-def batch_create_tables_for_subdatasets(eng, subdataset_names: List[str]) -> Dict[str, str]:
-    """批量为子数据集创建分表
+def batch_create_tables_for_subdatasets(eng, subdataset_groups: Dict[str, Dict]) -> Dict[str, str]:
+    """批量为子数据集创建分表，支持动态字段
     
     Args:
         eng: 数据库引擎
-        subdataset_names: 子数据集名称列表
+        subdataset_groups: 子数据集分组信息，包含scene_ids和metadata
+                          格式：{subdataset_name: {'scene_ids': [...], 'metadata': {...}}}
         
     Returns:
         字典，key为原始子数据集名称，value为创建的表名
@@ -765,12 +845,15 @@ def batch_create_tables_for_subdatasets(eng, subdataset_names: List[str]) -> Dic
     table_mapping = {}
     success_count = 0
     
-    print(f"开始批量创建 {len(subdataset_names)} 个分表...")
+    print(f"开始批量创建 {len(subdataset_groups)} 个分表...")
     
-    for i, subdataset_name in enumerate(subdataset_names, 1):
-        print(f"[{i}/{len(subdataset_names)}] 处理: {subdataset_name}")
+    for i, (subdataset_name, subdataset_info) in enumerate(subdataset_groups.items(), 1):
+        metadata = subdataset_info.get('metadata', {})
+        data_type = metadata.get('data_type', 'standard')
         
-        success, table_name = create_table_for_subdataset(eng, subdataset_name)
+        print(f"[{i}/{len(subdataset_groups)}] 处理: {subdataset_name} (类型: {data_type})")
+        
+        success, table_name = create_table_for_subdataset(eng, subdataset_name, metadata)
         table_mapping[subdataset_name] = table_name
         
         if success:
@@ -778,15 +861,16 @@ def batch_create_tables_for_subdatasets(eng, subdataset_names: List[str]) -> Dic
         else:
             print(f"警告: 子数据集 {subdataset_name} 的分表创建失败")
     
-    print(f"批量创建完成: 成功 {success_count}/{len(subdataset_names)} 个分表")
+    print(f"批量创建完成: 成功 {success_count}/{len(subdataset_groups)} 个分表")
     return table_mapping
 
-def filter_partition_tables(tables: List[str], exclude_view: str = None) -> List[str]:
+def filter_partition_tables(tables: List[str], exclude_view: str = None, exclude_defect_tables: bool = True) -> List[str]:
     """过滤出真正的分表，排除主表、视图、临时表等
     
     Args:
         tables: 表名列表
         exclude_view: 要排除的视图名称
+        exclude_defect_tables: 是否排除问题单数据表
         
     Returns:
         过滤后的分表列表
@@ -808,8 +892,47 @@ def filter_partition_tables(tables: List[str], exclude_view: str = None) -> List
             continue
             
         # 只包含分表格式的表（必须以clips_bbox_开头）
-        if table.startswith('clips_bbox_') and table != 'clips_bbox':
-            filtered.append(table)
+        if not (table.startswith('clips_bbox_') and table != 'clips_bbox'):
+            continue
+        
+        # 检查是否为问题单数据表（简化实现，基于表名推断）
+        if exclude_defect_tables:
+            try:
+                from sqlalchemy import create_engine, text
+                eng = create_engine(LOCAL_DSN, future=True)
+                with eng.connect() as conn:
+                    # 检查表是否包含data_type字段且值为'defect'
+                    check_defect_sql = text(f"""
+                        SELECT EXISTS (
+                            SELECT 1 FROM information_schema.columns 
+                            WHERE table_name = '{table}' 
+                            AND column_name = 'data_type'
+                        );
+                    """)
+                    
+                    has_data_type = conn.execute(check_defect_sql).scalar()
+                    
+                    if has_data_type:
+                        # 检查是否包含问题单数据
+                        check_defect_data_sql = text(f"""
+                            SELECT EXISTS (
+                                SELECT 1 FROM {table} 
+                                WHERE data_type = 'defect' 
+                                LIMIT 1
+                            );
+                        """)
+                        
+                        has_defect_data = conn.execute(check_defect_data_sql).scalar()
+                        
+                        if has_defect_data:
+                            print(f"排除问题单数据表: {table}")
+                            continue
+                            
+            except Exception as e:
+                # 如果检查失败，记录但不影响过滤
+                print(f"检查表 {table} 的数据类型时出错: {str(e)}")
+        
+        filtered.append(table)
     
     return filtered
 
@@ -1172,12 +1295,12 @@ def process_subdataset_parallel(args):
     """并行处理单个子数据集的包装函数
     
     Args:
-        args: (subdataset_name, scene_ids, table_name, batch_size, insert_batch_size, work_dir, dsn)
+        args: (subdataset_name, scene_ids, table_name, batch_size, insert_batch_size, work_dir, dsn, metadata)
         
     Returns:
         (subdataset_name, processed_count, inserted_count, success)
     """
-    subdataset_name, scene_ids, table_name, batch_size, insert_batch_size, work_dir, dsn = args
+    subdataset_name, scene_ids, table_name, batch_size, insert_batch_size, work_dir, dsn, metadata = args
     
     try:
         # 为每个进程创建独立的数据库连接
@@ -1199,7 +1322,7 @@ def process_subdataset_parallel(args):
         
         # 处理当前子数据集的数据
         processed_count, inserted_count = process_subdataset_scenes(
-            eng, remaining_scene_ids, table_name, batch_size, insert_batch_size, sub_tracker
+            eng, remaining_scene_ids, table_name, batch_size, insert_batch_size, sub_tracker, metadata
         )
         
         print(f"  ✅ [{subdataset_name}] 完成: 处理 {processed_count} 个，插入 {inserted_count} 条记录")
@@ -1271,18 +1394,20 @@ def run_with_partitioning_parallel(input_path, batch=1000, insert_batch=1000, wo
         
         # 步骤2: 批量创建分表
         print("\n=== 步骤2: 创建分表 ===")
-        table_mapping = batch_create_tables_for_subdatasets(eng, list(scene_groups.keys()))
+        table_mapping = batch_create_tables_for_subdatasets(eng, scene_groups)
         
         # 步骤3: 并行处理每个子数据集
         print(f"\n=== 步骤3: 并行分表数据处理 ({max_workers} workers) ===")
         
         # 准备并行任务参数
         task_args = []
-        for subdataset_name, scene_ids in scene_groups.items():
+        for subdataset_name, subdataset_info in scene_groups.items():
+            scene_ids = subdataset_info['scene_ids']
+            metadata = subdataset_info.get('metadata', {})
             table_name = table_mapping[subdataset_name]
             task_args.append((
                 subdataset_name, scene_ids, table_name, 
-                batch, insert_batch, work_dir, LOCAL_DSN
+                batch, insert_batch, work_dir, LOCAL_DSN, metadata
             ))
         
         # 执行并行处理
@@ -1442,14 +1567,16 @@ def run_with_partitioning_sequential(input_path, batch=1000, insert_batch=1000, 
         
         # 步骤2: 批量创建分表
         print("\n=== 步骤2: 创建分表 ===")
-        table_mapping = batch_create_tables_for_subdatasets(eng, list(scene_groups.keys()))
+        table_mapping = batch_create_tables_for_subdatasets(eng, scene_groups)
         
         # 步骤3: 分别处理每个子数据集
         print("\n=== 步骤3: 分表数据处理 ===")
         total_processed = 0
         total_inserted = 0
         
-        for i, (subdataset_name, scene_ids) in enumerate(scene_groups.items(), 1):
+        for i, (subdataset_name, subdataset_info) in enumerate(scene_groups.items(), 1):
+            scene_ids = subdataset_info['scene_ids']
+            metadata = subdataset_info.get('metadata', {})
             if interrupted:
                 print(f"\n程序被中断，已处理 {i-1}/{len(scene_groups)} 个子数据集")
                 break
@@ -1475,7 +1602,7 @@ def run_with_partitioning_sequential(input_path, batch=1000, insert_batch=1000, 
                 
                 # 处理当前子数据集的数据
                 sub_processed, sub_inserted = process_subdataset_scenes(
-                    eng, remaining_scene_ids, table_name, batch, insert_batch, sub_tracker
+                    eng, remaining_scene_ids, table_name, batch, insert_batch, sub_tracker, metadata
                 )
                 
                 total_processed += sub_processed
@@ -1515,7 +1642,7 @@ def run_with_partitioning_sequential(input_path, batch=1000, insert_batch=1000, 
     finally:
         print(f"\n日志和进度文件保存在: {work_dir}")
 
-def process_subdataset_scenes(eng, scene_ids, table_name, batch_size, insert_batch_size, tracker):
+def process_subdataset_scenes(eng, scene_ids, table_name, batch_size, insert_batch_size, tracker, metadata=None):
     """处理单个子数据集的场景数据
     
     Args:
@@ -1525,6 +1652,7 @@ def process_subdataset_scenes(eng, scene_ids, table_name, batch_size, insert_bat
         batch_size: 处理批次大小
         insert_batch_size: 插入批次大小
         tracker: 进度跟踪器
+        metadata: 子数据集元数据，用于添加额外字段
         
     Returns:
         (processed_count, inserted_count) 元组
@@ -1594,7 +1722,7 @@ def process_subdataset_scenes(eng, scene_ids, table_name, batch_size, insert_bat
             if interrupted:
                 break
             
-            # 合并数据
+                        # 合并数据
             try:
                 merged = meta.merge(bbox_gdf, left_on='data_name', right_on='dataset_name', how='inner')
                 if merged.empty:
@@ -1602,12 +1730,37 @@ def process_subdataset_scenes(eng, scene_ids, table_name, batch_size, insert_bat
                     for token in meta.scene_token:
                         tracker.save_failed_record(token, "元数据与边界框数据无法匹配", batch_num, "data_merge")
                     continue
-                
+                    
                 print(f"    [批次 {batch_num}] 合并后得到 {len(merged)} 条记录")
+                
+                # 创建基础字段的数据
+                base_columns = ['scene_token', 'data_name', 'event_id', 'city_id', 'timestamp', 'all_good']
+                final_data = merged[base_columns].copy()
+                
+                # 添加额外字段（如果有metadata）
+                if metadata:
+                    data_type = metadata.get('data_type', 'standard')
+                    final_data['data_type'] = data_type
+                    
+                    if data_type == 'defect':
+                        # 为问题单数据添加特殊字段
+                        final_data['original_url'] = metadata.get('original_url', '')
+                        final_data['line_number'] = metadata.get('line_number', 0)
+                        
+                        # 添加其他自定义字段
+                        system_fields = {'data_type', 'original_url', 'data_name', 'line_number'}
+                        for key, value in metadata.items():
+                            if key not in system_fields and not key.startswith('data_'):
+                                final_data[key] = value
+                                
+                        print(f"    [批次 {batch_num}] 添加了问题单特定字段")
+                else:
+                    # 向后兼容：添加默认data_type
+                    final_data['data_type'] = 'standard'
                 
                 # 创建最终的GeoDataFrame
                 final_gdf = gpd.GeoDataFrame(
-                    merged[['scene_token', 'data_name', 'event_id', 'city_id', 'timestamp', 'all_good']], 
+                    final_data, 
                     geometry=merged['geometry'], 
                     crs=4326
                 )
