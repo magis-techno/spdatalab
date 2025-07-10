@@ -390,53 +390,76 @@ work_dir/
 
 ### 核心特性
 
-1. **动态表结构**：根据问题单数据的metadata自动创建表字段
-2. **灵活字段支持**：支持自定义属性字段，如priority、category等
-3. **数据类型智能推断**：自动识别字段类型（text、integer、boolean等）
-4. **视图分离**：问题单数据表默认不包含在统一视图中，避免数据混淆
-5. **统一subdataset结构**：整个问题单文件作为一个subdataset，简化管理 ⭐ **NEW**
+1. **合并架构**：⭐ **方案A优势** - 一个文件生成一个子数据集，大大减少表数量
+2. **动态表结构**：根据问题单数据的metadata自动创建表字段
+3. **灵活字段支持**：支持自定义属性字段，如priority、category等
+4. **数据类型智能推断**：自动识别字段类型（text、integer、boolean等）
+5. **视图分离**：问题单数据表默认不包含在统一视图中，避免数据混淆
+6. **场景级属性**：个别属性存储在scene_attributes中，保持数据完整性
 
-### 问题单数据集结构 ⭐ **UPDATED**
+### 数据结构示例（方案A架构）
 
-问题单数据集具有以下特点：
-- **数据类型**: `defect`
-- **子数据集**: 整个txt文件作为一个统一的子数据集
-- **场景数**: 包含文件中所有成功查询的scene_id
-- **额外字段**: 包含问题单特有的字段（如priority、severity等）
-
+#### 问题单数据集的数据结构（JSON格式）
 ```json
 {
-  "name": "critical_defects_2024",
-  "description": "2024年重要问题单数据集",
+  "name": "DefectDataset",
+  "description": "问题单数据集",
   "metadata": {
     "data_type": "defect",
-    "source_file": "defects.txt"
+    "source_file": "defect_urls.txt"
   },
   "subdatasets": [
     {
-      "name": "critical_defects_2024",
-      "obs_path": "defects.txt",
+      "name": "DefectDataset_defects",
+      "obs_path": "defect_urls.txt",
       "duplication_factor": 1,
-      "scene_count": 150,
-      "scene_ids": ["scene_abc123", "scene_def456", "scene_ghi789", "..."],
+      "scene_count": 3,
+      "scene_ids": [
+        "632c1e86c95a42c9a3b6c83257ed3f82",
+        "632c1e86c95a42c9a3b6c83257ed3f83",
+        "632c1e86c95a42c9a3b6c83257ed3f84"
+      ],
       "metadata": {
         "data_type": "defect",
-        "source_file": "defects.txt",
-        "total_urls": 200,
-        "successful_scenes": 150,
-        "priority": "high",
-        "severity": "critical"
+        "source_file": "defect_urls.txt",
+        "scene_attributes": {
+          "632c1e86c95a42c9a3b6c83257ed3f82": {
+            "original_url": "https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119535",
+            "data_name": "10000_ddi-application-667754027299119535",
+            "line_number": 1,
+            "priority": "high",
+            "category": "lane_detection"
+          },
+          "632c1e86c95a42c9a3b6c83257ed3f83": {
+            "original_url": "https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119536",
+            "data_name": "10000_ddi-application-667754027299119536", 
+            "line_number": 2,
+            "priority": "medium",
+            "category": "object_detection",
+            "severity": 3
+          },
+          "632c1e86c95a42c9a3b6c83257ed3f84": {
+            "original_url": "https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119537",
+            "data_name": "10000_ddi-application-667754027299119537",
+            "line_number": 3,
+            "priority": "low"
+          }
+        }
       }
     }
   ]
 }
 ```
 
-**与原有结构的对比**：
-- ✅ **简化管理**：从N个问题单→1个subdataset
-- ✅ **统一属性**：所有问题单的额外属性合并到一个metadata中
-- ✅ **减少表数量**：bbox模块只创建1个表，而非N个表
-- ✅ **保持完整性**：所有scene_ids统一管理，不会丢失
+#### 架构优势对比
+
+| 特性 | 旧架构（每URL一个子数据集） | 新架构（方案A） |
+|------|---------------------------|-----------------|
+| 表数量 | 100个URL → 100个表 | 100个URL → 1个表 |
+| 管理复杂度 | 高 | 低 |
+| 查询效率 | 需要多表联合查询 | 单表查询 |
+| 属性完整性 | 分散在各个子数据集中 | 统一存储在scene_attributes中 |
+| 视图管理 | 需要处理大量表 | 简化视图管理 |
 
 ### 数据表结构对比
 
@@ -498,15 +521,20 @@ https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/even
    - 第一步：通过`dataName`查询`elasticsearch_ros.ods_ddi_index002_datalake`获取`defect_id`
    - 第二步：通过`defect_id`查询`transform.ods_t_data_fragment_datalake`获取`scene_id`
 3. **属性解析**：解析URL中的额外属性（priority、category等）
-4. **数据统一收集**：将所有成功的scene_id和属性收集到一个统一的subdataset中 ⭐ **NEW**
-5. **数据集生成**：将结果保存为dataset文件（JSON/Parquet格式）
+4. **数据集生成**：**⭐ 采用合并架构**
+   - 一个文件中的所有URL合并为一个子数据集
+   - 所有scene_ids存储在子数据集的scene_ids列表中
+   - 个别属性存储在metadata的scene_attributes中
+   - 将结果保存为dataset文件（JSON/Parquet格式）
 
 #### BBox模块阶段（边界框处理）
 1. **数据集读取**：读取dataset文件，自动识别数据类型
-2. **动态字段检测**：分析metadata中的自定义字段
+2. **动态字段检测**：分析metadata中scene_attributes的所有字段
 3. **表结构创建**：根据检测到的字段动态创建表结构
 4. **边界框查询**：查询PostGIS数据库获取边界框信息
-5. **数据插入**：将标准字段和自定义字段一起插入数据库
+5. **数据插入**：
+   - 为每个场景从scene_attributes中获取对应属性
+   - 将标准字段和场景特定字段一起插入数据库
 
 ### 视图管理
 
@@ -533,9 +561,11 @@ SELECT * FROM clips_bbox_defect_dataset_2
 ### 使用建议
 
 1. **批次大小**：问题单数据建议使用较小的批次（500-1000）
-2. **并行处理**：问题单数据集适合并行处理，每个URL独立处理
-3. **错误处理**：问题单数据源可能不稳定，建议启用详细的错误跟踪
-4. **字段规划**：提前规划好额外属性字段，避免后续表结构变更
+2. **表数量控制**：⭐ **方案A优势** - 一个文件生成一个表，大大减少数据库表数量
+3. **并行处理**：问题单数据集适合并行处理，按子数据集分片处理
+4. **错误处理**：问题单数据源可能不稳定，建议启用详细的错误跟踪
+5. **字段规划**：提前规划好额外属性字段，避免后续表结构变更
+6. **属性管理**：**⭐ 新架构** - 利用scene_attributes存储场景级别的自定义属性
 
 ### 查询示例
 
@@ -1125,6 +1155,26 @@ invalid input syntax for type integer: "high"
 - 确认数值字段不包含非数值字符
 - 使用正确的分隔符格式：`url|key=value|key2=value2`
 
+**问题**：方案A架构中scene_attributes找不到场景属性
+```
+KeyError: 'scene_attributes' not found in metadata
+```
+**解决方案**：
+- 确认使用的是最新版本的DatasetManager
+- 检查数据集文件的metadata结构
+- 验证问题单数据集的构建过程是否正确
+- 确保`defect_mode=True`参数正确使用
+
+**问题**：合并后的子数据集表数量仍然很多
+```
+创建了多个问题单数据表，而不是一个
+```
+**解决方案**：
+- 确认使用的是方案A的实现版本
+- 检查是否有多个问题单文件同时处理
+- 验证每个文件是否正确合并为一个子数据集
+- 查看日志中的子数据集创建信息
+
 ## 示例脚本
 
 完整的示例脚本位于 `examples/bbox_usage_example.py`，包含：
@@ -1208,9 +1258,11 @@ python demo_parallel_commands.py
 
 ### 问题单数据集新功能
 
+- **合并架构（方案A）** ⭐ **NEW**：一个文件生成一个子数据集，大大减少表数量
 - **自动URL解析和数据库查询**（DatasetManager阶段）
 - **动态字段创建和类型推断**（BBox模块阶段）
 - **标准数据集与问题单数据集分离**
+- **场景级属性存储**：个别属性存储在scene_attributes中，保持完整性
 - **灵活的属性支持（priority、category等）**
 - **专用视图管理，避免数据混淆**
 

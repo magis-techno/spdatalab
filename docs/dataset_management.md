@@ -215,8 +215,9 @@ manager.save_dataset(dataset, "datasets/defect_dataset.json", format='json')
 
 #### 问题单数据集特点
 
+- **合并架构**：一个文件中的所有URL生成一个子数据集，减少表数量
 - **无倍增因子**：问题单数据通常不需要重复，`duplication_factor` 默认为 1
-- **丰富的元数据**：包含原始URL、数据名称、行号以及自定义属性
+- **场景级属性**：每个场景的属性存储在`scene_attributes`中，支持灵活的自定义字段
 - **数据库依赖**：需要访问Hive数据库来查询scene_id
 - **错误处理**：详细的统计信息，包括查询失败和无scene_id的情况
 
@@ -232,19 +233,43 @@ manager.save_dataset(dataset, "datasets/defect_dataset.json", format='json')
   },
   "subdatasets": [
     {
-      "name": "10000_ddi-application-667754027299119535",
-      "obs_path": "https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119535",
+      "name": "DefectDataset_defects",
+      "obs_path": "defect_urls.txt",
       "duplication_factor": 1,
-      "scene_count": 1,
-      "scene_ids": ["632c1e86c95a42c9a3b6c83257ed3f82"],
+      "scene_count": 3,
+      "scene_ids": [
+        "632c1e86c95a42c9a3b6c83257ed3f82",
+        "632c1e86c95a42c9a3b6c83257ed3f83",
+        "632c1e86c95a42c9a3b6c83257ed3f84"
+      ],
       "metadata": {
         "data_type": "defect",
-        "original_url": "https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119535",
-        "data_name": "10000_ddi-application-667754027299119535",
-        "line_number": 1,
-        "priority": "high",
-        "region": "beijing",
-        "type": "lane_change"
+        "source_file": "defect_urls.txt",
+        "scene_attributes": {
+          "632c1e86c95a42c9a3b6c83257ed3f82": {
+            "original_url": "https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119535",
+            "data_name": "10000_ddi-application-667754027299119535",
+            "line_number": 1,
+            "priority": "high",
+            "region": "beijing",
+            "type": "lane_change"
+          },
+          "632c1e86c95a42c9a3b6c83257ed3f83": {
+            "original_url": "https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119536",
+            "data_name": "10000_ddi-application-667754027299119536",
+            "line_number": 2,
+            "priority": "low",
+            "region": "shanghai",
+            "type": "intersection"
+          },
+          "632c1e86c95a42c9a3b6c83257ed3f84": {
+            "original_url": "https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/event-list-detail?dataName=10000_ddi-application-667754027299119537",
+            "data_name": "10000_ddi-application-667754027299119537",
+            "line_number": 3,
+            "priority": "medium",
+            "region": "guangzhou"
+          }
+        }
       }
     }
   ]
@@ -457,6 +482,8 @@ def choose_format(scene_count):
 - 监控查询失败率，及时处理异常URL
 - 使用扩展属性格式记录问题单的重要信息
 - 定期清理和更新问题单数据集
+- **推荐合并架构**：一个文件生成一个子数据集，减少bbox表数量
+- **场景属性管理**：利用`scene_attributes`存储场景级别的自定义信息
 
 ### 5. 性能优化
 ```python

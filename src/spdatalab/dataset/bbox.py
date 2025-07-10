@@ -683,14 +683,31 @@ def create_table_for_subdataset(eng, subdataset_name, subdataset_metadata=None, 
                     dynamic_fields.append("original_url text")
                     dynamic_fields.append("line_number integer")
                     
-                    # 添加其他自定义字段（排除系统字段）
-                    system_fields = {'data_type', 'original_url', 'data_name', 'line_number'}
-                    for key, value in subdataset_metadata.items():
-                        if key not in system_fields and not key.startswith('data_'):
-                            # 推断字段类型
-                            field_type = infer_field_type(value)
-                            dynamic_fields.append(f"{key} {field_type}")
-                            print(f"  添加动态字段: {key} ({field_type})")
+                    # 分析scene_attributes中的所有字段类型
+                    scene_attributes = subdataset_metadata.get('scene_attributes', {})
+                    all_custom_fields = set()
+                    field_types = {}
+                    
+                    for scene_attrs in scene_attributes.values():
+                        for key, value in scene_attrs.items():
+                            if key not in {'original_url', 'data_name', 'line_number'}:
+                                all_custom_fields.add(key)
+                                # 推断字段类型（取最宽泛的类型）
+                                inferred_type = infer_field_type(value)
+                                if key not in field_types:
+                                    field_types[key] = inferred_type
+                                else:
+                                    # 如果已有类型，选择更宽泛的类型
+                                    if field_types[key] == 'text' or inferred_type == 'text':
+                                        field_types[key] = 'text'
+                                    elif field_types[key] == 'numeric' or inferred_type == 'numeric':
+                                        field_types[key] = 'numeric'
+                    
+                    # 添加动态字段
+                    for field_name in sorted(all_custom_fields):
+                        field_type = field_types.get(field_name, 'text')
+                        dynamic_fields.append(f"{field_name} {field_type}")
+                        print(f"  添加动态字段: {field_name} ({field_type})")
                 else:
                     # 标准数据集，添加data_type标识
                     dynamic_fields.append("data_type text DEFAULT 'standard'")
@@ -1743,17 +1760,24 @@ def process_subdataset_scenes(eng, scene_ids, table_name, batch_size, insert_bat
                     final_data['data_type'] = data_type
                     
                     if data_type == 'defect':
-                        # 为问题单数据添加特殊字段
-                        final_data['original_url'] = metadata.get('original_url', '')
-                        final_data['line_number'] = metadata.get('line_number', 0)
+                        # 获取scene_attributes
+                        scene_attributes = metadata.get('scene_attributes', {})
                         
-                        # 添加其他自定义字段
-                        system_fields = {'data_type', 'original_url', 'data_name', 'line_number'}
-                        for key, value in metadata.items():
-                            if key not in system_fields and not key.startswith('data_'):
-                                final_data[key] = value
-                                
-                        print(f"    [批次 {batch_num}] 添加了问题单特定字段")
+                        # 为每个场景添加特定属性
+                        for idx, scene_token in enumerate(final_data['scene_token']):
+                            scene_attrs = scene_attributes.get(scene_token, {})
+                            
+                            # 添加基础问题单字段
+                            final_data.loc[idx, 'original_url'] = scene_attrs.get('original_url', '')
+                            final_data.loc[idx, 'line_number'] = scene_attrs.get('line_number', 0)
+                            
+                            # 添加其他自定义字段
+                            system_fields = {'data_type', 'original_url', 'data_name', 'line_number'}
+                            for key, value in scene_attrs.items():
+                                if key not in system_fields and not key.startswith('data_'):
+                                    final_data.loc[idx, key] = value
+                                    
+                        print(f"    [批次 {batch_num}] 添加了问题单特定字段，包含 {len(scene_attributes)} 个场景的属性")
                 else:
                     # 向后兼容：添加默认data_type
                     final_data['data_type'] = 'standard'
