@@ -222,6 +222,7 @@ def fetch_trajectory_points(data_name: str) -> pd.DataFrame:
             ST_Y(point_lla) as latitude
         FROM {POINT_TABLE}
         WHERE dataset_name = :data_name
+        AND point_lla IS NOT NULL
         ORDER BY timestamp ASC
     """)
     
@@ -281,34 +282,32 @@ def build_trajectory(scene_id: str, data_name: str, points_df: pd.DataFrame) -> 
         stats = {
             'scene_id': scene_id,
             'data_name': data_name,
-            'point_count': len(points_df),
             'start_time': points_df['timestamp'].min(),
             'end_time': points_df['timestamp'].max(),
             'duration': points_df['timestamp'].max() - points_df['timestamp'].min(),
             'geometry': trajectory_geom
         }
         
-        # 速度统计
+        # 速度统计（保留2位小数）
         if 'twist_linear' in points_df.columns:
             speed_data = points_df['twist_linear'].dropna()
             if len(speed_data) > 0:
                 stats.update({
-                    'avg_speed': float(speed_data.mean()),
-                    'max_speed': float(speed_data.max()),
-                    'min_speed': float(speed_data.min()),
-                    'std_speed': float(speed_data.std()) if len(speed_data) > 1 else 0.0
+                    'avg_speed': round(float(speed_data.mean()), 2),
+                    'max_speed': round(float(speed_data.max()), 2),
+                    'min_speed': round(float(speed_data.min()), 2),
+                    'std_speed': round(float(speed_data.std()) if len(speed_data) > 1 else 0.0, 2)
                 })
         
-        # AVP统计
+        # AVP统计（保留3位小数）
         if 'avp_flag' in points_df.columns:
             avp_data = points_df['avp_flag'].dropna()
             if len(avp_data) > 0:
                 stats.update({
-                    'avp_point_count': int((avp_data == 1).sum()),
-                    'avp_ratio': float((avp_data == 1).mean())
+                    'avp_ratio': round(float((avp_data == 1).mean()), 3)
                 })
         
-        logger.debug(f"构建轨迹: {scene_id} ({data_name}), 点数: {stats['point_count']}")
+        logger.debug(f"构建轨迹: {scene_id} ({data_name}), 点数: {len(points_df)}")
         return stats
         
     except Exception as e:
@@ -351,16 +350,14 @@ def create_trajectory_table(eng, table_name: str) -> bool:
                     id serial PRIMARY KEY,
                     scene_id text NOT NULL,
                     data_name text NOT NULL,
-                    point_count integer,
                     start_time bigint,
                     end_time bigint,
                     duration bigint,
-                    avg_speed numeric,
-                    max_speed numeric,
-                    min_speed numeric,
-                    std_speed numeric,
-                    avp_point_count integer,
-                    avp_ratio numeric,
+                    avg_speed numeric(8,2),
+                    max_speed numeric(8,2),
+                    min_speed numeric(8,2),
+                    std_speed numeric(8,2),
+                    avp_ratio numeric(5,3),
                     created_at timestamp DEFAULT CURRENT_TIMESTAMP
                 );
             """)
@@ -455,8 +452,8 @@ def detect_avp_changes(points_df: pd.DataFrame) -> List[Dict]:
         # 确保数据按时间排序
         points_df = points_df.sort_values('timestamp')
         
-        # 填充缺失值，默认为0
-        points_df['avp_flag'] = points_df['avp_flag'].fillna(0)
+        # 填充缺失值，默认为0，确保类型为整数
+        points_df['avp_flag'] = points_df['avp_flag'].fillna(0).astype(int)
         
         # 检测变化点
         changes = []
@@ -468,12 +465,12 @@ def detect_avp_changes(points_df: pd.DataFrame) -> List[Dict]:
             # 检测状态变化
             if prev_avp is not None and prev_avp != current_avp:
                 change_event = {
-                    'timestamp': row['timestamp'],
-                    'longitude': row['longitude'],
-                    'latitude': row['latitude'],
+                    'timestamp': int(row['timestamp']),
+                    'longitude': float(row['longitude']),
+                    'latitude': float(row['latitude']),
                     'event_type': 'avp_change',
-                    'from_value': prev_avp,
-                    'to_value': current_avp,
+                    'from_value': float(prev_avp),  # 明确转换为float
+                    'to_value': float(current_avp),  # 明确转换为float
                     'description': f"AVP状态从{prev_avp}变为{current_avp}"
                 }
                 changes.append(change_event)
@@ -533,13 +530,13 @@ def detect_speed_spikes(points_df: pd.DataFrame, threshold_std: float = 2.0) -> 
             # 判断是否为突变点
             if z_score > threshold_std:
                 spike_event = {
-                    'timestamp': row['timestamp'],
-                    'longitude': row['longitude'],
-                    'latitude': row['latitude'],
+                    'timestamp': int(row['timestamp']),
+                    'longitude': float(row['longitude']),
+                    'latitude': float(row['latitude']),
                     'event_type': 'speed_spike',
-                    'speed_value': current_speed,
-                    'speed_mean': speed_mean,
-                    'z_score': z_score,
+                    'speed_value': round(float(current_speed), 2),
+                    'speed_mean': round(float(speed_mean), 2),
+                    'z_score': round(float(z_score), 2),
                     'description': f"速度突变: {current_speed:.2f} (Z-score: {z_score:.2f})"
                 }
                 spikes.append(spike_event)
@@ -660,12 +657,12 @@ def insert_events_data(eng, table_name: str, scene_id: str, events_data: List[Di
             
             # 根据事件类型添加特定字段
             if event['event_type'] == 'avp_change':
-                row['from_value'] = event['from_value']
-                row['to_value'] = event['to_value']
+                row['from_value'] = event.get('from_value')
+                row['to_value'] = event.get('to_value')
             elif event['event_type'] == 'speed_spike':
-                row['speed_value'] = event['speed_value']
-                row['speed_mean'] = event['speed_mean']
-                row['z_score'] = event['z_score']
+                row['speed_value'] = event.get('speed_value')
+                row['speed_mean'] = event.get('speed_mean')
+                row['z_score'] = event.get('z_score')
             
             gdf_data.append(row)
             
