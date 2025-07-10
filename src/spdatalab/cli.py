@@ -42,30 +42,49 @@ def generate_scene_list(index_file: str, output: str):
 @click.option('--description', default='', help='数据集描述')
 @click.option('--output', required=True, help='输出文件路径')
 @click.option('--format', type=click.Choice(['json', 'parquet']), default='json', help='输出格式')
-def build_dataset(index_file: str, dataset_name: str, description: str, output: str, format: str):
+@click.option('--defect-mode', is_flag=True, help='启用问题单模式（处理问题单URL）')
+def build_dataset(index_file: str, dataset_name: str, description: str, output: str, format: str, defect_mode: bool):
     """构建数据集结构。
     
     从索引文件读取数据源信息，构建数据集结构并保存。
     
+    支持两种模式：
+    1. 标准模式：处理OBS路径格式的训练数据（默认）
+    2. 问题单模式：处理问题单URL数据（使用--defect-mode）
+    
     Args:
-        index_file: 索引文件路径，每行格式为 obs_path@duplicateN
+        index_file: 索引文件路径
+                   标准模式：每行格式为 obs_path@duplicateN
+                   问题单模式：每行为问题单URL或URL|属性
         dataset_name: 数据集名称
         description: 数据集描述
         output: 输出文件路径，保存为指定格式
         format: 输出格式，json 或 parquet
+        defect_mode: 是否启用问题单处理模式
     """
     setup_logging()
     
     try:
-        manager = DatasetManager()
+        manager = DatasetManager(defect_mode=defect_mode)
         dataset = manager.build_dataset_from_index(index_file, dataset_name, description)
         manager.save_dataset(dataset, output, format=format)
         
         click.echo(f"✅ 数据集构建完成: {dataset_name}")
+        click.echo(f"   - 处理模式: {'问题单模式' if defect_mode else '标准模式'}")
         click.echo(f"   - 子数据集数量: {len(dataset.subdatasets)}")
         click.echo(f"   - 总唯一场景数: {dataset.total_unique_scenes}")
         click.echo(f"   - 总场景数(含倍增): {dataset.total_scenes}")
         click.echo(f"   - 已保存到: {output} ({format}格式)")
+        
+        if defect_mode:
+            # 显示问题单处理统计
+            stats = manager.stats
+            click.echo(f"   - 成功处理: {stats['processed_files']} 个URL")
+            click.echo(f"   - 失败处理: {stats['failed_files']} 个URL")
+            if stats['defect_query_failed'] > 0:
+                click.echo(f"   - 数据库查询失败: {stats['defect_query_failed']} 个")
+            if stats['defect_no_scene'] > 0:
+                click.echo(f"   - 无scene_id: {stats['defect_no_scene']} 个")
         
         if format == 'parquet':
             click.echo(f"   - 推荐安装: pip install pandas pyarrow")
@@ -276,15 +295,22 @@ def list_bbox_tables():
 @click.option('--buffer-meters', type=int, default=50, help='缓冲区大小（米）')
 @click.option('--precise-buffer', is_flag=True, help='使用精确的米级缓冲区')
 @click.option('--skip-bbox', is_flag=True, help='跳过边界框处理')
+@click.option('--defect-mode', is_flag=True, help='启用问题单模式（处理问题单URL）')
 def build_dataset_with_bbox(index_file: str, dataset_name: str, description: str, output: str, 
                            format: str, batch: int, insert_batch: int, buffer_meters: int, 
-                           precise_buffer: bool, skip_bbox: bool):
+                           precise_buffer: bool, skip_bbox: bool, defect_mode: bool):
     """构建数据集并处理边界框（完整工作流程）。
     
     从索引文件构建数据集，保存后自动处理边界框数据，提供一键式完整工作流程。
     
+    支持两种模式：
+    1. 标准模式：处理OBS路径格式的训练数据（默认）
+    2. 问题单模式：处理问题单URL数据（使用--defect-mode）
+    
     Args:
-        index_file: 索引文件路径，每行格式为 obs_path@duplicateN
+        index_file: 索引文件路径
+                   标准模式：每行格式为 obs_path@duplicateN
+                   问题单模式：每行为问题单URL或URL|属性
         dataset_name: 数据集名称
         description: 数据集描述
         output: 输出数据集文件路径
@@ -294,13 +320,15 @@ def build_dataset_with_bbox(index_file: str, dataset_name: str, description: str
         buffer_meters: 缓冲区大小（米）
         precise_buffer: 是否使用精确的米级缓冲区
         skip_bbox: 是否跳过边界框处理
+        defect_mode: 是否启用问题单处理模式
     """
     setup_logging()
     
     try:
         # 步骤1：构建数据集
         click.echo("=== 步骤1: 构建数据集 ===")
-        manager = DatasetManager()
+        click.echo(f"   - 处理模式: {'问题单模式' if defect_mode else '标准模式'}")
+        manager = DatasetManager(defect_mode=defect_mode)
         dataset = manager.build_dataset_from_index(index_file, dataset_name, description)
         
         # 显示数据集统计信息
