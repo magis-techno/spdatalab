@@ -120,39 +120,99 @@ class DatasetManager:
         try:
             # 第一步：通过data_name查询defect_id
             defect_id = None
+            
+            # 尝试参数化查询
             sql1 = "SELECT defect_id FROM elasticsearch_ros.ods_ddi_index002_datalake WHERE id = %(data_name)s"
             
-            with hive_cursor() as cur:
-                cur.execute(sql1, {"data_name": data_name})
-                result = cur.fetchone()
-                if result:
-                    defect_id = result[0]
-                    logger.debug(f"查询到defect_id: {data_name} -> {defect_id}")
-                else:
-                    logger.warning(f"未找到defect_id: {data_name}")
-                    self.stats['defect_query_failed'] += 1
-                    return None
+            # 添加调试信息
+            logger.info(f"执行第一步查询 - data_name: {data_name}")
+            logger.info(f"SQL语句: {sql1}")
+            logger.info(f"参数: {{'data_name': '{data_name}'}}")
+            
+            try:
+                with hive_cursor() as cur:
+                    cur.execute(sql1, {"data_name": data_name})
+                    result = cur.fetchone()
+                    logger.info(f"第一步查询结果: {result}")
+                    
+                    if result:
+                        defect_id = result[0]
+                        logger.info(f"查询到defect_id: {data_name} -> {defect_id}")
+                    else:
+                        logger.warning(f"未找到defect_id: {data_name}")
+                        self.stats['defect_query_failed'] += 1
+                        return None
+            except Exception as param_e:
+                logger.warning(f"参数化查询失败，尝试字符串格式化查询: {str(param_e)}")
+                
+                # 备用方法：使用字符串格式化（注意SQL注入风险，仅用于调试）
+                sql1_alt = f"SELECT defect_id FROM elasticsearch_ros.ods_ddi_index002_datalake WHERE id = '{data_name}'"
+                logger.info(f"备用SQL语句: {sql1_alt}")
+                
+                with hive_cursor() as cur:
+                    cur.execute(sql1_alt)
+                    result = cur.fetchone()
+                    logger.info(f"第一步备用查询结果: {result}")
+                    
+                    if result:
+                        defect_id = result[0]
+                        logger.info(f"查询到defect_id: {data_name} -> {defect_id}")
+                    else:
+                        logger.warning(f"未找到defect_id: {data_name}")
+                        self.stats['defect_query_failed'] += 1
+                        return None
             
             # 第二步：通过defect_id查询scene_id
             if defect_id:
                 sql2 = "SELECT id FROM transform.ods_t_data_fragment_datalake WHERE origin_source_id = %(defect_id)s"
                 
-                with hive_cursor() as cur:
-                    cur.execute(sql2, {"defect_id": defect_id})
-                    result = cur.fetchone()
-                    if result:
-                        scene_id = result[0]
-                        logger.debug(f"查询到scene_id: {defect_id} -> {scene_id}")
-                        return scene_id
-                    else:
-                        logger.warning(f"未找到scene_id: {defect_id}")
-                        self.stats['defect_no_scene'] += 1
-                        return None
+                # 添加调试信息
+                logger.info(f"执行第二步查询 - defect_id: {defect_id}")
+                logger.info(f"SQL语句: {sql2}")
+                logger.info(f"参数: {{'defect_id': '{defect_id}'}}")
+                
+                try:
+                    with hive_cursor() as cur:
+                        cur.execute(sql2, {"defect_id": defect_id})
+                        result = cur.fetchone()
+                        logger.info(f"第二步查询结果: {result}")
+                        
+                        if result:
+                            scene_id = result[0]
+                            logger.info(f"查询到scene_id: {defect_id} -> {scene_id}")
+                            return scene_id
+                        else:
+                            logger.warning(f"未找到scene_id: {defect_id}")
+                            self.stats['defect_no_scene'] += 1
+                            return None
+                except Exception as param_e:
+                    logger.warning(f"参数化查询失败，尝试字符串格式化查询: {str(param_e)}")
+                    
+                    # 备用方法：使用字符串格式化
+                    sql2_alt = f"SELECT id FROM transform.ods_t_data_fragment_datalake WHERE origin_source_id = '{defect_id}'"
+                    logger.info(f"备用SQL语句: {sql2_alt}")
+                    
+                    with hive_cursor() as cur:
+                        cur.execute(sql2_alt)
+                        result = cur.fetchone()
+                        logger.info(f"第二步备用查询结果: {result}")
+                        
+                        if result:
+                            scene_id = result[0]
+                            logger.info(f"查询到scene_id: {defect_id} -> {scene_id}")
+                            return scene_id
+                        else:
+                            logger.warning(f"未找到scene_id: {defect_id}")
+                            self.stats['defect_no_scene'] += 1
+                            return None
             
             return None
             
         except Exception as e:
             logger.error(f"查询问题单数据失败: {data_name}, 错误: {str(e)}")
+            logger.error(f"异常详情: {type(e).__name__}: {str(e)}")
+            import traceback
+            logger.error(f"异常堆栈: {traceback.format_exc()}")
             self.stats['defect_query_failed'] += 1
             return None
     
