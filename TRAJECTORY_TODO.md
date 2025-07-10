@@ -227,6 +227,34 @@ python -m spdatalab.dataset.trajectory \
 - from_value, to_value, speed_value, speed_mean, z_score
 - description, geometry (Point), created_at
 
+### 2025-01-XX - 重要修复
+- [x] **修复数据查询逻辑错误**
+  - [x] 修复轨迹点查询：改为基于data_name而非scene_id查询
+  - [x] 添加scene_id到data_name的映射查询功能
+  - [x] 支持dataset文件输入，自动解析data_name信息
+  - [x] 添加批量数据库查询优化
+
+- [x] **增强输入支持**
+  - [x] 支持多种输入格式：.txt, .json, .parquet
+  - [x] 智能检测输入文件类型
+  - [x] Dataset文件支持（包括问题单数据集）
+  - [x] 自动处理缺失data_name的情况
+
+- [x] **数据库结构完善**
+  - [x] 轨迹表添加data_name字段
+  - [x] 添加data_name索引
+  - [x] 更新CLI帮助文档
+
+### 架构改进
+**修复前问题**：
+- 直接用scene_id查询轨迹点数据，但实际轨迹点表使用data_name作为主键
+- 不支持dataset文件输入，无法利用现有的数据集结构
+
+**修复后优势**：
+- 正确的数据查询流程：scene_id → data_name → 轨迹点数据
+- 支持多种输入格式，兼容现有数据集工作流
+- 自动处理映射关系，用户体验更好
+
 ### 进展更新
 *在这里记录开发进展和重要决策*
 

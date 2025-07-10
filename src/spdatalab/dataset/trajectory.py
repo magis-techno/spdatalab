@@ -46,8 +46,64 @@ def setup_signal_handlers():
     signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
     signal.signal(signal.SIGTERM, signal_handler)  # 终止信号
 
-def load_scene_ids(file_path: str) -> List[str]:
-    """从文件加载scene_id列表。
+def load_dataset_scene_mappings(dataset_file: str) -> pd.DataFrame:
+    """从dataset文件加载scene_id和data_name的映射。
+    
+    Args:
+        dataset_file: dataset文件路径（JSON或Parquet格式）
+        
+    Returns:
+        包含scene_id和data_name映射的DataFrame
+    """
+    try:
+        # 使用dataset_manager加载数据集
+        from ..dataset.dataset_manager import DatasetManager
+        
+        dataset_manager = DatasetManager()
+        dataset = dataset_manager.load_dataset(dataset_file)
+        
+        mappings = []
+        for subdataset in dataset.subdatasets:
+            # 检查是否有scene_attributes（问题单数据集）
+            scene_attributes = subdataset.metadata.get('scene_attributes', {})
+            
+            for scene_id in subdataset.scene_ids:
+                if scene_attributes and scene_id in scene_attributes:
+                    # 从scene_attributes中获取data_name
+                    data_name = scene_attributes[scene_id].get('data_name')
+                    if data_name:
+                        mappings.append({
+                            'scene_id': scene_id,
+                            'data_name': data_name,
+                            'subdataset_name': subdataset.name
+                        })
+                        logger.debug(f"从dataset获取映射: {scene_id} -> {data_name}")
+                    else:
+                        # 没有data_name，需要后续查询数据库
+                        mappings.append({
+                            'scene_id': scene_id,
+                            'data_name': None,
+                            'subdataset_name': subdataset.name
+                        })
+                else:
+                    # 标准数据集，没有data_name，需要查询数据库
+                    mappings.append({
+                        'scene_id': scene_id,
+                        'data_name': None,
+                        'subdataset_name': subdataset.name
+                    })
+        
+        result_df = pd.DataFrame(mappings)
+        logger.info(f"从dataset文件加载了 {len(result_df)} 个scene_id映射")
+        
+        return result_df
+        
+    except Exception as e:
+        logger.error(f"加载dataset文件失败: {dataset_file}, 错误: {str(e)}")
+        raise
+
+def load_scene_ids_from_text(file_path: str) -> List[str]:
+    """从文本文件加载scene_id列表。
     
     Args:
         file_path: 文件路径，支持txt格式
@@ -84,11 +140,72 @@ def load_scene_ids(file_path: str) -> List[str]:
         logger.error(f"加载scene_id文件失败: {file_path}, 错误: {str(e)}")
         raise
 
-def fetch_trajectory_points(scene_id: str) -> pd.DataFrame:
-    """查询单个场景的轨迹点数据。
+def load_scene_data_mappings(file_path: str) -> pd.DataFrame:
+    """智能加载scene_id和data_name映射，自动检测文件格式。
     
     Args:
-        scene_id: 场景ID
+        file_path: 文件路径
+        
+    Returns:
+        包含scene_id和data_name映射的DataFrame
+    """
+    file_path = Path(file_path)
+    
+    # 检测是否为dataset文件格式
+    if file_path.suffix.lower() in ['.json', '.parquet']:
+        try:
+            # 尝试作为dataset文件加载
+            mappings_df = load_dataset_scene_mappings(str(file_path))
+            logger.info(f"识别为dataset文件格式: {file_path}")
+            return mappings_df
+        except Exception as e:
+            logger.warning(f"作为dataset文件加载失败: {str(e)}")
+            # 如果失败，尝试作为scene_id列表处理
+    
+    # 作为简单的scene_id列表处理
+    scene_ids = load_scene_ids_from_text(str(file_path))
+    mappings_df = pd.DataFrame({
+        'scene_id': scene_ids,
+        'data_name': [None] * len(scene_ids),  # 需要后续查询数据库
+        'subdataset_name': ['unknown'] * len(scene_ids)
+    })
+    
+    logger.info(f"识别为scene_id列表格式: {file_path}")
+    return mappings_df
+
+def fetch_data_names_from_scene_ids(scene_ids: List[str]) -> pd.DataFrame:
+    """根据scene_id批量查询对应的data_name。
+    
+    Args:
+        scene_ids: 场景ID列表
+        
+    Returns:
+        包含scene_id和data_name映射的DataFrame
+    """
+    if not scene_ids:
+        return pd.DataFrame()
+    
+    try:
+        sql = ("SELECT id AS scene_id, origin_name AS data_name "
+               "FROM transform.ods_t_data_fragment_datalake WHERE id IN %(tok)s")
+        
+        with hive_cursor() as cur:
+            cur.execute(sql, {"tok": tuple(scene_ids)})
+            cols = [d[0] for d in cur.description]
+            result_df = pd.DataFrame(cur.fetchall(), columns=cols)
+            
+        logger.debug(f"查询到 {len(result_df)} 个scene_id对应的data_name")
+        return result_df
+        
+    except Exception as e:
+        logger.error(f"查询scene_id到data_name映射失败: {str(e)}")
+        return pd.DataFrame()
+
+def fetch_trajectory_points(data_name: str) -> pd.DataFrame:
+    """查询单个data_name的轨迹点数据。
+    
+    Args:
+        data_name: 数据名称（不是scene_id）
         
     Returns:
         包含轨迹点信息的DataFrame
@@ -104,17 +221,17 @@ def fetch_trajectory_points(scene_id: str) -> pd.DataFrame:
             ST_X(point_lla) as longitude,
             ST_Y(point_lla) as latitude
         FROM {POINT_TABLE}
-        WHERE dataset_name = :scene_id
+        WHERE dataset_name = :data_name
         ORDER BY timestamp ASC
     """)
     
     try:
         eng = create_engine(LOCAL_DSN, future=True)
         with eng.connect() as conn:
-            result = conn.execute(sql, {"scene_id": scene_id})
+            result = conn.execute(sql, {"data_name": data_name})
             
             if result.rowcount == 0:
-                logger.warning(f"未找到scene_id的轨迹数据: {scene_id}")
+                logger.warning(f"未找到data_name的轨迹数据: {data_name}")
                 return pd.DataFrame()
             
             # 获取列名
@@ -123,18 +240,20 @@ def fetch_trajectory_points(scene_id: str) -> pd.DataFrame:
             
             # 创建DataFrame
             df = pd.DataFrame(rows, columns=columns)
-            logger.debug(f"查询到 {len(df)} 个轨迹点: {scene_id}")
+            logger.debug(f"查询到 {len(df)} 个轨迹点: {data_name}")
             
             return df
             
     except Exception as e:
-        logger.error(f"查询轨迹点失败: {scene_id}, 错误: {str(e)}")
+        logger.error(f"查询轨迹点失败: {data_name}, 错误: {str(e)}")
         return pd.DataFrame()
 
-def build_trajectory(points_df: pd.DataFrame) -> Dict:
+def build_trajectory(scene_id: str, data_name: str, points_df: pd.DataFrame) -> Dict:
     """从轨迹点构建轨迹线几何和统计信息。
     
     Args:
+        scene_id: 场景ID
+        data_name: 数据名称
         points_df: 轨迹点DataFrame
         
     Returns:
@@ -154,13 +273,14 @@ def build_trajectory(points_df: pd.DataFrame) -> Dict:
             logger.warning(f"轨迹点数量不足，无法构建轨迹线: {len(coordinates)}")
             return {}
         
-        # 构建LineString几何（在数据库中进行）
+        # 构建LineString几何
         from shapely.geometry import LineString
         trajectory_geom = LineString(coordinates)
         
         # 计算统计信息
         stats = {
-            'scene_id': points_df['dataset_name'].iloc[0],
+            'scene_id': scene_id,
+            'data_name': data_name,
             'point_count': len(points_df),
             'start_time': points_df['timestamp'].min(),
             'end_time': points_df['timestamp'].max(),
@@ -188,11 +308,11 @@ def build_trajectory(points_df: pd.DataFrame) -> Dict:
                     'avp_ratio': float((avp_data == 1).mean())
                 })
         
-        logger.debug(f"构建轨迹: {stats['scene_id']}, 点数: {stats['point_count']}")
+        logger.debug(f"构建轨迹: {scene_id} ({data_name}), 点数: {stats['point_count']}")
         return stats
         
     except Exception as e:
-        logger.error(f"构建轨迹失败: {str(e)}")
+        logger.error(f"构建轨迹失败: {scene_id} ({data_name}), 错误: {str(e)}")
         return {}
 
 def create_trajectory_table(eng, table_name: str) -> bool:
@@ -230,6 +350,7 @@ def create_trajectory_table(eng, table_name: str) -> bool:
                 CREATE TABLE {table_name} (
                     id serial PRIMARY KEY,
                     scene_id text NOT NULL,
+                    data_name text NOT NULL,
                     point_count integer,
                     start_time bigint,
                     end_time bigint,
@@ -253,6 +374,7 @@ def create_trajectory_table(eng, table_name: str) -> bool:
             index_sql = text(f"""
                 CREATE INDEX idx_{table_name}_geometry ON {table_name} USING GIST(geometry);
                 CREATE INDEX idx_{table_name}_scene_id ON {table_name}(scene_id);
+                CREATE INDEX idx_{table_name}_data_name ON {table_name}(data_name);
                 CREATE INDEX idx_{table_name}_start_time ON {table_name}(start_time);
             """)
             
@@ -567,13 +689,13 @@ def insert_events_data(eng, table_name: str, scene_id: str, events_data: List[Di
         logger.error(f"插入变化点数据失败: {str(e)}")
         return 0
 
-def process_scene_ids(scene_ids: List[str], table_name: str, 
-                     batch_size: int = 100, detect_avp: bool = False, 
-                     detect_speed: bool = False, speed_threshold: float = 2.0) -> Dict:
-    """处理场景ID列表，生成轨迹数据。
+def process_scene_mappings(mappings_df: pd.DataFrame, table_name: str, 
+                          batch_size: int = 100, detect_avp: bool = False, 
+                          detect_speed: bool = False, speed_threshold: float = 2.0) -> Dict:
+    """处理scene_id和data_name映射，生成轨迹数据。
     
     Args:
-        scene_ids: 场景ID列表
+        mappings_df: 包含scene_id和data_name映射的DataFrame
         table_name: 目标表名
         batch_size: 批处理大小
         detect_avp: 是否检测AVP变化点
@@ -586,11 +708,12 @@ def process_scene_ids(scene_ids: List[str], table_name: str,
     setup_signal_handlers()
     
     stats = {
-        'total_scenes': len(scene_ids),
+        'total_scenes': len(mappings_df),
         'processed_scenes': 0,
         'successful_trajectories': 0,
         'failed_scenes': 0,
         'empty_scenes': 0,
+        'missing_data_names': 0,
         'total_avp_changes': 0,
         'total_speed_spikes': 0,
         'start_time': datetime.now()
@@ -598,6 +721,32 @@ def process_scene_ids(scene_ids: List[str], table_name: str,
     
     # 创建数据库连接
     eng = create_engine(LOCAL_DSN, future=True)
+    
+    # 查询缺失的data_name
+    missing_data_names = mappings_df[mappings_df['data_name'].isna()]
+    if len(missing_data_names) > 0:
+        logger.info(f"需要查询 {len(missing_data_names)} 个scene_id对应的data_name")
+        
+        # 批量查询data_name
+        scene_ids_to_query = missing_data_names['scene_id'].tolist()
+        db_mappings = fetch_data_names_from_scene_ids(scene_ids_to_query)
+        
+        if not db_mappings.empty:
+            # 更新mappings_df中的data_name
+            for idx, row in db_mappings.iterrows():
+                scene_id = row['scene_id']
+                data_name = row['data_name']
+                mask = (mappings_df['scene_id'] == scene_id) & (mappings_df['data_name'].isna())
+                mappings_df.loc[mask, 'data_name'] = data_name
+                logger.debug(f"更新映射: {scene_id} -> {data_name}")
+        else:
+            logger.warning("数据库查询未返回任何data_name映射")
+    
+    # 统计仍然缺失data_name的记录
+    still_missing = mappings_df[mappings_df['data_name'].isna()]
+    if len(still_missing) > 0:
+        stats['missing_data_names'] = len(still_missing)
+        logger.warning(f"仍有 {len(still_missing)} 个scene_id无法获取data_name，将跳过处理")
     
     # 创建轨迹表
     if not create_trajectory_table(eng, table_name):
@@ -614,23 +763,29 @@ def process_scene_ids(scene_ids: List[str], table_name: str,
     # 批量处理
     trajectory_batch = []
     
-    for i, scene_id in enumerate(scene_ids):
+    # 过滤出有效的映射（有data_name的记录）
+    valid_mappings = mappings_df[mappings_df['data_name'].notna()]
+    
+    for i, (idx, row) in enumerate(valid_mappings.iterrows()):
         if interrupted:
             logger.info("处理被中断")
             break
         
-        logger.info(f"处理场景 [{i+1}/{len(scene_ids)}]: {scene_id}")
+        scene_id = row['scene_id']
+        data_name = row['data_name']
+        
+        logger.info(f"处理场景 [{i+1}/{len(valid_mappings)}]: {scene_id} ({data_name})")
         
         # 查询轨迹点
-        points_df = fetch_trajectory_points(scene_id)
+        points_df = fetch_trajectory_points(data_name)
         
         if points_df.empty:
             stats['empty_scenes'] += 1
-            logger.warning(f"场景无轨迹数据: {scene_id}")
+            logger.warning(f"data_name无轨迹数据: {data_name}")
             continue
         
         # 构建轨迹
-        trajectory = build_trajectory(points_df)
+        trajectory = build_trajectory(scene_id, data_name, points_df)
         
         if trajectory:
             trajectory_batch.append(trajectory)
@@ -655,7 +810,7 @@ def process_scene_ids(scene_ids: List[str], table_name: str,
                 logger.debug(f"场景 {scene_id} 插入 {inserted_events} 个变化点")
         else:
             stats['failed_scenes'] += 1
-            logger.warning(f"轨迹构建失败: {scene_id}")
+            logger.warning(f"轨迹构建失败: {scene_id} ({data_name})")
         
         stats['processed_scenes'] += 1
         
@@ -679,8 +834,21 @@ def process_scene_ids(scene_ids: List[str], table_name: str,
 
 def main():
     """主函数，CLI入口点"""
-    parser = argparse.ArgumentParser(description='轨迹生成模块')
-    parser.add_argument('--input', required=True, help='输入的scene_id列表文件')
+    parser = argparse.ArgumentParser(
+        description='轨迹生成模块 - 从scene_id生成连续轨迹线',
+        epilog="""
+支持的输入格式:
+  1. 文本文件 (.txt): 每行一个scene_id
+  2. Dataset文件 (.json/.parquet): 包含scene_id和data_name映射的数据集文件
+  
+示例:
+  python -m spdatalab.dataset.trajectory --input scenes.txt --table my_trajectories
+  python -m spdatalab.dataset.trajectory --input dataset.json --table my_trajectories --detect-avp --detect-speed
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument('--input', required=True, 
+                       help='输入文件：scene_id列表(.txt)或dataset文件(.json/.parquet)')
     parser.add_argument('--table', required=True, help='输出的轨迹表名')
     parser.add_argument('--batch-size', type=int, default=100, help='批处理大小')
     parser.add_argument('--detect-avp', action='store_true', help='检测AVP变化点')
@@ -698,12 +866,12 @@ def main():
     )
     
     try:
-        # 加载scene_id列表
-        logger.info(f"加载scene_id列表: {args.input}")
-        scene_ids = load_scene_ids(args.input)
+        # 加载scene_id和data_name映射
+        logger.info(f"加载输入文件: {args.input}")
+        mappings_df = load_scene_data_mappings(args.input)
         
-        if not scene_ids:
-            logger.error("未加载到任何scene_id")
+        if mappings_df.empty:
+            logger.error("未加载到任何scene_id映射")
             return 1
         
         # 输出配置信息
@@ -715,10 +883,17 @@ def main():
         if args.detect_speed:
             logger.info(f"启用速度突变检测 (阈值: {args.speed_threshold}σ)")
         
+        # 输出映射统计
+        total_mappings = len(mappings_df)
+        pre_filled_data_names = mappings_df['data_name'].notna().sum()
+        logger.info(f"总计映射: {total_mappings} 个")
+        logger.info(f"已有data_name: {pre_filled_data_names} 个")
+        logger.info(f"需查询data_name: {total_mappings - pre_filled_data_names} 个")
+        
         # 处理轨迹生成
-        logger.info(f"开始处理 {len(scene_ids)} 个场景")
-        stats = process_scene_ids(
-            scene_ids, args.table, args.batch_size,
+        logger.info(f"开始处理 {total_mappings} 个场景")
+        stats = process_scene_mappings(
+            mappings_df, args.table, args.batch_size,
             detect_avp=args.detect_avp,
             detect_speed=args.detect_speed,
             speed_threshold=args.speed_threshold
@@ -731,6 +906,9 @@ def main():
         logger.info(f"成功轨迹数: {stats['successful_trajectories']}")
         logger.info(f"失败场景数: {stats['failed_scenes']}")
         logger.info(f"空场景数: {stats['empty_scenes']}")
+        
+        if stats.get('missing_data_names', 0) > 0:
+            logger.info(f"缺失data_name数: {stats['missing_data_names']}")
         
         # 变化点统计
         if args.detect_avp:
