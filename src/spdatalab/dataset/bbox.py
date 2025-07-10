@@ -681,7 +681,6 @@ def create_table_for_subdataset(eng, subdataset_name, subdataset_metadata=None, 
                     # 为问题单数据集添加特殊字段
                     dynamic_fields.append("data_type text DEFAULT 'defect'")
                     dynamic_fields.append("original_url text")
-                    dynamic_fields.append("line_number integer")
                     
                     # 分析scene_attributes中的所有字段类型
                     scene_attributes = subdataset_metadata.get('scene_attributes', {})
@@ -690,7 +689,7 @@ def create_table_for_subdataset(eng, subdataset_name, subdataset_metadata=None, 
                     
                     for scene_attrs in scene_attributes.values():
                         for key, value in scene_attrs.items():
-                            if key not in {'original_url', 'data_name', 'line_number'}:
+                            if key not in {'original_url', 'data_name'}:
                                 all_custom_fields.add(key)
                                 # 推断字段类型（取最宽泛的类型）
                                 inferred_type = infer_field_type(value)
@@ -834,19 +833,7 @@ def convert_value_to_expected_type(field_name: str, value):
     if value is None:
         return None
     
-    # 特殊字段的类型处理
-    if field_name == 'line_number':
-        try:
-            if isinstance(value, str):
-                return int(float(value))  # 处理"15.0"这种情况
-            elif isinstance(value, float):
-                return int(value)
-            elif isinstance(value, int):
-                return value
-            else:
-                return 0
-        except (ValueError, TypeError):
-            return 0
+    # 特殊字段的类型处理可以在这里添加
     
     # 推断字段类型并转换
     inferred_type = infer_field_type(value)
@@ -1850,22 +1837,8 @@ def process_subdataset_scenes(eng, scene_ids, table_name, batch_size, insert_bat
                             # 添加基础问题单字段（带类型转换）
                             final_data.loc[idx, 'original_url'] = str(scene_attrs.get('original_url', ''))
                             
-                            # line_number需要确保是整数类型
-                            line_number = scene_attrs.get('line_number', 0)
-                            try:
-                                if isinstance(line_number, str):
-                                    # 如果是字符串，尝试转换为整数
-                                    line_number = int(float(line_number))  # 先转float再转int，处理"15.0"这种情况
-                                elif isinstance(line_number, float):
-                                    # 如果是浮点数，转换为整数
-                                    line_number = int(line_number)
-                                final_data.loc[idx, 'line_number'] = line_number
-                            except (ValueError, TypeError) as e:
-                                print(f"警告: line_number转换失败 {line_number}: {e}，使用默认值0")
-                                final_data.loc[idx, 'line_number'] = 0
-                            
                             # 添加其他自定义字段（带类型转换）
-                            system_fields = {'data_type', 'original_url', 'data_name', 'line_number'}
+                            system_fields = {'data_type', 'original_url', 'data_name'}
                             for key, value in scene_attrs.items():
                                 if key not in system_fields and not key.startswith('data_'):
                                     # 根据字段名推断预期类型并转换

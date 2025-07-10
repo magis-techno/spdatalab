@@ -258,7 +258,6 @@ class DatasetManager:
                     scene_attributes[scene_id] = {
                         'original_url': url,
                         'data_name': data_name,
-                        'line_number': line_num,
                         **attributes  # 合并额外属性
                     }
                     
