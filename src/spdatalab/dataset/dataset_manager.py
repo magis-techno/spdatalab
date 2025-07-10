@@ -219,6 +219,11 @@ class DatasetManager:
         
         logger.info(f"开始处理问题单文件: {defect_file}")
         
+        # 收集所有问题单数据，作为一个subdataset
+        all_scene_ids = []
+        all_attributes = {}  # 用于收集所有额外属性
+        successful_urls = []
+        
         try:
             with open_file(defect_file, 'r') as f:
                 for line_num, line in enumerate(f, 1):
@@ -247,36 +252,57 @@ class DatasetManager:
                         self.stats['failed_files'] += 1
                         continue
                     
-                    # 构建子数据集元数据
-                    metadata = {
-                        'data_type': 'defect',
-                        'original_url': url,
-                        'data_name': data_name,
-                        'line_number': line_num
-                    }
+                    # 收集成功的数据
+                    all_scene_ids.append(scene_id)
+                    successful_urls.append(url)
                     
-                    # 添加额外属性
-                    metadata.update(attributes)
-                    
-                    # 创建子数据集
-                    subdataset = SubDataset(
-                        name=data_name,
-                        obs_path=url,  # 使用原始URL作为obs_path
-                        duplication_factor=1,  # 问题单通常不需要倍增
-                        scene_count=1,
-                        scene_ids=[scene_id],
-                        metadata=metadata
-                    )
-                    
-                    dataset.subdatasets.append(subdataset)
-                    dataset.total_unique_scenes += 1
-                    dataset.total_scenes += 1
+                    # 收集额外属性（取并集）
+                    for key, value in attributes.items():
+                        if key not in all_attributes:
+                            all_attributes[key] = value
                     
                     self.stats['processed_files'] += 1
                     self.stats['total_scenes'] += 1
-                    self.stats['total_subdatasets'] += 1
                     
                     logger.info(f"添加问题单数据: {data_name} -> {scene_id} (第{line_num}行)")
+            
+            # 创建统一的子数据集（如果有成功的数据）
+            if all_scene_ids:
+                # 确定subdataset名称：使用dataset名称或文件名
+                subdataset_name = dataset_name
+                if not subdataset_name:
+                    subdataset_name = Path(defect_file).stem
+                
+                # 构建统一的元数据
+                unified_metadata = {
+                    'data_type': 'defect',
+                    'source_file': defect_file,
+                    'total_urls': len(successful_urls),
+                    'successful_scenes': len(all_scene_ids)
+                }
+                
+                # 添加收集到的额外属性
+                unified_metadata.update(all_attributes)
+                
+                # 创建统一的子数据集
+                subdataset = SubDataset(
+                    name=subdataset_name,
+                    obs_path=defect_file,  # 使用原始文件路径作为obs_path
+                    duplication_factor=1,  # 问题单通常不需要倍增
+                    scene_count=len(all_scene_ids),
+                    scene_ids=all_scene_ids,
+                    metadata=unified_metadata
+                )
+                
+                dataset.subdatasets.append(subdataset)
+                dataset.total_unique_scenes = len(all_scene_ids)
+                dataset.total_scenes = len(all_scene_ids)
+                
+                self.stats['total_subdatasets'] = 1
+                
+                logger.info(f"创建统一问题单子数据集: {subdataset_name}")
+                logger.info(f"- 包含场景数: {len(all_scene_ids)}")
+                logger.info(f"- 额外属性: {list(all_attributes.keys())}")
                     
         except Exception as e:
             logger.error(f"处理问题单文件 {defect_file} 失败: {str(e)}")

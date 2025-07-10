@@ -394,6 +394,49 @@ work_dir/
 2. **灵活字段支持**：支持自定义属性字段，如priority、category等
 3. **数据类型智能推断**：自动识别字段类型（text、integer、boolean等）
 4. **视图分离**：问题单数据表默认不包含在统一视图中，避免数据混淆
+5. **统一subdataset结构**：整个问题单文件作为一个subdataset，简化管理 ⭐ **NEW**
+
+### 问题单数据集结构 ⭐ **UPDATED**
+
+问题单数据集具有以下特点：
+- **数据类型**: `defect`
+- **子数据集**: 整个txt文件作为一个统一的子数据集
+- **场景数**: 包含文件中所有成功查询的scene_id
+- **额外字段**: 包含问题单特有的字段（如priority、severity等）
+
+```json
+{
+  "name": "critical_defects_2024",
+  "description": "2024年重要问题单数据集",
+  "metadata": {
+    "data_type": "defect",
+    "source_file": "defects.txt"
+  },
+  "subdatasets": [
+    {
+      "name": "critical_defects_2024",
+      "obs_path": "defects.txt",
+      "duplication_factor": 1,
+      "scene_count": 150,
+      "scene_ids": ["scene_abc123", "scene_def456", "scene_ghi789", "..."],
+      "metadata": {
+        "data_type": "defect",
+        "source_file": "defects.txt",
+        "total_urls": 200,
+        "successful_scenes": 150,
+        "priority": "high",
+        "severity": "critical"
+      }
+    }
+  ]
+}
+```
+
+**与原有结构的对比**：
+- ✅ **简化管理**：从N个问题单→1个subdataset
+- ✅ **统一属性**：所有问题单的额外属性合并到一个metadata中
+- ✅ **减少表数量**：bbox模块只创建1个表，而非N个表
+- ✅ **保持完整性**：所有scene_ids统一管理，不会丢失
 
 ### 数据表结构对比
 
@@ -455,7 +498,8 @@ https://pre-prod.adscloud.huawei.com/ddi-app/#/layout/ddi-system-evaluation/even
    - 第一步：通过`dataName`查询`elasticsearch_ros.ods_ddi_index002_datalake`获取`defect_id`
    - 第二步：通过`defect_id`查询`transform.ods_t_data_fragment_datalake`获取`scene_id`
 3. **属性解析**：解析URL中的额外属性（priority、category等）
-4. **数据集生成**：将结果保存为dataset文件（JSON/Parquet格式）
+4. **数据统一收集**：将所有成功的scene_id和属性收集到一个统一的subdataset中 ⭐ **NEW**
+5. **数据集生成**：将结果保存为dataset文件（JSON/Parquet格式）
 
 #### BBox模块阶段（边界框处理）
 1. **数据集读取**：读取dataset文件，自动识别数据类型
