@@ -410,20 +410,23 @@ def insert_trajectory_data(eng, table_name: str, trajectory_data: List[Dict]) ->
         return 0
     
     try:
-        # 准备GeoDataFrame
+        # 准备数据和几何对象
         gdf_data = []
+        geometries = []
+        
         for traj in trajectory_data:
             if 'geometry' in traj and traj['geometry'] is not None:
+                # 分离几何和属性数据
                 row = {k: v for k, v in traj.items() if k != 'geometry'}
                 gdf_data.append(row)
+                geometries.append(traj['geometry'])
         
         if not gdf_data:
             logger.warning("没有有效的轨迹数据可插入")
             return 0
         
-        # 创建GeoDataFrame
-        gdf = gpd.GeoDataFrame(gdf_data, crs=4326)
-        gdf['geometry'] = [traj['geometry'] for traj in trajectory_data if 'geometry' in traj]
+        # 创建GeoDataFrame，直接传入geometry参数
+        gdf = gpd.GeoDataFrame(gdf_data, geometry=geometries, crs=4326)
         
         # 插入数据
         gdf.to_postgis(table_name, eng, if_exists='append', index=False)
