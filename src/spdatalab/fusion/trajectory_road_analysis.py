@@ -283,6 +283,14 @@ class TrajectoryRoadAnalyzer:
     
     def _find_intersecting_lanes(self, analysis_id: str, buffer_geom: str) -> pd.DataFrame:
         """查找与轨迹缓冲区相交的lane"""
+        
+        # 输出buffer几何信息用于调试
+        logger.info(f"=== 查找相交lane调试信息 ===")
+        logger.info(f"Analysis ID: {analysis_id}")
+        logger.info(f"Buffer几何长度: {len(buffer_geom)} 字符")
+        logger.info(f"Buffer几何前100字符: {buffer_geom[:100]}...")
+        logger.info(f"Buffer几何后100字符: ...{buffer_geom[-100:]}")
+        
         lanes_sql = text("""
             SELECT 
                 id as lane_id,
@@ -301,26 +309,121 @@ class TrajectoryRoadAnalyzer:
             LIMIT 1000
         """.format(lane_table=self.config.lane_table))
         
+        # 输出完整的SQL语句
+        final_sql = str(lanes_sql).replace(':buffer_geom', f"'{buffer_geom}'")
+        logger.info(f"=== 完整SQL语句 ===")
+        logger.info(final_sql)
+        
+        # 输出可以在DataGrip中直接使用的SQL
+        logger.info(f"=== DataGrip可执行SQL ===")
+        datagrip_sql = f"""
+-- 完整查询（可能较慢）
+SELECT 
+    id as lane_id,
+    roadid as road_id,
+    ST_AsText(wkb_geometry) as geometry_wkt,
+    ST_Distance(
+        ST_SetSRID(ST_GeomFromText('{buffer_geom}'), 4326)::geography,
+        wkb_geometry::geography
+    ) as distance
+FROM {self.config.lane_table}
+WHERE ST_Intersects(
+    ST_SetSRID(ST_GeomFromText('{buffer_geom}'), 4326),
+    wkb_geometry
+)
+AND wkb_geometry IS NOT NULL
+LIMIT 1000;
+"""
+        logger.info(datagrip_sql)
+        
         try:
+            # 分步调试
+            logger.info("=== 分步调试 ===")
+            
             with self.remote_engine.connect() as conn:
                 # 设置查询超时为60秒
                 conn.execute(text("SET statement_timeout = '60s'"))
+                
+                # 步骤1：验证buffer几何是否有效
+                logger.info("步骤1：验证buffer几何有效性")
+                buffer_check_sql = text(f"""
+                    SELECT 
+                        ST_IsValid(ST_SetSRID(ST_GeomFromText(:buffer_geom), 4326)) as is_valid,
+                        ST_GeometryType(ST_SetSRID(ST_GeomFromText(:buffer_geom), 4326)) as geom_type,
+                        ST_AsText(ST_Envelope(ST_SetSRID(ST_GeomFromText(:buffer_geom), 4326))) as bbox
+                """)
+                
+                buffer_result = conn.execute(buffer_check_sql, {'buffer_geom': buffer_geom}).fetchone()
+                if buffer_result:
+                    logger.info(f"Buffer几何有效性: {buffer_result[0]}")
+                    logger.info(f"Buffer几何类型: {buffer_result[1]}")
+                    logger.info(f"Buffer边界框: {buffer_result[2]}")
+                
+                # 步骤2：检查表和索引
+                logger.info("步骤2：检查表基本信息")
+                table_check_sql = text(f"""
+                    SELECT 
+                        COUNT(*) as total_lanes,
+                        COUNT(CASE WHEN wkb_geometry IS NOT NULL THEN 1 END) as lanes_with_geom,
+                        ST_AsText(ST_Extent(wkb_geometry)) as table_extent
+                    FROM {self.config.lane_table}
+                """)
+                
+                table_result = conn.execute(table_check_sql).fetchone()
+                if table_result:
+                    logger.info(f"表总lane数: {table_result[0]}")
+                    logger.info(f"有几何的lane数: {table_result[1]}")
+                    logger.info(f"表几何范围: {table_result[2]}")
+                
+                # 步骤3：简化查询测试（只检查相交，不计算距离）
+                logger.info("步骤3：简化相交查询")
+                simple_sql = text(f"""
+                    SELECT 
+                        id as lane_id,
+                        roadid as road_id,
+                        ST_AsText(wkb_geometry) as geometry_wkt
+                    FROM {self.config.lane_table}
+                    WHERE ST_Intersects(
+                        ST_SetSRID(ST_GeomFromText(:buffer_geom), 4326),
+                        wkb_geometry
+                    )
+                    AND wkb_geometry IS NOT NULL
+                    LIMIT 10
+                """)
+                
+                simple_result = pd.read_sql(simple_sql, conn, params={'buffer_geom': buffer_geom})
+                logger.info(f"简化查询结果: {len(simple_result)} 个lane")
+                
+                # 步骤4：执行完整查询
+                logger.info("步骤4：执行完整查询")
                 lanes_df = pd.read_sql(lanes_sql, conn, params={'buffer_geom': buffer_geom})
             
             if not lanes_df.empty:
                 # 保存到结果表
                 self._save_lanes_results(analysis_id, lanes_df, 'direct_intersect')
-                logger.info(f"找到 {len(lanes_df)} 个相交lane")
+                logger.info(f"✓ 找到 {len(lanes_df)} 个相交lane")
+                
+                # 输出前几个结果用于验证
+                logger.info("前3个结果:")
+                for i, row in lanes_df.head(3).iterrows():
+                    logger.info(f"  Lane {row['lane_id']}: road_id={row['road_id']}, distance={row.get('distance', 'N/A')}")
             else:
                 logger.info("未找到相交的lane")
             
             return lanes_df
+            
         except Exception as e:
             logger.error(f"查找相交lane失败: {e}")
+            logger.error(f"错误类型: {type(e).__name__}")
+            import traceback
+            logger.error(f"详细错误: {traceback.format_exc()}")
             return pd.DataFrame()
     
     def _find_intersecting_intersections(self, analysis_id: str, buffer_geom: str) -> pd.DataFrame:
         """查找与轨迹缓冲区相交的intersection"""
+        
+        logger.info(f"=== 查找相交intersection调试信息 ===")
+        
         intersections_sql = text("""
             SELECT 
                 id as intersection_id,
@@ -336,22 +439,66 @@ class TrajectoryRoadAnalyzer:
             LIMIT 100
         """.format(intersection_table=self.config.intersection_table))
         
+        # 输出DataGrip可执行SQL
+        datagrip_sql = f"""
+-- 查找相交intersection
+SELECT 
+    id as intersection_id,
+    intersectiontype,
+    intersectionsubtype,
+    ST_AsText(wkb_geometry) as geometry_wkt
+FROM {self.config.intersection_table}
+WHERE ST_Intersects(
+    ST_SetSRID(ST_GeomFromText('{buffer_geom}'), 4326),
+    wkb_geometry
+)
+AND wkb_geometry IS NOT NULL
+LIMIT 100;
+"""
+        logger.info(f"=== DataGrip Intersection SQL ===")
+        logger.info(datagrip_sql)
+        
         try:
             with self.remote_engine.connect() as conn:
                 # 设置查询超时为60秒
                 conn.execute(text("SET statement_timeout = '60s'"))
+                
+                # 检查intersection表基本信息
+                logger.info("检查intersection表基本信息")
+                table_check_sql = text(f"""
+                    SELECT 
+                        COUNT(*) as total_intersections,
+                        COUNT(CASE WHEN wkb_geometry IS NOT NULL THEN 1 END) as intersections_with_geom,
+                        ST_AsText(ST_Extent(wkb_geometry)) as table_extent
+                    FROM {self.config.intersection_table}
+                """)
+                
+                table_result = conn.execute(table_check_sql).fetchone()
+                if table_result:
+                    logger.info(f"表总intersection数: {table_result[0]}")
+                    logger.info(f"有几何的intersection数: {table_result[1]}")
+                    logger.info(f"表几何范围: {table_result[2]}")
+                
                 intersections_df = pd.read_sql(intersections_sql, conn, params={'buffer_geom': buffer_geom})
             
             if not intersections_df.empty:
                 # 保存到结果表
                 self._save_intersections_results(analysis_id, intersections_df)
-                logger.info(f"找到 {len(intersections_df)} 个相交intersection")
+                logger.info(f"✓ 找到 {len(intersections_df)} 个相交intersection")
+                
+                # 输出前几个结果用于验证
+                logger.info("前3个intersection结果:")
+                for i, row in intersections_df.head(3).iterrows():
+                    logger.info(f"  Intersection {row['intersection_id']}: type={row['intersectiontype']}, subtype={row['intersectionsubtype']}")
             else:
                 logger.info("未找到相交的intersection")
             
             return intersections_df
         except Exception as e:
             logger.error(f"查找相交intersection失败: {e}")
+            logger.error(f"错误类型: {type(e).__name__}")
+            import traceback
+            logger.error(f"详细错误: {traceback.format_exc()}")
             return pd.DataFrame()
     
     def _save_lanes_results(self, analysis_id: str, lanes_df: pd.DataFrame, 
