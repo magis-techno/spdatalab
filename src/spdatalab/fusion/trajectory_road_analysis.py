@@ -18,15 +18,17 @@ from typing import Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass
 from datetime import datetime
 
+from spdatalab.common.io_hive import hive_cursor
+
 logger = logging.getLogger(__name__)
 
 @dataclass
 class TrajectoryRoadAnalysisConfig:
     """轨迹道路分析配置"""
     local_dsn: str = "postgresql+psycopg://postgres:postgres@local_pg:5432/postgres"
-    remote_dsn: str = "postgresql+psycopg://**:**@10.170.30.193:9001/rcdatalake_gy1"
+    remote_catalog: str = "rcdatalake_gy1"  # 使用Hive连接器的catalog
     
-    # 远程表名配置
+    # 远程表名配置（Hive数据湖中的表）
     lane_table: str = "full_lane"
     intersection_table: str = "full_intersection"
     road_table: str = "full_road"
@@ -67,6 +69,8 @@ class TrajectoryRoadAnalyzer:
     
     def __init__(self, config: Optional[TrajectoryRoadAnalysisConfig] = None):
         self.config = config or TrajectoryRoadAnalysisConfig()
+        
+        # 本地PostgreSQL连接（用于结果存储）
         self.local_engine = create_engine(
             self.config.local_dsn,
             future=True,
@@ -76,22 +80,9 @@ class TrajectoryRoadAnalyzer:
             pool_size=5,
             max_overflow=10
         )
-        self.remote_engine = create_engine(
-            self.config.remote_dsn,
-            future=True,
-            connect_args={
-                "client_encoding": "utf8", 
-                "connect_timeout": 60,  # 连接超时60秒
-                "command_timeout": 120,  # 命令超时120秒
-                "server_settings": {
-                    "application_name": "trajectory_road_analysis"
-                }
-            },
-            pool_pre_ping=True,
-            pool_recycle=3600,
-            pool_size=3,  # 减少连接池大小
-            max_overflow=5
-        )
+        
+        # 远程数据使用Hive连接器（无需单独的engine）
+        logger.info(f"配置远程catalog: {self.config.remote_catalog}")
         
         # 初始化分析表
         self._init_analysis_tables()
@@ -321,18 +312,7 @@ class TrajectoryRoadAnalyzer:
         logger.info(f"Buffer几何前100字符: {buffer_geom[:100]}...")
         logger.info(f"Buffer几何后100字符: ...{buffer_geom[-100:]}")
         
-        roads_sql = text("""
-            SELECT 
-                id as road_id,
-                ST_AsText(wkb_geometry) as geometry_wkt
-            FROM {road_table}
-            WHERE ST_Intersects(
-                ST_SetSRID(ST_GeomFromText(:buffer_geom), 4326),
-                wkb_geometry
-            )
-            AND wkb_geometry IS NOT NULL
-            LIMIT :max_roads
-        """.format(road_table=self.config.road_table))
+# SQL将在hive_cursor中直接构建
         
         # 输出可以在DataGrip中直接使用的SQL
         logger.info(f"=== DataGrip可执行SQL ===")
@@ -352,50 +332,45 @@ LIMIT {self.config.max_roads_per_query};
         logger.info(datagrip_sql)
         
         try:
-            with self.remote_engine.connect() as conn:
-                logger.info("成功建立数据库连接")
-                
-                # 设置更长的查询超时，并禁用自动提交
-                conn.execute(text("SET statement_timeout = '120s'"))  # 增加到120秒
-                conn.execute(text("SET idle_in_transaction_session_timeout = '300s'"))
-                logger.info("设置查询超时为120秒")
+            # 使用hive_cursor连接远程数据湖
+            logger.info(f"连接远程catalog: {self.config.remote_catalog}")
+            
+            with hive_cursor(self.config.remote_catalog) as cur:
+                logger.info("成功建立Hive连接")
                 
                 # 检查road表基本信息
                 logger.info("检查road表基本信息")
-                table_check_sql = text(f"""
-                    SELECT 
-                        COUNT(*) as total_roads,
-                        COUNT(CASE WHEN wkb_geometry IS NOT NULL THEN 1 END) as roads_with_geom
+                table_check_sql = f"""
+                    SELECT COUNT(*) as total_roads
                     FROM {self.config.road_table}
                     LIMIT 1
-                """)
+                """
                 
                 logger.info("执行表信息查询...")
-                table_result = conn.execute(table_check_sql).fetchone()
+                cur.execute(table_check_sql)
+                table_result = cur.fetchone()
                 if table_result:
                     logger.info(f"表总road数: {table_result[0]}")
-                    logger.info(f"有几何的road数: {table_result[1]}")
                 
                 # 先测试简化查询
                 logger.info("执行简化road查询测试...")
-                simple_road_sql = text(f"""
+                simple_road_sql = f"""
                     SELECT 
                         id as road_id,
                         ST_AsText(wkb_geometry) as geometry_wkt
                     FROM {self.config.road_table}
                     WHERE ST_Intersects(
-                        ST_SetSRID(ST_GeomFromText(:buffer_geom), 4326),
+                        ST_SetSRID(ST_GeomFromText('{buffer_geom}'), 4326),
                         wkb_geometry
                     )
                     AND wkb_geometry IS NOT NULL
                     LIMIT 5
-                """)
+                """
                 
-                # 使用execute + fetchall instead of pd.read_sql for debugging
                 logger.info("开始执行简化查询...")
-                result = conn.execute(simple_road_sql, {'buffer_geom': buffer_geom})
-                rows = result.fetchall()
-                columns = result.keys()
+                cur.execute(simple_road_sql)
+                rows = cur.fetchall()
+                columns = [d[0] for d in cur.description]
                 
                 logger.info(f"简化查询返回 {len(rows)} 行结果")
                 
@@ -403,14 +378,23 @@ LIMIT {self.config.max_roads_per_query};
                     # 如果简化查询成功，执行完整查询
                     logger.info("简化查询成功，执行完整查询...")
                     
-                    # 使用execute + fetchall代替pandas read_sql
-                    full_result = conn.execute(roads_sql, {
-                        'buffer_geom': buffer_geom,
-                        'max_roads': self.config.max_roads_per_query
-                    })
+                    # 构建完整查询SQL
+                    full_road_sql = f"""
+                        SELECT 
+                            id as road_id,
+                            ST_AsText(wkb_geometry) as geometry_wkt
+                        FROM {self.config.road_table}
+                        WHERE ST_Intersects(
+                            ST_SetSRID(ST_GeomFromText('{buffer_geom}'), 4326),
+                            wkb_geometry
+                        )
+                        AND wkb_geometry IS NOT NULL
+                        LIMIT {self.config.max_roads_per_query}
+                    """
                     
-                    all_rows = full_result.fetchall()
-                    all_columns = full_result.keys()
+                    cur.execute(full_road_sql)
+                    all_rows = cur.fetchall()
+                    all_columns = [d[0] for d in cur.description]
                     
                     # 手动创建DataFrame
                     roads_df = pd.DataFrame(all_rows, columns=all_columns)
@@ -459,20 +443,7 @@ LIMIT {self.config.max_roads_per_query};
         
         logger.info(f"=== 查找相交intersection调试信息 ===")
         
-        intersections_sql = text("""
-            SELECT 
-                id as intersection_id,
-                intersectiontype,
-                intersectionsubtype,
-                ST_AsText(wkb_geometry) as geometry_wkt
-            FROM {intersection_table}
-            WHERE ST_Intersects(
-                ST_SetSRID(ST_GeomFromText(:buffer_geom), 4326),
-                wkb_geometry
-            )
-            AND wkb_geometry IS NOT NULL
-            LIMIT 100
-        """.format(intersection_table=self.config.intersection_table))
+# SQL将在hive_cursor中直接构建
         
         # 输出DataGrip可执行SQL
         datagrip_sql = f"""
@@ -494,27 +465,39 @@ LIMIT 100;
         logger.info(datagrip_sql)
         
         try:
-            with self.remote_engine.connect() as conn:
-                # 设置查询超时为60秒
-                conn.execute(text("SET statement_timeout = '60s'"))
-                
-                # 检查intersection表基本信息
+            with hive_cursor(self.config.remote_catalog) as cur:
                 logger.info("检查intersection表基本信息")
-                table_check_sql = text(f"""
-                    SELECT 
-                        COUNT(*) as total_intersections,
-                        COUNT(CASE WHEN wkb_geometry IS NOT NULL THEN 1 END) as intersections_with_geom,
-                        ST_AsText(ST_Extent(wkb_geometry)) as table_extent
+                table_check_sql = f"""
+                    SELECT COUNT(*) as total_intersections
                     FROM {self.config.intersection_table}
-                """)
+                    LIMIT 1
+                """
                 
-                table_result = conn.execute(table_check_sql).fetchone()
+                cur.execute(table_check_sql)
+                table_result = cur.fetchone()
                 if table_result:
                     logger.info(f"表总intersection数: {table_result[0]}")
-                    logger.info(f"有几何的intersection数: {table_result[1]}")
-                    logger.info(f"表几何范围: {table_result[2]}")
                 
-                intersections_df = pd.read_sql(intersections_sql, conn, params={'buffer_geom': buffer_geom})
+                # 构建intersection查询SQL
+                full_intersection_sql = f"""
+                    SELECT 
+                        id as intersection_id,
+                        intersectiontype,
+                        intersectionsubtype,
+                        ST_AsText(wkb_geometry) as geometry_wkt
+                    FROM {self.config.intersection_table}
+                    WHERE ST_Intersects(
+                        ST_SetSRID(ST_GeomFromText('{buffer_geom}'), 4326),
+                        wkb_geometry
+                    )
+                    AND wkb_geometry IS NOT NULL
+                    LIMIT {self.config.max_intersections_per_query}
+                """
+                
+                cur.execute(full_intersection_sql)
+                rows = cur.fetchall()
+                columns = [d[0] for d in cur.description]
+                intersections_df = pd.DataFrame(rows, columns=columns)
             
             if not intersections_df.empty:
                 # 保存到结果表
@@ -631,54 +614,54 @@ LIMIT 100;
     
     def _expand_forward_road_chains(self, analysis_id: str, road_ids: List[int]) -> pd.DataFrame:
         """向前扩展road链路（不超过500m）"""
-        forward_sql = text("""
-            WITH RECURSIVE road_chain AS (
-                -- 基础查询：当前road作为起点
-                SELECT 
-                    rnr.roadid,
-                    rnr.nextroadid,
-                    0 as depth,
-                    0 as distance,
-                    COALESCE(rnr.length, 0) as current_length
-                FROM {roadnextroad_table} rnr
-                WHERE rnr.roadid = ANY(:road_ids)
-                AND rnr.nextroadid IS NOT NULL
-                
-                UNION ALL
-                
-                -- 递归查询：继续向前
-                SELECT 
-                    rnr.roadid,
-                    rnr.nextroadid,
-                    rc.depth + 1,
-                    rc.distance + rc.current_length,
-                    COALESCE(rnr.length, 0) as current_length
-                FROM {roadnextroad_table} rnr
-                JOIN road_chain rc ON rnr.roadid = rc.nextroadid
-                WHERE rc.distance + rc.current_length <= :forward_limit
-                AND rc.depth < :max_depth
-                AND rnr.nextroadid IS NOT NULL
-            )
-            SELECT DISTINCT 
-                rc.nextroadid as road_id,
-                rc.depth as chain_depth,
-                rc.distance,
-                'forward' as chain_direction
-            FROM road_chain rc
-            WHERE rc.nextroadid IS NOT NULL
-            LIMIT :max_forward_chains
-        """.format(roadnextroad_table=self.config.roadnextroad_table))
+# SQL将在hive_cursor中直接构建
         
         try:
-            with self.remote_engine.connect() as conn:
-                # 设置查询超时（递归查询可能需要更长时间）
-                conn.execute(text(f"SET statement_timeout = '{self.config.recursive_query_timeout}s'"))
-                forward_df = pd.read_sql(forward_sql, conn, params={
-                    'road_ids': road_ids,
-                    'forward_limit': self.config.forward_chain_limit,
-                    'max_depth': self.config.max_recursion_depth,
-                    'max_forward_chains': self.config.max_forward_road_chains
-                })
+            with hive_cursor(self.config.remote_catalog) as cur:
+                # 构建SQL语句，使用字符串格式化替换参数
+                road_ids_str = ','.join(map(str, road_ids))
+                formatted_sql = f"""
+                    WITH RECURSIVE road_chain AS (
+                        -- 基础查询：当前road作为起点
+                        SELECT 
+                            rnr.roadid,
+                            rnr.nextroadid,
+                            0 as depth,
+                            0 as distance,
+                            COALESCE(rnr.length, 0) as current_length
+                        FROM {self.config.roadnextroad_table} rnr
+                        WHERE rnr.roadid IN ({road_ids_str})
+                        AND rnr.nextroadid IS NOT NULL
+                        
+                        UNION ALL
+                        
+                        -- 递归查询：继续向前
+                        SELECT 
+                            rnr.roadid,
+                            rnr.nextroadid,
+                            rc.depth + 1,
+                            rc.distance + rc.current_length,
+                            COALESCE(rnr.length, 0) as current_length
+                        FROM {self.config.roadnextroad_table} rnr
+                        JOIN road_chain rc ON rnr.roadid = rc.nextroadid
+                        WHERE rc.distance + rc.current_length <= {self.config.forward_chain_limit}
+                        AND rc.depth < {self.config.max_recursion_depth}
+                        AND rnr.nextroadid IS NOT NULL
+                    )
+                    SELECT DISTINCT 
+                        rc.nextroadid as road_id,
+                        rc.depth as chain_depth,
+                        rc.distance,
+                        'forward' as chain_direction
+                    FROM road_chain rc
+                    WHERE rc.nextroadid IS NOT NULL
+                    LIMIT {self.config.max_forward_road_chains}
+                """
+                
+                cur.execute(formatted_sql)
+                rows = cur.fetchall()
+                columns = [d[0] for d in cur.description]
+                forward_df = pd.DataFrame(rows, columns=columns)
             
             if not forward_df.empty:
                 logger.info(f"向前扩展road链路: {len(forward_df)} 个")
@@ -692,54 +675,54 @@ LIMIT 100;
     
     def _expand_backward_road_chains(self, analysis_id: str, road_ids: List[int]) -> pd.DataFrame:
         """向后扩展road链路（不超过100m）"""
-        backward_sql = text("""
-            WITH RECURSIVE road_chain AS (
-                -- 基础查询：当前road作为终点
-                SELECT 
-                    rnr.roadid,
-                    rnr.nextroadid,
-                    0 as depth,
-                    0 as distance,
-                    COALESCE(rnr.length, 0) as current_length
-                FROM {roadnextroad_table} rnr
-                WHERE rnr.nextroadid = ANY(:road_ids)
-                AND rnr.roadid IS NOT NULL
-                
-                UNION ALL
-                
-                -- 递归查询：继续向后
-                SELECT 
-                    rnr.roadid,
-                    rnr.nextroadid,
-                    rc.depth + 1,
-                    rc.distance + rc.current_length,
-                    COALESCE(rnr.length, 0) as current_length
-                FROM {roadnextroad_table} rnr
-                JOIN road_chain rc ON rnr.nextroadid = rc.roadid
-                WHERE rc.distance + rc.current_length <= :backward_limit
-                AND rc.depth < :max_depth
-                AND rnr.roadid IS NOT NULL
-            )
-            SELECT DISTINCT 
-                rc.roadid as road_id,
-                rc.depth as chain_depth,
-                rc.distance,
-                'backward' as chain_direction
-            FROM road_chain rc
-            WHERE rc.roadid IS NOT NULL
-            LIMIT :max_backward_chains
-        """.format(roadnextroad_table=self.config.roadnextroad_table))
+# SQL将在hive_cursor中直接构建
         
         try:
-            with self.remote_engine.connect() as conn:
-                # 设置查询超时（递归查询可能需要更长时间）
-                conn.execute(text(f"SET statement_timeout = '{self.config.recursive_query_timeout}s'"))
-                backward_df = pd.read_sql(backward_sql, conn, params={
-                    'road_ids': road_ids,
-                    'backward_limit': self.config.backward_chain_limit,
-                    'max_depth': self.config.max_recursion_depth,
-                    'max_backward_chains': self.config.max_backward_road_chains
-                })
+            with hive_cursor(self.config.remote_catalog) as cur:
+                # 构建SQL语句，使用字符串格式化替换参数
+                road_ids_str = ','.join(map(str, road_ids))
+                formatted_sql = f"""
+                    WITH RECURSIVE road_chain AS (
+                        -- 基础查询：当前road作为终点
+                        SELECT 
+                            rnr.roadid,
+                            rnr.nextroadid,
+                            0 as depth,
+                            0 as distance,
+                            COALESCE(rnr.length, 0) as current_length
+                        FROM {self.config.roadnextroad_table} rnr
+                        WHERE rnr.nextroadid IN ({road_ids_str})
+                        AND rnr.roadid IS NOT NULL
+                        
+                        UNION ALL
+                        
+                        -- 递归查询：继续向后
+                        SELECT 
+                            rnr.roadid,
+                            rnr.nextroadid,
+                            rc.depth + 1,
+                            rc.distance + rc.current_length,
+                            COALESCE(rnr.length, 0) as current_length
+                        FROM {self.config.roadnextroad_table} rnr
+                        JOIN road_chain rc ON rnr.nextroadid = rc.roadid
+                        WHERE rc.distance + rc.current_length <= {self.config.backward_chain_limit}
+                        AND rc.depth < {self.config.max_recursion_depth}
+                        AND rnr.roadid IS NOT NULL
+                    )
+                    SELECT DISTINCT 
+                        rc.roadid as road_id,
+                        rc.depth as chain_depth,
+                        rc.distance,
+                        'backward' as chain_direction
+                    FROM road_chain rc
+                    WHERE rc.roadid IS NOT NULL
+                    LIMIT {self.config.max_backward_road_chains}
+                """
+                
+                cur.execute(formatted_sql)
+                rows = cur.fetchall()
+                columns = [d[0] for d in cur.description]
+                backward_df = pd.DataFrame(rows, columns=columns)
             
             if not backward_df.empty:
                 logger.info(f"向后扩展road链路: {len(backward_df)} 个")
@@ -758,44 +741,43 @@ LIMIT 100;
         
         logger.info(f"开始补齐intersection的inroad/outroad，intersection数: {len(intersection_ids)}")
         
-        # 查找inroad
-        inroad_sql = text("""
-            SELECT 
-                igr.roadid as road_id,
-                igr.intersectionid,
-                'intersection_inroad' as road_type
-            FROM {intersection_inroad_table} igr
-            WHERE igr.intersectionid = ANY(:intersection_ids)
-            LIMIT :max_inroads
-        """.format(intersection_inroad_table=self.config.intersection_inroad_table))
-        
-        # 查找outroad
-        outroad_sql = text("""
-            SELECT 
-                ior.roadid as road_id,
-                ior.intersectionid,
-                'intersection_outroad' as road_type
-            FROM {intersection_outroad_table} ior
-            WHERE ior.intersectionid = ANY(:intersection_ids)
-            LIMIT :max_outroads
-        """.format(intersection_outroad_table=self.config.intersection_outroad_table))
+# SQL将在hive_cursor中直接构建
         
         try:
-            with self.remote_engine.connect() as conn:
-                # 设置查询超时
-                conn.execute(text(f"SET statement_timeout = '{self.config.query_timeout}s'"))
+            with hive_cursor(self.config.remote_catalog) as cur:
+                intersection_ids_str = ','.join(map(str, intersection_ids))
                 
                 # 查询inroad
-                inroads_df = pd.read_sql(inroad_sql, conn, params={
-                    'intersection_ids': intersection_ids,
-                    'max_inroads': 200
-                })
+                inroad_formatted_sql = f"""
+                    SELECT 
+                        igr.roadid as road_id,
+                        igr.intersectionid,
+                        'intersection_inroad' as road_type
+                    FROM {self.config.intersection_inroad_table} igr
+                    WHERE igr.intersectionid IN ({intersection_ids_str})
+                    LIMIT 200
+                """
+                
+                cur.execute(inroad_formatted_sql)
+                inroad_rows = cur.fetchall()
+                inroad_columns = [d[0] for d in cur.description]
+                inroads_df = pd.DataFrame(inroad_rows, columns=inroad_columns)
                 
                 # 查询outroad
-                outroads_df = pd.read_sql(outroad_sql, conn, params={
-                    'intersection_ids': intersection_ids,
-                    'max_outroads': 200
-                })
+                outroad_formatted_sql = f"""
+                    SELECT 
+                        ior.roadid as road_id,
+                        ior.intersectionid,
+                        'intersection_outroad' as road_type
+                    FROM {self.config.intersection_outroad_table} ior
+                    WHERE ior.intersectionid IN ({intersection_ids_str})
+                    LIMIT 200
+                """
+                
+                cur.execute(outroad_formatted_sql)
+                outroad_rows = cur.fetchall()
+                outroad_columns = [d[0] for d in cur.description]
+                outroads_df = pd.DataFrame(outroad_rows, columns=outroad_columns)
             
             # 合并结果
             all_roads = []
@@ -826,28 +808,30 @@ LIMIT 100;
         
         logger.info(f"开始根据road收集lane，road数: {len(road_ids)}")
         
-        lanes_sql = text("""
-            SELECT 
-                l.id as lane_id,
-                l.roadid as road_id,
-                ST_AsText(l.wkb_geometry) as geometry_wkt,
-                l.intersectionid,
-                l.isintersectioninlane,
-                l.isintersectionoutlane
-            FROM {lane_table} l
-            WHERE l.roadid = ANY(:road_ids)
-            AND l.wkb_geometry IS NOT NULL
-            LIMIT :max_lanes
-        """.format(lane_table=self.config.lane_table))
+# SQL将在hive_cursor中直接构建
         
         try:
-            with self.remote_engine.connect() as conn:
-                # 设置查询超时
-                conn.execute(text(f"SET statement_timeout = '{self.config.query_timeout}s'"))
-                lanes_df = pd.read_sql(lanes_sql, conn, params={
-                    'road_ids': road_ids,
-                    'max_lanes': self.config.max_lanes_from_roads
-                })
+            with hive_cursor(self.config.remote_catalog) as cur:
+                road_ids_str = ','.join(map(str, road_ids))
+                
+                formatted_sql = f"""
+                    SELECT 
+                        l.id as lane_id,
+                        l.roadid as road_id,
+                        ST_AsText(l.wkb_geometry) as geometry_wkt,
+                        l.intersectionid,
+                        l.isintersectioninlane,
+                        l.isintersectionoutlane
+                    FROM {self.config.lane_table} l
+                    WHERE l.roadid IN ({road_ids_str})
+                    AND l.wkb_geometry IS NOT NULL
+                    LIMIT {self.config.max_lanes_from_roads}
+                """
+                
+                cur.execute(formatted_sql)
+                rows = cur.fetchall()
+                columns = [d[0] for d in cur.description]
+                lanes_df = pd.DataFrame(rows, columns=columns)
             
             if not lanes_df.empty:
                 # 保存到结果表
