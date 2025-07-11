@@ -48,6 +48,27 @@ config = TrajectoryRoadAnalysisConfig(
 )
 ```
 
+#### 数据库连接优化
+
+模块包含了多项数据库连接优化：
+
+1. **连接池配置**：
+   - 连接池大小：5个连接
+   - 最大溢出连接：10个
+   - 连接回收时间：3600秒
+   - 连接预检查：启用
+
+2. **查询超时设置**：
+   - 普通查询超时：60秒
+   - 递归查询超时：120秒
+   - 连接超时：30秒
+
+3. **查询结果限制**：
+   - Lane查询限制：1000条
+   - Intersection查询限制：100条
+   - 前向链路限制：500条
+   - 后向链路限制：200条
+
 ## 使用方法
 
 ### 1. 基本使用
@@ -230,6 +251,12 @@ CREATE TABLE trajectory_road_roads (
 | `forward_chain_limit` | float | 500.0 | 前向链路扩展限制(米) |
 | `backward_chain_limit` | float | 100.0 | 后向链路扩展限制(米) |
 | `max_recursion_depth` | int | 50 | 最大递归深度 |
+| `max_lanes_per_query` | int | 1000 | 单次查询最大lane数量 |
+| `max_intersections_per_query` | int | 100 | 单次查询最大intersection数量 |
+| `max_forward_chains` | int | 500 | 前向链路最大数量 |
+| `max_backward_chains` | int | 200 | 后向链路最大数量 |
+| `query_timeout` | int | 60 | 查询超时时间(秒) |
+| `recursive_query_timeout` | int | 120 | 递归查询超时时间(秒) |
 | `lane_table` | str | "full_lane" | 远程lane表名 |
 | `intersection_table` | str | "full_intersection" | 远程intersection表名 |
 | `lanenextlane_table` | str | "full_lanenextlane" | 远程lanenextlane表名 |
@@ -283,20 +310,35 @@ results = analyze_trajectory_from_table(
    - 检查数据库连接字符串是否正确
    - 确认数据库服务是否运行
    - 验证网络连接
+   - 检查连接池配置是否合适
 
 2. **空间查询失败**
    - 检查轨迹几何是否为有效的WKT格式
    - 确认数据库中的几何数据是否正确
    - 验证空间索引是否存在
+   - 确认查询结果没有超出限制
 
 3. **缓冲区创建失败**
    - 检查轨迹几何是否为LINESTRING类型
    - 确认坐标系统设置正确（默认4326）
+   - 验证输入几何数据的完整性
 
 4. **递归查询超时**
    - 减小chain_limit参数
-   - 降低max_recursion_depth参数
+   - 降低max_recursion_depth参数（建议≤10）
    - 检查lanenextlane表的数据质量
+   - 增加recursive_query_timeout设置
+   - 考虑分批处理大量数据
+
+5. **查询结果过多**
+   - 调整max_lanes_per_query等限制参数
+   - 优化轨迹缓冲区大小
+   - 考虑空间索引优化
+
+6. **SQL格式错误**
+   - 确保所有SQL查询都使用text()包装
+   - 使用参数化查询避免SQL注入
+   - 检查表名和字段名是否正确
 
 ### 调试技巧
 
@@ -319,7 +361,11 @@ print(f"相交lane数量: {len(intersecting_lanes)}")
 
 3. **使用测试脚本**
 ```bash
+# 运行完整测试（包含远程数据库查询）
 python test_trajectory_road_analysis.py
+
+# 运行简化测试（推荐，避免远程数据库超时）
+python test_trajectory_road_analysis_simple.py
 ```
 
 ## 性能优化

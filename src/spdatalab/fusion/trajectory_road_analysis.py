@@ -38,6 +38,14 @@ class TrajectoryRoadAnalysisConfig:
     backward_chain_limit: float = 100.0  # 后向链路扩展限制(m)
     max_recursion_depth: int = 50  # 最大递归深度
     
+    # 查询限制参数
+    max_lanes_per_query: int = 1000  # 单次查询最大lane数量
+    max_intersections_per_query: int = 100  # 单次查询最大intersection数量
+    max_forward_chains: int = 500  # 前向链路最大数量
+    max_backward_chains: int = 200  # 后向链路最大数量
+    query_timeout: int = 60  # 查询超时时间（秒）
+    recursive_query_timeout: int = 120  # 递归查询超时时间（秒）
+    
     # 结果表名
     analysis_table: str = "trajectory_road_analysis"
     lanes_table: str = "trajectory_road_lanes"
@@ -59,12 +67,20 @@ class TrajectoryRoadAnalyzer:
         self.local_engine = create_engine(
             self.config.local_dsn,
             future=True,
-            connect_args={"client_encoding": "utf8"}
+            connect_args={"client_encoding": "utf8"},
+            pool_pre_ping=True,
+            pool_recycle=3600,
+            pool_size=5,
+            max_overflow=10
         )
         self.remote_engine = create_engine(
             self.config.remote_dsn,
             future=True,
-            connect_args={"client_encoding": "utf8"}
+            connect_args={"client_encoding": "utf8", "connect_timeout": 30},
+            pool_pre_ping=True,
+            pool_recycle=3600,
+            pool_size=5,
+            max_overflow=10
         )
         
         # 初始化分析表
@@ -267,30 +283,36 @@ class TrajectoryRoadAnalyzer:
     
     def _find_intersecting_lanes(self, analysis_id: str, buffer_geom: str) -> pd.DataFrame:
         """查找与轨迹缓冲区相交的lane"""
-        lanes_sql = text(f"""
+        lanes_sql = text("""
             SELECT 
                 id as lane_id,
                 roadid as road_id,
                 ST_AsText(wkb_geometry) as geometry_wkt,
                 ST_Distance(
-                    ST_SetSRID(ST_GeomFromText('{buffer_geom}'), 4326)::geography,
+                    ST_SetSRID(ST_GeomFromText(:buffer_geom), 4326)::geography,
                     wkb_geometry::geography
                 ) as distance
-            FROM {self.config.lane_table}
+            FROM {lane_table}
             WHERE ST_Intersects(
-                ST_SetSRID(ST_GeomFromText('{buffer_geom}'), 4326),
+                ST_SetSRID(ST_GeomFromText(:buffer_geom), 4326),
                 wkb_geometry
             )
-        """)
+            AND wkb_geometry IS NOT NULL
+            LIMIT 1000
+        """.format(lane_table=self.config.lane_table))
         
         try:
             with self.remote_engine.connect() as conn:
-                lanes_df = pd.read_sql(lanes_sql, conn)
+                # 设置查询超时为60秒
+                conn.execute(text("SET statement_timeout = '60s'"))
+                lanes_df = pd.read_sql(lanes_sql, conn, params={'buffer_geom': buffer_geom})
             
             if not lanes_df.empty:
                 # 保存到结果表
                 self._save_lanes_results(analysis_id, lanes_df, 'direct_intersect')
                 logger.info(f"找到 {len(lanes_df)} 个相交lane")
+            else:
+                logger.info("未找到相交的lane")
             
             return lanes_df
         except Exception as e:
@@ -299,27 +321,33 @@ class TrajectoryRoadAnalyzer:
     
     def _find_intersecting_intersections(self, analysis_id: str, buffer_geom: str) -> pd.DataFrame:
         """查找与轨迹缓冲区相交的intersection"""
-        intersections_sql = text(f"""
+        intersections_sql = text("""
             SELECT 
                 id as intersection_id,
                 intersectiontype,
                 intersectionsubtype,
                 ST_AsText(wkb_geometry) as geometry_wkt
-            FROM {self.config.intersection_table}
+            FROM {intersection_table}
             WHERE ST_Intersects(
-                ST_SetSRID(ST_GeomFromText('{buffer_geom}'), 4326),
+                ST_SetSRID(ST_GeomFromText(:buffer_geom), 4326),
                 wkb_geometry
             )
-        """)
+            AND wkb_geometry IS NOT NULL
+            LIMIT 100
+        """.format(intersection_table=self.config.intersection_table))
         
         try:
             with self.remote_engine.connect() as conn:
-                intersections_df = pd.read_sql(intersections_sql, conn)
+                # 设置查询超时为60秒
+                conn.execute(text("SET statement_timeout = '60s'"))
+                intersections_df = pd.read_sql(intersections_sql, conn, params={'buffer_geom': buffer_geom})
             
             if not intersections_df.empty:
                 # 保存到结果表
                 self._save_intersections_results(analysis_id, intersections_df)
                 logger.info(f"找到 {len(intersections_df)} 个相交intersection")
+            else:
+                logger.info("未找到相交的intersection")
             
             return intersections_df
         except Exception as e:
@@ -400,7 +428,7 @@ class TrajectoryRoadAnalyzer:
             return pd.DataFrame()
         
         # 查找intersection相关的lane
-        intersection_lanes_sql = text(f"""
+        intersection_lanes_sql = text("""
             SELECT 
                 id as lane_id,
                 roadid as road_id,
@@ -408,19 +436,25 @@ class TrajectoryRoadAnalyzer:
                 intersectionid,
                 isintersectioninlane,
                 isintersectionoutlane
-            FROM {self.config.lane_table}
-            WHERE intersectionid IN ({','.join(map(str, intersection_ids))})
+            FROM {lane_table}
+            WHERE intersectionid = ANY(:intersection_ids)
             AND (isintersectioninlane = true OR isintersectionoutlane = true)
-        """)
+            AND wkb_geometry IS NOT NULL
+            LIMIT 500
+        """.format(lane_table=self.config.lane_table))
         
         try:
             with self.remote_engine.connect() as conn:
-                lanes_df = pd.read_sql(intersection_lanes_sql, conn)
+                # 设置查询超时为60秒
+                conn.execute(text("SET statement_timeout = '60s'"))
+                lanes_df = pd.read_sql(intersection_lanes_sql, conn, params={'intersection_ids': intersection_ids})
             
             if not lanes_df.empty:
                 # 保存到结果表
                 self._save_lanes_results(analysis_id, lanes_df, 'intersection_related')
                 logger.info(f"扩展intersection相关lane: {len(lanes_df)} 个")
+            else:
+                logger.info("未找到intersection相关的lane")
             
             return lanes_df
         except Exception as e:
@@ -437,18 +471,22 @@ class TrajectoryRoadAnalyzer:
             return pd.DataFrame()
         
         # 查找所有同road_id的lane
-        road_lanes_sql = text(f"""
+        road_lanes_sql = text("""
             SELECT 
                 id as lane_id,
                 roadid as road_id,
                 ST_AsText(wkb_geometry) as geometry_wkt
-            FROM {self.config.lane_table}
-            WHERE roadid IN ({','.join(map(str, road_ids))})
-        """)
+            FROM {lane_table}
+            WHERE roadid = ANY(:road_ids)
+            AND wkb_geometry IS NOT NULL
+            LIMIT 2000
+        """.format(lane_table=self.config.lane_table))
         
         try:
             with self.remote_engine.connect() as conn:
-                road_lanes_df = pd.read_sql(road_lanes_sql, conn)
+                # 设置查询超时为60秒
+                conn.execute(text("SET statement_timeout = '60s'"))
+                road_lanes_df = pd.read_sql(road_lanes_sql, conn, params={'road_ids': road_ids})
             
             if not road_lanes_df.empty:
                 # 过滤掉已经存在的lane
@@ -459,8 +497,11 @@ class TrajectoryRoadAnalyzer:
                     # 保存到结果表
                     self._save_lanes_results(analysis_id, new_lanes, 'road_related')
                     logger.info(f"基于road_id扩展lane: {len(new_lanes)} 个")
-                
-                return new_lanes
+                    return new_lanes
+                else:
+                    logger.info("基于road_id未找到新的lane")
+            else:
+                logger.info("基于road_id未找到任何lane")
             
             return pd.DataFrame()
         except Exception as e:
@@ -500,7 +541,10 @@ class TrajectoryRoadAnalyzer:
     
     def _expand_forward_chains(self, analysis_id: str, lane_ids: List[int]) -> pd.DataFrame:
         """向前扩展lane链路（不超过500m）"""
-        forward_sql = text(f"""
+        # 限制递归深度，避免复杂查询
+        max_depth = min(self.config.max_recursion_depth, 10)
+        
+        forward_sql = text("""
             WITH RECURSIVE lane_chain AS (
                 -- 基础查询：当前lane作为起点
                 SELECT 
@@ -508,11 +552,12 @@ class TrajectoryRoadAnalyzer:
                     lnl.nextlaneid,
                     0 as depth,
                     0 as distance,
-                    l.length as current_length
-                FROM {self.config.lanenextlane_table} lnl
-                JOIN {self.config.lane_table} l ON l.id = lnl.nextlaneid
-                WHERE lnl.laneid IN ({','.join(map(str, lane_ids))})
+                    COALESCE(l.length, 0) as current_length
+                FROM {lanenextlane_table} lnl
+                JOIN {lane_table} l ON l.id = lnl.nextlaneid
+                WHERE lnl.laneid = ANY(:lane_ids)
                 AND lnl.ismeet = true
+                AND l.wkb_geometry IS NOT NULL
                 
                 UNION ALL
                 
@@ -522,13 +567,14 @@ class TrajectoryRoadAnalyzer:
                     lnl.nextlaneid,
                     lc.depth + 1,
                     lc.distance + lc.current_length,
-                    l.length as current_length
-                FROM {self.config.lanenextlane_table} lnl
+                    COALESCE(l.length, 0) as current_length
+                FROM {lanenextlane_table} lnl
                 JOIN lane_chain lc ON lnl.laneid = lc.nextlaneid
-                JOIN {self.config.lane_table} l ON l.id = lnl.nextlaneid
-                WHERE lc.distance + lc.current_length <= {self.config.forward_chain_limit}
-                AND lc.depth < {self.config.max_recursion_depth}
+                JOIN {lane_table} l ON l.id = lnl.nextlaneid
+                WHERE lc.distance + lc.current_length <= :forward_limit
+                AND lc.depth < :max_depth
                 AND lnl.ismeet = true
+                AND l.wkb_geometry IS NOT NULL
             )
             SELECT DISTINCT 
                 lc.nextlaneid as lane_id,
@@ -537,18 +583,30 @@ class TrajectoryRoadAnalyzer:
                 lc.depth as chain_depth,
                 lc.distance
             FROM lane_chain lc
-            JOIN {self.config.lane_table} l ON l.id = lc.nextlaneid
+            JOIN {lane_table} l ON l.id = lc.nextlaneid
             WHERE lc.nextlaneid IS NOT NULL
-        """)
+            LIMIT 500
+        """.format(
+            lanenextlane_table=self.config.lanenextlane_table,
+            lane_table=self.config.lane_table
+        ))
         
         try:
             with self.remote_engine.connect() as conn:
-                forward_df = pd.read_sql(forward_sql, conn)
+                # 设置查询超时为120秒（递归查询可能需要更长时间）
+                conn.execute(text("SET statement_timeout = '120s'"))
+                forward_df = pd.read_sql(forward_sql, conn, params={
+                    'lane_ids': lane_ids,
+                    'forward_limit': self.config.forward_chain_limit,
+                    'max_depth': max_depth
+                })
             
             if not forward_df.empty:
                 # 保存到结果表
                 self._save_lanes_results(analysis_id, forward_df, 'chain_forward')
                 logger.info(f"向前扩展lane链路: {len(forward_df)} 个")
+            else:
+                logger.info("未找到向前扩展的lane链路")
             
             return forward_df
         except Exception as e:
@@ -557,7 +615,10 @@ class TrajectoryRoadAnalyzer:
     
     def _expand_backward_chains(self, analysis_id: str, lane_ids: List[int]) -> pd.DataFrame:
         """向后扩展lane链路（不超过100m）"""
-        backward_sql = text(f"""
+        # 限制递归深度，避免复杂查询
+        max_depth = min(self.config.max_recursion_depth, 10)
+        
+        backward_sql = text("""
             WITH RECURSIVE lane_chain AS (
                 -- 基础查询：当前lane作为终点
                 SELECT 
@@ -565,11 +626,12 @@ class TrajectoryRoadAnalyzer:
                     lnl.nextlaneid,
                     0 as depth,
                     0 as distance,
-                    l.length as current_length
-                FROM {self.config.lanenextlane_table} lnl
-                JOIN {self.config.lane_table} l ON l.id = lnl.laneid
-                WHERE lnl.nextlaneid IN ({','.join(map(str, lane_ids))})
+                    COALESCE(l.length, 0) as current_length
+                FROM {lanenextlane_table} lnl
+                JOIN {lane_table} l ON l.id = lnl.laneid
+                WHERE lnl.nextlaneid = ANY(:lane_ids)
                 AND lnl.ismeet = true
+                AND l.wkb_geometry IS NOT NULL
                 
                 UNION ALL
                 
@@ -579,13 +641,14 @@ class TrajectoryRoadAnalyzer:
                     lnl.nextlaneid,
                     lc.depth + 1,
                     lc.distance + lc.current_length,
-                    l.length as current_length
-                FROM {self.config.lanenextlane_table} lnl
+                    COALESCE(l.length, 0) as current_length
+                FROM {lanenextlane_table} lnl
                 JOIN lane_chain lc ON lnl.nextlaneid = lc.laneid
-                JOIN {self.config.lane_table} l ON l.id = lnl.laneid
-                WHERE lc.distance + lc.current_length <= {self.config.backward_chain_limit}
-                AND lc.depth < {self.config.max_recursion_depth}
+                JOIN {lane_table} l ON l.id = lnl.laneid
+                WHERE lc.distance + lc.current_length <= :backward_limit
+                AND lc.depth < :max_depth
                 AND lnl.ismeet = true
+                AND l.wkb_geometry IS NOT NULL
             )
             SELECT DISTINCT 
                 lc.laneid as lane_id,
@@ -594,18 +657,30 @@ class TrajectoryRoadAnalyzer:
                 lc.depth as chain_depth,
                 lc.distance
             FROM lane_chain lc
-            JOIN {self.config.lane_table} l ON l.id = lc.laneid
+            JOIN {lane_table} l ON l.id = lc.laneid
             WHERE lc.laneid IS NOT NULL
-        """)
+            LIMIT 200
+        """.format(
+            lanenextlane_table=self.config.lanenextlane_table,
+            lane_table=self.config.lane_table
+        ))
         
         try:
             with self.remote_engine.connect() as conn:
-                backward_df = pd.read_sql(backward_sql, conn)
+                # 设置查询超时为120秒（递归查询可能需要更长时间）
+                conn.execute(text("SET statement_timeout = '120s'"))
+                backward_df = pd.read_sql(backward_sql, conn, params={
+                    'lane_ids': lane_ids,
+                    'backward_limit': self.config.backward_chain_limit,
+                    'max_depth': max_depth
+                })
             
             if not backward_df.empty:
                 # 保存到结果表
                 self._save_lanes_results(analysis_id, backward_df, 'chain_backward')
                 logger.info(f"向后扩展lane链路: {len(backward_df)} 个")
+            else:
+                logger.info("未找到向后扩展的lane链路")
             
             return backward_df
         except Exception as e:
