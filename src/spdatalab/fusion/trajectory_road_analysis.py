@@ -29,22 +29,25 @@ class TrajectoryRoadAnalysisConfig:
     # 远程表名配置
     lane_table: str = "full_lane"
     intersection_table: str = "full_intersection"
-    lanenextlane_table: str = "full_lanenextlane"
     road_table: str = "full_road"
+    roadnextroad_table: str = "roadnextroad"
+    intersection_inroad_table: str = "full_intersectiongoinroad"
+    intersection_outroad_table: str = "full_intersectiongooutroad"
     
     # 分析参数
     buffer_distance: float = 3.0  # 轨迹膨胀距离(m)
     forward_chain_limit: float = 500.0  # 前向链路扩展限制(m)
     backward_chain_limit: float = 100.0  # 后向链路扩展限制(m)
-    max_recursion_depth: int = 50  # 最大递归深度
+    max_recursion_depth: int = 10  # 最大递归深度（降低以提高性能）
     
-    # 查询限制参数
-    max_lanes_per_query: int = 1000  # 单次查询最大lane数量
-    max_intersections_per_query: int = 100  # 单次查询最大intersection数量
-    max_forward_chains: int = 500  # 前向链路最大数量
-    max_backward_chains: int = 200  # 后向链路最大数量
-    query_timeout: int = 60  # 查询超时时间（秒）
-    recursive_query_timeout: int = 120  # 递归查询超时时间（秒）
+    # 查询限制参数（基于road的新限制）
+    max_roads_per_query: int = 100  # 单次查询最大road数量
+    max_intersections_per_query: int = 50  # 单次查询最大intersection数量
+    max_forward_road_chains: int = 200  # 前向road链路最大数量
+    max_backward_road_chains: int = 100  # 后向road链路最大数量
+    max_lanes_from_roads: int = 5000  # 从road查找lane的最大数量
+    query_timeout: int = 30  # 查询超时时间（秒，降低）
+    recursive_query_timeout: int = 60  # 递归查询超时时间（秒，降低）
     
     # 结果表名
     analysis_table: str = "trajectory_road_analysis"
@@ -191,7 +194,7 @@ class TrajectoryRoadAnalyzer:
         analysis_id: Optional[str] = None
     ) -> str:
         """
-        分析轨迹相关的道路元素
+        分析轨迹相关的道路元素（基于road的新策略）
         
         Args:
             trajectory_id: 轨迹ID
@@ -204,7 +207,7 @@ class TrajectoryRoadAnalyzer:
         if not analysis_id:
             analysis_id = f"trajectory_road_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
-        logger.info(f"开始轨迹道路分析: {analysis_id}")
+        logger.info(f"开始轨迹道路分析（基于road策略）: {analysis_id}")
         
         # 1. 创建轨迹缓冲区
         buffer_geom = self._create_trajectory_buffer(trajectory_geom)
@@ -212,26 +215,46 @@ class TrajectoryRoadAnalyzer:
         # 2. 保存分析记录
         self._save_analysis_record(analysis_id, trajectory_id, trajectory_geom, buffer_geom)
         
-        # 3. 查找相交的lane和intersection
-        intersecting_lanes = self._find_intersecting_lanes(analysis_id, buffer_geom)
+        # 3. 查找相交的road和intersection
+        intersecting_roads = self._find_intersecting_roads(analysis_id, buffer_geom)
         intersecting_intersections = self._find_intersecting_intersections(analysis_id, buffer_geom)
         
-        # 4. 扩展intersection相关的lane
-        intersection_lanes = self._expand_intersection_lanes(analysis_id, intersecting_intersections)
+        # 4. 扩展road链路（前向500m，后向100m）
+        road_ids = intersecting_roads['road_id'].tolist() if not intersecting_roads.empty else []
+        chain_roads = self._expand_road_chains(analysis_id, road_ids)
         
-        # 5. 基于road_id扩展lane
-        all_lanes = pd.concat([intersecting_lanes, intersection_lanes], ignore_index=True)
-        road_lanes = self._expand_road_lanes(analysis_id, all_lanes)
+        # 5. 补齐intersection的inroad和outroad
+        intersection_ids = intersecting_intersections['intersection_id'].tolist() if not intersecting_intersections.empty else []
+        intersection_roads = self._expand_intersection_roads(analysis_id, intersection_ids)
         
-        # 6. 扩展lane链路
-        final_lanes = pd.concat([all_lanes, road_lanes], ignore_index=True)
-        chain_lanes = self._expand_lane_chains(analysis_id, final_lanes)
+        # 6. 合并所有road
+        all_roads = []
+        if not intersecting_roads.empty:
+            all_roads.append(intersecting_roads)
+        if not chain_roads.empty:
+            all_roads.append(chain_roads)
+        if not intersection_roads.empty:
+            all_roads.append(intersection_roads)
         
-        # 7. 收集road信息
-        all_final_lanes = pd.concat([final_lanes, chain_lanes], ignore_index=True)
-        self._collect_roads(analysis_id, all_final_lanes)
+        if all_roads:
+            final_roads = pd.concat(all_roads, ignore_index=True)
+            # 去重
+            final_roads = final_roads.drop_duplicates(subset=['road_id'])
+            
+            # 7. 根据所有road查找对应的lane
+            final_road_ids = final_roads['road_id'].tolist()
+            all_lanes = self._collect_lanes_from_roads(analysis_id, final_road_ids)
+            
+            # 8. 保存road信息
+            self._save_roads_results(analysis_id, final_roads)
+            
+            logger.info(f"轨迹道路分析完成: {analysis_id}")
+            logger.info(f"  - 总roads: {len(final_roads)}")
+            logger.info(f"  - 总lanes: {len(all_lanes) if not all_lanes.empty else 0}")
+            logger.info(f"  - 总intersections: {len(intersecting_intersections)}")
+        else:
+            logger.warning(f"未找到任何相关道路元素: {analysis_id}")
         
-        logger.info(f"轨迹道路分析完成: {analysis_id}")
         return analysis_id
     
     def _create_trajectory_buffer(self, trajectory_geom: str) -> str:
@@ -281,139 +304,87 @@ class TrajectoryRoadAnalyzer:
         except Exception as e:
             logger.error(f"保存分析记录失败: {e}")
     
-    def _find_intersecting_lanes(self, analysis_id: str, buffer_geom: str) -> pd.DataFrame:
-        """查找与轨迹缓冲区相交的lane"""
+    def _find_intersecting_roads(self, analysis_id: str, buffer_geom: str) -> pd.DataFrame:
+        """查找与轨迹缓冲区相交的road"""
         
         # 输出buffer几何信息用于调试
-        logger.info(f"=== 查找相交lane调试信息 ===")
+        logger.info(f"=== 查找相交road调试信息 ===")
         logger.info(f"Analysis ID: {analysis_id}")
         logger.info(f"Buffer几何长度: {len(buffer_geom)} 字符")
         logger.info(f"Buffer几何前100字符: {buffer_geom[:100]}...")
         logger.info(f"Buffer几何后100字符: ...{buffer_geom[-100:]}")
         
-        lanes_sql = text("""
+        roads_sql = text("""
             SELECT 
-                id as lane_id,
-                roadid as road_id,
-                ST_AsText(wkb_geometry) as geometry_wkt,
-                ST_Distance(
-                    ST_SetSRID(ST_GeomFromText(:buffer_geom), 4326)::geography,
-                    wkb_geometry::geography
-                ) as distance
-            FROM {lane_table}
+                id as road_id,
+                ST_AsText(wkb_geometry) as geometry_wkt
+            FROM {road_table}
             WHERE ST_Intersects(
                 ST_SetSRID(ST_GeomFromText(:buffer_geom), 4326),
                 wkb_geometry
             )
             AND wkb_geometry IS NOT NULL
-            LIMIT 1000
-        """.format(lane_table=self.config.lane_table))
-        
-        # 输出完整的SQL语句
-        final_sql = str(lanes_sql).replace(':buffer_geom', f"'{buffer_geom}'")
-        logger.info(f"=== 完整SQL语句 ===")
-        logger.info(final_sql)
+            LIMIT :max_roads
+        """.format(road_table=self.config.road_table))
         
         # 输出可以在DataGrip中直接使用的SQL
         logger.info(f"=== DataGrip可执行SQL ===")
         datagrip_sql = f"""
--- 完整查询（可能较慢）
+-- 查找相交road
 SELECT 
-    id as lane_id,
-    roadid as road_id,
-    ST_AsText(wkb_geometry) as geometry_wkt,
-    ST_Distance(
-        ST_SetSRID(ST_GeomFromText('{buffer_geom}'), 4326)::geography,
-        wkb_geometry::geography
-    ) as distance
-FROM {self.config.lane_table}
+    id as road_id,
+    ST_AsText(wkb_geometry) as geometry_wkt
+FROM {self.config.road_table}
 WHERE ST_Intersects(
     ST_SetSRID(ST_GeomFromText('{buffer_geom}'), 4326),
     wkb_geometry
 )
 AND wkb_geometry IS NOT NULL
-LIMIT 1000;
+LIMIT {self.config.max_roads_per_query};
 """
         logger.info(datagrip_sql)
         
         try:
-            # 分步调试
-            logger.info("=== 分步调试 ===")
-            
             with self.remote_engine.connect() as conn:
-                # 设置查询超时为60秒
-                conn.execute(text("SET statement_timeout = '60s'"))
+                # 设置查询超时
+                conn.execute(text(f"SET statement_timeout = '{self.config.query_timeout}s'"))
                 
-                # 步骤1：验证buffer几何是否有效
-                logger.info("步骤1：验证buffer几何有效性")
-                buffer_check_sql = text(f"""
-                    SELECT 
-                        ST_IsValid(ST_SetSRID(ST_GeomFromText(:buffer_geom), 4326)) as is_valid,
-                        ST_GeometryType(ST_SetSRID(ST_GeomFromText(:buffer_geom), 4326)) as geom_type,
-                        ST_AsText(ST_Envelope(ST_SetSRID(ST_GeomFromText(:buffer_geom), 4326))) as bbox
-                """)
-                
-                buffer_result = conn.execute(buffer_check_sql, {'buffer_geom': buffer_geom}).fetchone()
-                if buffer_result:
-                    logger.info(f"Buffer几何有效性: {buffer_result[0]}")
-                    logger.info(f"Buffer几何类型: {buffer_result[1]}")
-                    logger.info(f"Buffer边界框: {buffer_result[2]}")
-                
-                # 步骤2：检查表和索引
-                logger.info("步骤2：检查表基本信息")
+                # 检查road表基本信息
+                logger.info("检查road表基本信息")
                 table_check_sql = text(f"""
                     SELECT 
-                        COUNT(*) as total_lanes,
-                        COUNT(CASE WHEN wkb_geometry IS NOT NULL THEN 1 END) as lanes_with_geom,
+                        COUNT(*) as total_roads,
+                        COUNT(CASE WHEN wkb_geometry IS NOT NULL THEN 1 END) as roads_with_geom,
                         ST_AsText(ST_Extent(wkb_geometry)) as table_extent
-                    FROM {self.config.lane_table}
+                    FROM {self.config.road_table}
                 """)
                 
                 table_result = conn.execute(table_check_sql).fetchone()
                 if table_result:
-                    logger.info(f"表总lane数: {table_result[0]}")
-                    logger.info(f"有几何的lane数: {table_result[1]}")
+                    logger.info(f"表总road数: {table_result[0]}")
+                    logger.info(f"有几何的road数: {table_result[1]}")
                     logger.info(f"表几何范围: {table_result[2]}")
                 
-                # 步骤3：简化查询测试（只检查相交，不计算距离）
-                logger.info("步骤3：简化相交查询")
-                simple_sql = text(f"""
-                    SELECT 
-                        id as lane_id,
-                        roadid as road_id,
-                        ST_AsText(wkb_geometry) as geometry_wkt
-                    FROM {self.config.lane_table}
-                    WHERE ST_Intersects(
-                        ST_SetSRID(ST_GeomFromText(:buffer_geom), 4326),
-                        wkb_geometry
-                    )
-                    AND wkb_geometry IS NOT NULL
-                    LIMIT 10
-                """)
-                
-                simple_result = pd.read_sql(simple_sql, conn, params={'buffer_geom': buffer_geom})
-                logger.info(f"简化查询结果: {len(simple_result)} 个lane")
-                
-                # 步骤4：执行完整查询
-                logger.info("步骤4：执行完整查询")
-                lanes_df = pd.read_sql(lanes_sql, conn, params={'buffer_geom': buffer_geom})
+                # 执行查询
+                roads_df = pd.read_sql(roads_sql, conn, params={
+                    'buffer_geom': buffer_geom,
+                    'max_roads': self.config.max_roads_per_query
+                })
             
-            if not lanes_df.empty:
-                # 保存到结果表
-                self._save_lanes_results(analysis_id, lanes_df, 'direct_intersect')
-                logger.info(f"✓ 找到 {len(lanes_df)} 个相交lane")
+            if not roads_df.empty:
+                logger.info(f"✓ 找到 {len(roads_df)} 个相交road")
                 
                 # 输出前几个结果用于验证
                 logger.info("前3个结果:")
-                for i, row in lanes_df.head(3).iterrows():
-                    logger.info(f"  Lane {row['lane_id']}: road_id={row['road_id']}, distance={row.get('distance', 'N/A')}")
+                for i, row in roads_df.head(3).iterrows():
+                    logger.info(f"  Road {row['road_id']}")
             else:
-                logger.info("未找到相交的lane")
+                logger.info("未找到相交的road")
             
-            return lanes_df
+            return roads_df
             
         except Exception as e:
-            logger.error(f"查找相交lane失败: {e}")
+            logger.error(f"查找相交road失败: {e}")
             logger.error(f"错误类型: {type(e).__name__}")
             import traceback
             logger.error(f"详细错误: {traceback.format_exc()}")
@@ -565,289 +536,278 @@ LIMIT 100;
             except Exception as e:
                 logger.error(f"保存intersection结果失败: {e}") 
 
-    def _expand_intersection_lanes(self, analysis_id: str, intersections_df: pd.DataFrame) -> pd.DataFrame:
-        """扩展intersection相关的lane（inlane和outlane）"""
-        if intersections_df.empty:
-            return pd.DataFrame()
-        
-        intersection_ids = intersections_df['intersection_id'].tolist()
-        if not intersection_ids:
-            return pd.DataFrame()
-        
-        # 查找intersection相关的lane
-        intersection_lanes_sql = text("""
-            SELECT 
-                id as lane_id,
-                roadid as road_id,
-                ST_AsText(wkb_geometry) as geometry_wkt,
-                intersectionid,
-                isintersectioninlane,
-                isintersectionoutlane
-            FROM {lane_table}
-            WHERE intersectionid = ANY(:intersection_ids)
-            AND (isintersectioninlane = true OR isintersectionoutlane = true)
-            AND wkb_geometry IS NOT NULL
-            LIMIT 500
-        """.format(lane_table=self.config.lane_table))
-        
-        try:
-            with self.remote_engine.connect() as conn:
-                # 设置查询超时为60秒
-                conn.execute(text("SET statement_timeout = '60s'"))
-                lanes_df = pd.read_sql(intersection_lanes_sql, conn, params={'intersection_ids': intersection_ids})
-            
-            if not lanes_df.empty:
-                # 保存到结果表
-                self._save_lanes_results(analysis_id, lanes_df, 'intersection_related')
-                logger.info(f"扩展intersection相关lane: {len(lanes_df)} 个")
-            else:
-                logger.info("未找到intersection相关的lane")
-            
-            return lanes_df
-        except Exception as e:
-            logger.error(f"扩展intersection相关lane失败: {e}")
-            return pd.DataFrame()
-    
-    def _expand_road_lanes(self, analysis_id: str, lanes_df: pd.DataFrame) -> pd.DataFrame:
-        """基于road_id扩展所有相关lane"""
-        if lanes_df.empty:
-            return pd.DataFrame()
-        
-        road_ids = lanes_df['road_id'].dropna().unique().tolist()
+    def _expand_road_chains(self, analysis_id: str, road_ids: List[int]) -> pd.DataFrame:
+        """扩展road链路（前向500m，后向100m）"""
         if not road_ids:
             return pd.DataFrame()
         
-        # 查找所有同road_id的lane
-        road_lanes_sql = text("""
-            SELECT 
-                id as lane_id,
-                roadid as road_id,
-                ST_AsText(wkb_geometry) as geometry_wkt
-            FROM {lane_table}
-            WHERE roadid = ANY(:road_ids)
-            AND wkb_geometry IS NOT NULL
-            LIMIT 2000
-        """.format(lane_table=self.config.lane_table))
-        
-        try:
-            with self.remote_engine.connect() as conn:
-                # 设置查询超时为60秒
-                conn.execute(text("SET statement_timeout = '60s'"))
-                road_lanes_df = pd.read_sql(road_lanes_sql, conn, params={'road_ids': road_ids})
-            
-            if not road_lanes_df.empty:
-                # 过滤掉已经存在的lane
-                existing_lane_ids = set(lanes_df['lane_id'].tolist())
-                new_lanes = road_lanes_df[~road_lanes_df['lane_id'].isin(existing_lane_ids)]
-                
-                if not new_lanes.empty:
-                    # 保存到结果表
-                    self._save_lanes_results(analysis_id, new_lanes, 'road_related')
-                    logger.info(f"基于road_id扩展lane: {len(new_lanes)} 个")
-                    return new_lanes
-                else:
-                    logger.info("基于road_id未找到新的lane")
-            else:
-                logger.info("基于road_id未找到任何lane")
-            
-            return pd.DataFrame()
-        except Exception as e:
-            logger.error(f"基于road_id扩展lane失败: {e}")
-            return pd.DataFrame()
-    
-    def _expand_lane_chains(self, analysis_id: str, lanes_df: pd.DataFrame) -> pd.DataFrame:
-        """扩展lane链路（前向500m，后向100m）"""
-        if lanes_df.empty:
-            return pd.DataFrame()
-        
-        lane_ids = lanes_df['lane_id'].tolist()
-        if not lane_ids:
-            return pd.DataFrame()
+        logger.info(f"开始扩展road链路，起始road数: {len(road_ids)}")
         
         # 前向扩展
-        forward_lanes = self._expand_forward_chains(analysis_id, lane_ids)
+        forward_roads = self._expand_forward_road_chains(analysis_id, road_ids)
         
         # 后向扩展
-        backward_lanes = self._expand_backward_chains(analysis_id, lane_ids)
+        backward_roads = self._expand_backward_road_chains(analysis_id, road_ids)
         
         # 合并结果
-        all_chain_lanes = []
-        if not forward_lanes.empty:
-            all_chain_lanes.append(forward_lanes)
-        if not backward_lanes.empty:
-            all_chain_lanes.append(backward_lanes)
+        all_chain_roads = []
+        if not forward_roads.empty:
+            all_chain_roads.append(forward_roads)
+        if not backward_roads.empty:
+            all_chain_roads.append(backward_roads)
         
-        if all_chain_lanes:
-            result = pd.concat(all_chain_lanes, ignore_index=True)
+        if all_chain_roads:
+            result = pd.concat(all_chain_roads, ignore_index=True)
             # 去重
-            result = result.drop_duplicates(subset=['lane_id'])
-            logger.info(f"扩展lane链路: {len(result)} 个")
+            result = result.drop_duplicates(subset=['road_id'])
+            logger.info(f"扩展road链路完成: {len(result)} 个")
             return result
         
         return pd.DataFrame()
     
-    def _expand_forward_chains(self, analysis_id: str, lane_ids: List[int]) -> pd.DataFrame:
-        """向前扩展lane链路（不超过500m）"""
-        # 限制递归深度，避免复杂查询
-        max_depth = min(self.config.max_recursion_depth, 10)
-        
+    def _expand_forward_road_chains(self, analysis_id: str, road_ids: List[int]) -> pd.DataFrame:
+        """向前扩展road链路（不超过500m）"""
         forward_sql = text("""
-            WITH RECURSIVE lane_chain AS (
-                -- 基础查询：当前lane作为起点
+            WITH RECURSIVE road_chain AS (
+                -- 基础查询：当前road作为起点
                 SELECT 
-                    lnl.laneid,
-                    lnl.nextlaneid,
+                    rnr.roadid,
+                    rnr.nextroadid,
                     0 as depth,
                     0 as distance,
-                    COALESCE(l.length, 0) as current_length
-                FROM {lanenextlane_table} lnl
-                JOIN {lane_table} l ON l.id = lnl.nextlaneid
-                WHERE lnl.laneid = ANY(:lane_ids)
-                AND lnl.ismeet = true
-                AND l.wkb_geometry IS NOT NULL
+                    COALESCE(rnr.length, 0) as current_length
+                FROM {roadnextroad_table} rnr
+                WHERE rnr.roadid = ANY(:road_ids)
+                AND rnr.nextroadid IS NOT NULL
                 
                 UNION ALL
                 
                 -- 递归查询：继续向前
                 SELECT 
-                    lnl.laneid,
-                    lnl.nextlaneid,
-                    lc.depth + 1,
-                    lc.distance + lc.current_length,
-                    COALESCE(l.length, 0) as current_length
-                FROM {lanenextlane_table} lnl
-                JOIN lane_chain lc ON lnl.laneid = lc.nextlaneid
-                JOIN {lane_table} l ON l.id = lnl.nextlaneid
-                WHERE lc.distance + lc.current_length <= :forward_limit
-                AND lc.depth < :max_depth
-                AND lnl.ismeet = true
-                AND l.wkb_geometry IS NOT NULL
+                    rnr.roadid,
+                    rnr.nextroadid,
+                    rc.depth + 1,
+                    rc.distance + rc.current_length,
+                    COALESCE(rnr.length, 0) as current_length
+                FROM {roadnextroad_table} rnr
+                JOIN road_chain rc ON rnr.roadid = rc.nextroadid
+                WHERE rc.distance + rc.current_length <= :forward_limit
+                AND rc.depth < :max_depth
+                AND rnr.nextroadid IS NOT NULL
             )
             SELECT DISTINCT 
-                lc.nextlaneid as lane_id,
-                l.roadid as road_id,
-                ST_AsText(l.wkb_geometry) as geometry_wkt,
-                lc.depth as chain_depth,
-                lc.distance
-            FROM lane_chain lc
-            JOIN {lane_table} l ON l.id = lc.nextlaneid
-            WHERE lc.nextlaneid IS NOT NULL
-            LIMIT 500
-        """.format(
-            lanenextlane_table=self.config.lanenextlane_table,
-            lane_table=self.config.lane_table
-        ))
+                rc.nextroadid as road_id,
+                rc.depth as chain_depth,
+                rc.distance,
+                'forward' as chain_direction
+            FROM road_chain rc
+            WHERE rc.nextroadid IS NOT NULL
+            LIMIT :max_forward_chains
+        """.format(roadnextroad_table=self.config.roadnextroad_table))
         
         try:
             with self.remote_engine.connect() as conn:
-                # 设置查询超时为120秒（递归查询可能需要更长时间）
-                conn.execute(text("SET statement_timeout = '120s'"))
+                # 设置查询超时（递归查询可能需要更长时间）
+                conn.execute(text(f"SET statement_timeout = '{self.config.recursive_query_timeout}s'"))
                 forward_df = pd.read_sql(forward_sql, conn, params={
-                    'lane_ids': lane_ids,
+                    'road_ids': road_ids,
                     'forward_limit': self.config.forward_chain_limit,
-                    'max_depth': max_depth
+                    'max_depth': self.config.max_recursion_depth,
+                    'max_forward_chains': self.config.max_forward_road_chains
                 })
             
             if not forward_df.empty:
-                # 保存到结果表
-                self._save_lanes_results(analysis_id, forward_df, 'chain_forward')
-                logger.info(f"向前扩展lane链路: {len(forward_df)} 个")
+                logger.info(f"向前扩展road链路: {len(forward_df)} 个")
             else:
-                logger.info("未找到向前扩展的lane链路")
+                logger.info("未找到向前扩展的road链路")
             
             return forward_df
         except Exception as e:
-            logger.error(f"向前扩展lane链路失败: {e}")
+            logger.error(f"向前扩展road链路失败: {e}")
             return pd.DataFrame()
     
-    def _expand_backward_chains(self, analysis_id: str, lane_ids: List[int]) -> pd.DataFrame:
-        """向后扩展lane链路（不超过100m）"""
-        # 限制递归深度，避免复杂查询
-        max_depth = min(self.config.max_recursion_depth, 10)
-        
+    def _expand_backward_road_chains(self, analysis_id: str, road_ids: List[int]) -> pd.DataFrame:
+        """向后扩展road链路（不超过100m）"""
         backward_sql = text("""
-            WITH RECURSIVE lane_chain AS (
-                -- 基础查询：当前lane作为终点
+            WITH RECURSIVE road_chain AS (
+                -- 基础查询：当前road作为终点
                 SELECT 
-                    lnl.laneid,
-                    lnl.nextlaneid,
+                    rnr.roadid,
+                    rnr.nextroadid,
                     0 as depth,
                     0 as distance,
-                    COALESCE(l.length, 0) as current_length
-                FROM {lanenextlane_table} lnl
-                JOIN {lane_table} l ON l.id = lnl.laneid
-                WHERE lnl.nextlaneid = ANY(:lane_ids)
-                AND lnl.ismeet = true
-                AND l.wkb_geometry IS NOT NULL
+                    COALESCE(rnr.length, 0) as current_length
+                FROM {roadnextroad_table} rnr
+                WHERE rnr.nextroadid = ANY(:road_ids)
+                AND rnr.roadid IS NOT NULL
                 
                 UNION ALL
                 
                 -- 递归查询：继续向后
                 SELECT 
-                    lnl.laneid,
-                    lnl.nextlaneid,
-                    lc.depth + 1,
-                    lc.distance + lc.current_length,
-                    COALESCE(l.length, 0) as current_length
-                FROM {lanenextlane_table} lnl
-                JOIN lane_chain lc ON lnl.nextlaneid = lc.laneid
-                JOIN {lane_table} l ON l.id = lnl.laneid
-                WHERE lc.distance + lc.current_length <= :backward_limit
-                AND lc.depth < :max_depth
-                AND lnl.ismeet = true
-                AND l.wkb_geometry IS NOT NULL
+                    rnr.roadid,
+                    rnr.nextroadid,
+                    rc.depth + 1,
+                    rc.distance + rc.current_length,
+                    COALESCE(rnr.length, 0) as current_length
+                FROM {roadnextroad_table} rnr
+                JOIN road_chain rc ON rnr.nextroadid = rc.roadid
+                WHERE rc.distance + rc.current_length <= :backward_limit
+                AND rc.depth < :max_depth
+                AND rnr.roadid IS NOT NULL
             )
             SELECT DISTINCT 
-                lc.laneid as lane_id,
-                l.roadid as road_id,
-                ST_AsText(l.wkb_geometry) as geometry_wkt,
-                lc.depth as chain_depth,
-                lc.distance
-            FROM lane_chain lc
-            JOIN {lane_table} l ON l.id = lc.laneid
-            WHERE lc.laneid IS NOT NULL
-            LIMIT 200
-        """.format(
-            lanenextlane_table=self.config.lanenextlane_table,
-            lane_table=self.config.lane_table
-        ))
+                rc.roadid as road_id,
+                rc.depth as chain_depth,
+                rc.distance,
+                'backward' as chain_direction
+            FROM road_chain rc
+            WHERE rc.roadid IS NOT NULL
+            LIMIT :max_backward_chains
+        """.format(roadnextroad_table=self.config.roadnextroad_table))
         
         try:
             with self.remote_engine.connect() as conn:
-                # 设置查询超时为120秒（递归查询可能需要更长时间）
-                conn.execute(text("SET statement_timeout = '120s'"))
+                # 设置查询超时（递归查询可能需要更长时间）
+                conn.execute(text(f"SET statement_timeout = '{self.config.recursive_query_timeout}s'"))
                 backward_df = pd.read_sql(backward_sql, conn, params={
-                    'lane_ids': lane_ids,
+                    'road_ids': road_ids,
                     'backward_limit': self.config.backward_chain_limit,
-                    'max_depth': max_depth
+                    'max_depth': self.config.max_recursion_depth,
+                    'max_backward_chains': self.config.max_backward_road_chains
                 })
             
             if not backward_df.empty:
-                # 保存到结果表
-                self._save_lanes_results(analysis_id, backward_df, 'chain_backward')
-                logger.info(f"向后扩展lane链路: {len(backward_df)} 个")
+                logger.info(f"向后扩展road链路: {len(backward_df)} 个")
             else:
-                logger.info("未找到向后扩展的lane链路")
+                logger.info("未找到向后扩展的road链路")
             
             return backward_df
         except Exception as e:
-            logger.error(f"向后扩展lane链路失败: {e}")
+            logger.error(f"向后扩展road链路失败: {e}")
             return pd.DataFrame()
     
-    def _collect_roads(self, analysis_id: str, lanes_df: pd.DataFrame):
-        """收集road信息"""
-        if lanes_df.empty:
-            return
+    def _expand_intersection_roads(self, analysis_id: str, intersection_ids: List[int]) -> pd.DataFrame:
+        """补齐intersection的inroad和outroad"""
+        if not intersection_ids:
+            return pd.DataFrame()
         
-        road_ids = lanes_df['road_id'].dropna().unique().tolist()
+        logger.info(f"开始补齐intersection的inroad/outroad，intersection数: {len(intersection_ids)}")
+        
+        # 查找inroad
+        inroad_sql = text("""
+            SELECT 
+                igr.roadid as road_id,
+                igr.intersectionid,
+                'intersection_inroad' as road_type
+            FROM {intersection_inroad_table} igr
+            WHERE igr.intersectionid = ANY(:intersection_ids)
+            LIMIT :max_inroads
+        """.format(intersection_inroad_table=self.config.intersection_inroad_table))
+        
+        # 查找outroad
+        outroad_sql = text("""
+            SELECT 
+                ior.roadid as road_id,
+                ior.intersectionid,
+                'intersection_outroad' as road_type
+            FROM {intersection_outroad_table} ior
+            WHERE ior.intersectionid = ANY(:intersection_ids)
+            LIMIT :max_outroads
+        """.format(intersection_outroad_table=self.config.intersection_outroad_table))
+        
+        try:
+            with self.remote_engine.connect() as conn:
+                # 设置查询超时
+                conn.execute(text(f"SET statement_timeout = '{self.config.query_timeout}s'"))
+                
+                # 查询inroad
+                inroads_df = pd.read_sql(inroad_sql, conn, params={
+                    'intersection_ids': intersection_ids,
+                    'max_inroads': 200
+                })
+                
+                # 查询outroad
+                outroads_df = pd.read_sql(outroad_sql, conn, params={
+                    'intersection_ids': intersection_ids,
+                    'max_outroads': 200
+                })
+            
+            # 合并结果
+            all_roads = []
+            if not inroads_df.empty:
+                all_roads.append(inroads_df)
+                logger.info(f"找到intersection inroad: {len(inroads_df)} 个")
+            if not outroads_df.empty:
+                all_roads.append(outroads_df)
+                logger.info(f"找到intersection outroad: {len(outroads_df)} 个")
+            
+            if all_roads:
+                result = pd.concat(all_roads, ignore_index=True)
+                # 去重
+                result = result.drop_duplicates(subset=['road_id'])
+                logger.info(f"补齐intersection roads完成: {len(result)} 个")
+                return result
+            
+            return pd.DataFrame()
+            
+        except Exception as e:
+            logger.error(f"补齐intersection roads失败: {e}")
+            return pd.DataFrame()
+    
+    def _collect_lanes_from_roads(self, analysis_id: str, road_ids: List[int]) -> pd.DataFrame:
+        """根据road_id收集所有对应的lane"""
         if not road_ids:
+            return pd.DataFrame()
+        
+        logger.info(f"开始根据road收集lane，road数: {len(road_ids)}")
+        
+        lanes_sql = text("""
+            SELECT 
+                l.id as lane_id,
+                l.roadid as road_id,
+                ST_AsText(l.wkb_geometry) as geometry_wkt,
+                l.intersectionid,
+                l.isintersectioninlane,
+                l.isintersectionoutlane
+            FROM {lane_table} l
+            WHERE l.roadid = ANY(:road_ids)
+            AND l.wkb_geometry IS NOT NULL
+            LIMIT :max_lanes
+        """.format(lane_table=self.config.lane_table))
+        
+        try:
+            with self.remote_engine.connect() as conn:
+                # 设置查询超时
+                conn.execute(text(f"SET statement_timeout = '{self.config.query_timeout}s'"))
+                lanes_df = pd.read_sql(lanes_sql, conn, params={
+                    'road_ids': road_ids,
+                    'max_lanes': self.config.max_lanes_from_roads
+                })
+            
+            if not lanes_df.empty:
+                # 保存到结果表
+                self._save_lanes_results(analysis_id, lanes_df, 'road_based')
+                logger.info(f"✓ 根据road收集lane: {len(lanes_df)} 个")
+            else:
+                logger.info("未找到任何lane")
+            
+            return lanes_df
+            
+        except Exception as e:
+            logger.error(f"根据road收集lane失败: {e}")
+            return pd.DataFrame()
+    
+    def _save_roads_results(self, analysis_id: str, roads_df: pd.DataFrame):
+        """保存road结果到数据库"""
+        if roads_df.empty:
             return
         
-        # 统计每个road的lane数量
-        road_lane_counts = lanes_df.groupby('road_id').size().reset_index(name='lane_count')
+        # 统计每个road（如果有多条记录，按road_id分组计数）
+        road_counts = roads_df.groupby('road_id').size().reset_index(name='occurrence_count')
         
         # 保存road信息
-        for _, row in road_lane_counts.iterrows():
+        for _, row in road_counts.iterrows():
             save_sql = text(f"""
                 INSERT INTO {self.config.roads_table} 
                 (analysis_id, road_id, lane_count)
@@ -861,59 +821,64 @@ LIMIT 100;
                     conn.execute(save_sql, {
                         'analysis_id': analysis_id,
                         'road_id': int(row['road_id']),
-                        'lane_count': int(row['lane_count'])
+                        'lane_count': int(row['occurrence_count'])  # 暂时用occurrence_count，后续会被实际lane数覆盖
                     })
                     conn.commit()
             except Exception as e:
                 logger.error(f"保存road信息失败: {e}")
         
-        logger.info(f"收集road信息: {len(road_lane_counts)} 个road")
+        logger.info(f"保存road信息: {len(road_counts)} 个road")
+
+    # 注意：以下旧方法已被基于road的新策略替代
+    # _expand_intersection_lanes, _expand_road_lanes, _expand_lane_chains 等方法已删除
     
     def get_analysis_summary(self, analysis_id: str) -> Dict[str, Any]:
-        """获取分析汇总信息"""
+        """获取分析汇总信息（基于road策略）"""
         summary = {'analysis_id': analysis_id}
         
         try:
-            # 统计各类lane数量
-            lane_stats_sql = text(f"""
-                SELECT 
-                    lane_type,
-                    COUNT(*) as count
+            # 统计lane数量（基于road策略的lane都是road_based类型）
+            lane_count_sql = text(f"""
+                SELECT COUNT(*) as total_lanes
                 FROM {self.config.lanes_table}
                 WHERE analysis_id = :analysis_id
-                GROUP BY lane_type
             """)
             
             with self.local_engine.connect() as conn:
-                lane_stats = pd.read_sql(lane_stats_sql, conn, params={'analysis_id': analysis_id})
-                
-                # 转换为字典
-                lane_stats_dict = dict(zip(lane_stats['lane_type'], lane_stats['count']))
-                summary.update(lane_stats_dict)
+                result = conn.execute(lane_count_sql, {'analysis_id': analysis_id}).fetchone()
+                summary['total_lanes'] = result[0] if result else 0
             
             # 统计intersection数量
             intersection_count_sql = text(f"""
-                SELECT COUNT(*) as intersection_count
+                SELECT COUNT(*) as total_intersections
                 FROM {self.config.intersections_table}
                 WHERE analysis_id = :analysis_id
             """)
             
             with self.local_engine.connect() as conn:
                 result = conn.execute(intersection_count_sql, {'analysis_id': analysis_id}).fetchone()
-                summary['intersection_count'] = result[0] if result else 0
+                summary['total_intersections'] = result[0] if result else 0
             
-            # 统计road数量
-            road_count_sql = text(f"""
-                SELECT COUNT(*) as road_count
+            # 统计road数量和详细信息
+            road_stats_sql = text(f"""
+                SELECT 
+                    COUNT(*) as total_roads,
+                    SUM(lane_count) as total_lane_count_from_roads
                 FROM {self.config.roads_table}
                 WHERE analysis_id = :analysis_id
             """)
             
             with self.local_engine.connect() as conn:
-                result = conn.execute(road_count_sql, {'analysis_id': analysis_id}).fetchone()
-                summary['road_count'] = result[0] if result else 0
+                result = conn.execute(road_stats_sql, {'analysis_id': analysis_id}).fetchone()
+                if result:
+                    summary['total_roads'] = result[0] if result[0] else 0
+                    summary['total_lane_count_from_roads'] = result[1] if result[1] else 0
+                else:
+                    summary['total_roads'] = 0
+                    summary['total_lane_count_from_roads'] = 0
             
             summary['analysis_time'] = datetime.now().isoformat()
+            summary['strategy'] = 'road_based'  # 标识使用的策略
             
         except Exception as e:
             logger.error(f"获取分析汇总失败: {e}")

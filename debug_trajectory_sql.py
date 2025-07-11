@@ -139,9 +139,9 @@ WHERE f_table_name IN ('{config.lane_table}', '{config.intersection_table}');
 """
     print(geometry_columns_sql)
     
-    # 4. 使用WITH子句的完整查询
-    print(f"\n-- 步骤4: 使用WITH子句的完整lane查询")
-    lane_with_buffer_sql = f"""
+    # 4. 使用WITH子句的road查询（新策略）
+    print(f"\n-- 步骤4: 使用WITH子句的完整road查询（新策略）")
+    road_with_buffer_sql = f"""
 WITH buffer_geom AS (
     SELECT 
         ST_Buffer(
@@ -150,22 +150,61 @@ WITH buffer_geom AS (
         )::geometry as buffer_geometry
 )
 SELECT 
-    l.id as lane_id,
-    l.roadid as road_id,
-    ST_AsText(l.wkb_geometry) as geometry_wkt,
-    ST_Distance(
-        b.buffer_geometry::geography,
-        l.wkb_geometry::geography
-    ) as distance
-FROM {config.lane_table} l, buffer_geom b
+    r.id as road_id,
+    ST_AsText(r.wkb_geometry) as geometry_wkt
+FROM {config.road_table} r, buffer_geom b
 WHERE ST_Intersects(
     b.buffer_geometry,
-    l.wkb_geometry
+    r.wkb_geometry
 )
-AND l.wkb_geometry IS NOT NULL
+AND r.wkb_geometry IS NOT NULL
 LIMIT 10;
 """
-    print(lane_with_buffer_sql)
+    print(road_with_buffer_sql)
+    
+    print(f"\n-- 步骤4b: road链路扩展查询示例（前向）")
+    road_chain_sql = f"""
+WITH RECURSIVE road_chain AS (
+    SELECT 
+        rnr.roadid,
+        rnr.nextroadid,
+        0 as depth,
+        0 as distance,
+        COALESCE(rnr.length, 0) as current_length
+    FROM {config.roadnextroad_table} rnr
+    WHERE rnr.roadid IN (
+        -- 这里应该是相交的road_id列表
+        SELECT r.id FROM {config.road_table} r 
+        WHERE ST_Intersects(
+            ST_SetSRID(ST_GeomFromText('{trajectory_wkt}'), 4326),
+            r.wkb_geometry
+        ) LIMIT 5
+    )
+    AND rnr.nextroadid IS NOT NULL
+    
+    UNION ALL
+    
+    SELECT 
+        rnr.roadid,
+        rnr.nextroadid,
+        rc.depth + 1,
+        rc.distance + rc.current_length,
+        COALESCE(rnr.length, 0) as current_length
+    FROM {config.roadnextroad_table} rnr
+    JOIN road_chain rc ON rnr.roadid = rc.nextroadid
+    WHERE rc.distance + rc.current_length <= 500.0
+    AND rc.depth < 10
+    AND rnr.nextroadid IS NOT NULL
+)
+SELECT DISTINCT 
+    rc.nextroadid as road_id,
+    rc.depth as chain_depth,
+    rc.distance
+FROM road_chain rc
+WHERE rc.nextroadid IS NOT NULL
+LIMIT 20;
+"""
+    print(road_chain_sql)
     
     print(f"\n-- 步骤5: 使用WITH子句的完整intersection查询")
     intersection_with_buffer_sql = f"""
@@ -192,29 +231,76 @@ LIMIT 10;
     print(intersection_with_buffer_sql)
     
     # 5. 简化的空间查询（用于快速测试）
-    print(f"\n-- 步骤6: 简化的空间查询（不计算距离）")
-    simple_lane_sql = f"""
+    print(f"\n-- 步骤6: intersection的inroad/outroad查询")
+    intersection_roads_sql = f"""
+-- 查找intersection的inroad
+SELECT 
+    igr.roadid as road_id,
+    igr.intersectionid,
+    'intersection_inroad' as road_type
+FROM {config.intersection_inroad_table} igr
+WHERE igr.intersectionid IN (
+    -- 这里应该是相交的intersection_id列表
+    SELECT i.id FROM {config.intersection_table} i 
+    WHERE ST_Intersects(
+        ST_SetSRID(ST_GeomFromText('{trajectory_wkt}'), 4326),
+        i.wkb_geometry
+    ) LIMIT 5
+)
+LIMIT 10;
+
+-- 查找intersection的outroad
+SELECT 
+    ior.roadid as road_id,
+    ior.intersectionid,
+    'intersection_outroad' as road_type
+FROM {config.intersection_outroad_table} ior
+WHERE ior.intersectionid IN (
+    -- 这里应该是相交的intersection_id列表
+    SELECT i.id FROM {config.intersection_table} i 
+    WHERE ST_Intersects(
+        ST_SetSRID(ST_GeomFromText('{trajectory_wkt}'), 4326),
+        i.wkb_geometry
+    ) LIMIT 5
+)
+LIMIT 10;
+"""
+    print(intersection_roads_sql)
+    
+    print(f"\n-- 步骤7: 根据road收集所有lane（最终步骤）")
+    lanes_from_roads_sql = f"""
 SELECT 
     l.id as lane_id,
     l.roadid as road_id,
-    ST_AsText(l.wkb_geometry) as geometry_wkt
+    ST_AsText(l.wkb_geometry) as geometry_wkt,
+    l.intersectionid,
+    l.isintersectioninlane,
+    l.isintersectionoutlane
 FROM {config.lane_table} l
-WHERE ST_DWithin(
-    l.wkb_geometry::geography,
-    ST_SetSRID(ST_GeomFromText('{trajectory_wkt}'), 4326)::geography,
-    {config.buffer_distance}
+WHERE l.roadid IN (
+    -- 这里应该是所有收集到的road_id列表
+    -- 包括：相交road + road链路 + intersection roads
+    SELECT DISTINCT road_id FROM (
+        -- 相交road
+        SELECT r.id as road_id FROM {config.road_table} r 
+        WHERE ST_Intersects(
+            ST_SetSRID(ST_GeomFromText('{trajectory_wkt}'), 4326),
+            r.wkb_geometry
+        )
+        LIMIT 10
+    ) combined_roads
 )
 AND l.wkb_geometry IS NOT NULL
-LIMIT 10;
+LIMIT 100;
 """
-    print(simple_lane_sql)
+    print(lanes_from_roads_sql)
     
     # 6. 检查特定区域的数据
-    print(f"\n-- 步骤7: 检查轨迹附近的数据密度")
+    print(f"\n-- 步骤8: 检查轨迹附近的数据密度")
     density_sql = f"""
 SELECT 
-    COUNT(*) as nearby_lanes
-FROM {config.lane_table}
+    COUNT(*) as nearby_roads
+FROM {config.road_table}
 WHERE ST_DWithin(
     wkb_geometry::geography,
     ST_SetSRID(ST_GeomFromText('{trajectory_wkt}'), 4326)::geography,
@@ -225,12 +311,22 @@ AND wkb_geometry IS NOT NULL;
     print(density_sql)
     
     print("\n" + "=" * 80)
-    print("调试建议:")
+    print("基于Road策略的调试建议:")
     print("1. 依次执行上述SQL语句")
     print("2. 首先执行步骤3a-3e检查表结构和列信息")
     print("3. 如果wkb_geometry列不存在，请根据步骤3e的结果使用正确的几何列名")
-    print("4. 如果步骤1-4都正常，但步骤5-6无结果，可能是空间索引问题")
-    print("5. 如果步骤7显示附近有数据，但步骤4-6无结果，检查几何投影和缓冲区大小")
+    print("4. 新策略的执行顺序：")
+    print("   - 步骤4: 查找相交road（比lane查询快得多）")
+    print("   - 步骤4b: 扩展road链路（前后500m/100m）")
+    print("   - 步骤5: 查找相交intersection")
+    print("   - 步骤6: 补齐intersection的inroad/outroad")
+    print("   - 步骤7: 根据所有road收集对应的lane（最终步骤）")
+    print("5. 性能优化：")
+    print("   - road数量比lane少很多，查询速度显著提升")
+    print("   - 递归查询限制在road级别，复杂度大幅降低")
+    print("   - 最后的lane查询范围已被限定，查询时间可控")
+    print("6. 如果步骤8显示附近有数据，但步骤4-7无结果，检查几何投影和缓冲区大小")
+    print("7. 预期性能提升：查询时间从35s降低到10s以内")
     print("=" * 80)
 
 
