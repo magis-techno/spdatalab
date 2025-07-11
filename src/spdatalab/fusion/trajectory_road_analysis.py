@@ -46,8 +46,8 @@ class TrajectoryRoadAnalysisConfig:
     max_forward_road_chains: int = 200  # 前向road链路最大数量
     max_backward_road_chains: int = 100  # 后向road链路最大数量
     max_lanes_from_roads: int = 5000  # 从road查找lane的最大数量
-    query_timeout: int = 30  # 查询超时时间（秒，降低）
-    recursive_query_timeout: int = 60  # 递归查询超时时间（秒，降低）
+    query_timeout: int = 120  # 查询超时时间（秒，增加）
+    recursive_query_timeout: int = 180  # 递归查询超时时间（秒，增加）
     
     # 结果表名
     analysis_table: str = "trajectory_road_analysis"
@@ -79,11 +79,18 @@ class TrajectoryRoadAnalyzer:
         self.remote_engine = create_engine(
             self.config.remote_dsn,
             future=True,
-            connect_args={"client_encoding": "utf8", "connect_timeout": 30},
+            connect_args={
+                "client_encoding": "utf8", 
+                "connect_timeout": 60,  # 连接超时60秒
+                "command_timeout": 120,  # 命令超时120秒
+                "server_settings": {
+                    "application_name": "trajectory_road_analysis"
+                }
+            },
             pool_pre_ping=True,
             pool_recycle=3600,
-            pool_size=5,
-            max_overflow=10
+            pool_size=3,  # 减少连接池大小
+            max_overflow=5
         )
         
         # 初始化分析表
@@ -346,30 +353,71 @@ LIMIT {self.config.max_roads_per_query};
         
         try:
             with self.remote_engine.connect() as conn:
-                # 设置查询超时
-                conn.execute(text(f"SET statement_timeout = '{self.config.query_timeout}s'"))
+                logger.info("成功建立数据库连接")
+                
+                # 设置更长的查询超时，并禁用自动提交
+                conn.execute(text("SET statement_timeout = '120s'"))  # 增加到120秒
+                conn.execute(text("SET idle_in_transaction_session_timeout = '300s'"))
+                logger.info("设置查询超时为120秒")
                 
                 # 检查road表基本信息
                 logger.info("检查road表基本信息")
                 table_check_sql = text(f"""
                     SELECT 
                         COUNT(*) as total_roads,
-                        COUNT(CASE WHEN wkb_geometry IS NOT NULL THEN 1 END) as roads_with_geom,
-                        ST_AsText(ST_Extent(wkb_geometry)) as table_extent
+                        COUNT(CASE WHEN wkb_geometry IS NOT NULL THEN 1 END) as roads_with_geom
                     FROM {self.config.road_table}
+                    LIMIT 1
                 """)
                 
+                logger.info("执行表信息查询...")
                 table_result = conn.execute(table_check_sql).fetchone()
                 if table_result:
                     logger.info(f"表总road数: {table_result[0]}")
                     logger.info(f"有几何的road数: {table_result[1]}")
-                    logger.info(f"表几何范围: {table_result[2]}")
                 
-                # 执行查询
-                roads_df = pd.read_sql(roads_sql, conn, params={
-                    'buffer_geom': buffer_geom,
-                    'max_roads': self.config.max_roads_per_query
-                })
+                # 先测试简化查询
+                logger.info("执行简化road查询测试...")
+                simple_road_sql = text(f"""
+                    SELECT 
+                        id as road_id,
+                        ST_AsText(wkb_geometry) as geometry_wkt
+                    FROM {self.config.road_table}
+                    WHERE ST_Intersects(
+                        ST_SetSRID(ST_GeomFromText(:buffer_geom), 4326),
+                        wkb_geometry
+                    )
+                    AND wkb_geometry IS NOT NULL
+                    LIMIT 5
+                """)
+                
+                # 使用execute + fetchall instead of pd.read_sql for debugging
+                logger.info("开始执行简化查询...")
+                result = conn.execute(simple_road_sql, {'buffer_geom': buffer_geom})
+                rows = result.fetchall()
+                columns = result.keys()
+                
+                logger.info(f"简化查询返回 {len(rows)} 行结果")
+                
+                if len(rows) > 0:
+                    # 如果简化查询成功，执行完整查询
+                    logger.info("简化查询成功，执行完整查询...")
+                    
+                    # 使用execute + fetchall代替pandas read_sql
+                    full_result = conn.execute(roads_sql, {
+                        'buffer_geom': buffer_geom,
+                        'max_roads': self.config.max_roads_per_query
+                    })
+                    
+                    all_rows = full_result.fetchall()
+                    all_columns = full_result.keys()
+                    
+                    # 手动创建DataFrame
+                    roads_df = pd.DataFrame(all_rows, columns=all_columns)
+                    logger.info(f"完整查询返回 {len(roads_df)} 行结果")
+                else:
+                    logger.warning("简化查询没有返回结果")
+                    roads_df = pd.DataFrame()
             
             if not roads_df.empty:
                 logger.info(f"✓ 找到 {len(roads_df)} 个相交road")
@@ -384,10 +432,26 @@ LIMIT {self.config.max_roads_per_query};
             return roads_df
             
         except Exception as e:
-            logger.error(f"查找相交road失败: {e}")
-            logger.error(f"错误类型: {type(e).__name__}")
+            error_msg = str(e).lower()
+            
+            if "statement timeout" in error_msg or "timeout" in error_msg:
+                logger.error(f"查询超时错误: {e}")
+                logger.error("建议：1. 检查网络连接 2. 增加超时时间 3. 简化查询条件")
+            elif "connection" in error_msg:
+                logger.error(f"数据库连接错误: {e}")
+                logger.error("建议：检查数据库连接配置和网络")
+            else:
+                logger.error(f"查找相交road失败: {e}")
+                logger.error(f"错误类型: {type(e).__name__}")
+                
+            # 输出详细错误信息以便调试
             import traceback
-            logger.error(f"详细错误: {traceback.format_exc()}")
+            logger.error(f"详细错误堆栈: {traceback.format_exc()}")
+            
+            # 输出当前配置用于调试
+            logger.error(f"当前配置: road_table={self.config.road_table}, max_roads={self.config.max_roads_per_query}")
+            logger.error(f"Buffer几何长度: {len(buffer_geom) if buffer_geom else 'None'}")
+            
             return pd.DataFrame()
     
     def _find_intersecting_intersections(self, analysis_id: str, buffer_geom: str) -> pd.DataFrame:
