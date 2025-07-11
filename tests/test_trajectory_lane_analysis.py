@@ -28,15 +28,19 @@ class TestTrajectoryLaneAnalyzer(unittest.TestCase):
             'uniform_step': 10
         })
         
+        # 模拟road_analysis_id
+        self.test_road_analysis_id = "test_road_analysis_20241201_123456"
+        
         # 创建模拟数据库引擎
         with patch('src.spdatalab.fusion.trajectory_lane_analysis.create_engine'):
-            self.analyzer = TrajectoryLaneAnalyzer(self.test_config)
+            self.analyzer = TrajectoryLaneAnalyzer(self.test_config, road_analysis_id=self.test_road_analysis_id)
     
     def test_init(self):
         """测试初始化"""
         self.assertIsNotNone(self.analyzer)
         self.assertEqual(self.analyzer.config['buffer_radius'], 10.0)
         self.assertEqual(self.analyzer.config['min_points_single_lane'], 3)
+        self.assertEqual(self.analyzer.road_analysis_id, self.test_road_analysis_id)
     
     def test_build_trajectory_polyline(self):
         """测试构建polyline轨迹"""
@@ -167,11 +171,17 @@ class TestTrajectoryLaneAnalyzer(unittest.TestCase):
             mock_connect.return_value.__enter__.return_value = mock_conn
             
             # 测试创建缓冲区
-            result = self.analyzer.create_lane_buffer("test_lane_id")
+            result = self.analyzer.create_lane_buffer("123")
             
             # 验证结果
             self.assertIsNotNone(result)
             mock_wkt.loads.assert_called_once()
+            
+            # 验证SQL中包含了road_analysis_id
+            call_args = mock_conn.execute.call_args
+            sql_params = call_args[0][1] if len(call_args[0]) > 1 else call_args[1]
+            self.assertEqual(sql_params['road_analysis_id'], self.test_road_analysis_id)
+            self.assertEqual(sql_params['lane_id'], 123)
     
     def test_filter_trajectory_by_buffer(self):
         """测试缓冲区过滤轨迹点"""
@@ -330,6 +340,7 @@ class TestIntegration(unittest.TestCase):
             'min_points_single_lane': 3,
             'batch_size': 2
         })
+        self.test_road_analysis_id = "test_road_analysis_integration"
     
     @patch('src.spdatalab.fusion.trajectory_lane_analysis.create_engine')
     @patch('src.spdatalab.fusion.trajectory_lane_analysis.load_scene_data_mappings')
@@ -344,7 +355,7 @@ class TestIntegration(unittest.TestCase):
         mock_load.return_value = mock_mappings
         
         # 创建分析器
-        analyzer = TrajectoryLaneAnalyzer(self.test_config)
+        analyzer = TrajectoryLaneAnalyzer(self.test_config, road_analysis_id=self.test_road_analysis_id)
         
         # 模拟各个处理步骤
         with patch.object(analyzer, 'create_database_tables', return_value=True), \

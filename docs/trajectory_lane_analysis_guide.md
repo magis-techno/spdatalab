@@ -2,7 +2,9 @@
 
 ## 概述
 
-轨迹车道分析模块是一个基于空间分析的轨迹处理工具，用于分析轨迹与车道的空间关系。该模块可以将轨迹按照邻近车道进行分段、采样和缓冲区分析，识别轨迹在不同车道上的行驶特征。
+轨迹车道分析模块是一个基于空间分析的轨迹处理工具，用于分析轨迹与车道的空间关系。该模块**依赖于trajectory_road_analysis模块的输出结果**，基于预筛选的候选车道进行精细的车道分析，包括分段、采样和缓冲区分析，识别轨迹在不同车道上的行驶特征。
+
+**重要**: 本模块必须在运行`trajectory_road_analysis`之后使用，不能独立运行。
 
 ## 功能特性
 
@@ -18,15 +20,46 @@
 ### 数据处理流程
 
 ```
-scene_id → data_name → trajectory_points → polyline → 采样 → 滑窗分析 → 车道分段 → buffer分析 → 轨迹质量检查 → 轨迹重构 → 结果输出
+阶段1: trajectory_road_analysis
+轨迹 → 缓冲区 → 查找相关道路元素 → 输出候选车道到trajectory_road_lanes表
+
+阶段2: trajectory_lane_analysis (本模块)
+候选车道 → scene_id → data_name → trajectory_points → polyline → 采样 → 滑窗分析 → 车道分段 → buffer分析 → 轨迹质量检查 → 轨迹重构 → 结果输出
 ```
+
+## 与trajectory_road_analysis的集成
+
+### 依赖关系
+本模块是**二阶段分析**的第二阶段，必须在`trajectory_road_analysis`之后运行：
+
+1. **阶段1 - 道路分析**: `trajectory_road_analysis`
+   - 基于轨迹缓冲区查找相关道路元素
+   - 扩展road链路和intersection关系
+   - 输出候选车道到`trajectory_road_lanes`表
+
+2. **阶段2 - 车道分析**: `trajectory_lane_analysis` (本模块)
+   - 基于候选车道进行精细分析
+   - 轨迹采样、滑窗分析、质量检查
+   - 输出最终的车道分析结果
+
+### 数据流转
+```
+轨迹 → trajectory_road_analysis → trajectory_road_lanes表 → trajectory_lane_analysis → 最终结果
+```
+
+### road_analysis_id的获取
+运行`trajectory_road_analysis`后会返回一个`analysis_id`，这个ID用于：
+- 标识该次道路分析的结果
+- 在`trajectory_road_lanes`表中过滤候选车道
+- 作为`trajectory_lane_analysis`的必需参数
 
 ## 安装要求
 
 ### 系统依赖
 - Python 3.8+
 - PostgreSQL + PostGIS
-- 车道数据表（包含几何信息）
+- **trajectory_road_analysis模块**: 必须先运行获得候选车道
+- Hive连接器 (用于trajectory_road_analysis)
 
 ### Python依赖
 ```bash
@@ -52,8 +85,8 @@ config = {
     'window_size': 20,                # 滑窗大小（采样点数）
     'window_overlap': 0.5,            # 滑窗重叠率
     
-    # 车道分析配置
-    'lane_table': 'public.road_lanes',
+    # 车道分析配置（基于trajectory_road_analysis结果）
+    'road_analysis_lanes_table': 'trajectory_road_lanes',  # 候选车道表
     'buffer_radius': 15.0,            # 缓冲区半径（米）
     'max_lane_distance': 50.0,        # 最大车道搜索距离（米）
     
@@ -82,14 +115,22 @@ config = {
 
 #### 基础用法
 ```bash
+# 第一步：运行道路分析（获得road_analysis_id）
+python -m spdatalab.fusion.trajectory_road_analysis \
+    --trajectory-id my_trajectory \
+    --trajectory-geom "LINESTRING(116.3 39.9, 116.31 39.91, 116.32 39.92)"
+
+# 第二步：基于道路分析结果进行车道分析
 # 使用scene_id列表文件
 python -m spdatalab.fusion.trajectory_lane_analysis \
     --input scenes.txt \
+    --road-analysis-id trajectory_road_20241201_123456 \
     --output-prefix my_analysis
 
 # 使用dataset文件
 python -m spdatalab.fusion.trajectory_lane_analysis \
     --input dataset.json \
+    --road-analysis-id trajectory_road_20241201_123456 \
     --output-prefix my_analysis
 ```
 
@@ -97,12 +138,13 @@ python -m spdatalab.fusion.trajectory_lane_analysis \
 ```bash
 python -m spdatalab.fusion.trajectory_lane_analysis \
     --input scenes.txt \
+    --road-analysis-id trajectory_road_20241201_123456 \
     --output-prefix my_analysis \
     --sampling-strategy distance \
     --distance-interval 5.0 \
     --buffer-radius 20.0 \
     --min-points-single-lane 8 \
-    --lane-table public.road_lanes \
+    --road-lanes-table trajectory_road_lanes \
     --batch-size 50 \
     --verbose
 ```
@@ -112,15 +154,26 @@ python -m spdatalab.fusion.trajectory_lane_analysis \
 #### 基础使用
 ```python
 from spdatalab.fusion.trajectory_lane_analysis import TrajectoryLaneAnalyzer
+from spdatalab.fusion.trajectory_road_analysis import analyze_trajectory_road_elements
 from spdatalab.dataset.trajectory import load_scene_data_mappings
 
-# 创建分析器
+# 第一步：运行道路分析
+trajectory_geom = "LINESTRING(116.3 39.9, 116.31 39.91, 116.32 39.92)"
+road_analysis_id, road_summary = analyze_trajectory_road_elements(
+    trajectory_id="my_trajectory",
+    trajectory_geom=trajectory_geom
+)
+
+print(f"道路分析完成: {road_analysis_id}")
+print(f"找到候选车道: {road_summary.get('total_lanes', 0)} 个")
+
+# 第二步：基于候选车道进行精细分析
 config = {
     'buffer_radius': 15.0,
     'min_points_single_lane': 5,
     'sampling_strategy': 'distance'
 }
-analyzer = TrajectoryLaneAnalyzer(config)
+analyzer = TrajectoryLaneAnalyzer(config, road_analysis_id=road_analysis_id)
 
 # 加载数据
 mappings_df = load_scene_data_mappings('input_file.txt')
@@ -249,17 +302,25 @@ CREATE TABLE trajectory_lane_buffer (
 
 ### 输入表要求
 
-#### 车道数据表 (lane_table)
+#### trajectory_road_analysis输出表 (必需)
 ```sql
--- 最低要求的字段
-CREATE TABLE public.road_lanes (
-    id TEXT PRIMARY KEY,        -- 车道ID
-    geometry GEOMETRY(LINESTRING, 4326),  -- 车道几何
-    -- 其他可选字段...
+-- trajectory_road_lanes表 (由trajectory_road_analysis生成)
+CREATE TABLE trajectory_road_lanes (
+    id SERIAL PRIMARY KEY,
+    analysis_id VARCHAR(100) NOT NULL,  -- 道路分析ID
+    lane_id BIGINT NOT NULL,            -- 车道ID
+    lane_type VARCHAR(50),              -- 车道类型
+    road_id BIGINT,                     -- 道路ID
+    distance_from_trajectory FLOAT,    -- 距离轨迹的距离
+    chain_depth INTEGER,               -- 链路深度
+    geometry GEOMETRY,                 -- 车道几何
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(analysis_id, lane_id)
 );
 
 -- 必要的空间索引
-CREATE INDEX idx_road_lanes_geometry ON public.road_lanes USING GIST(geometry);
+CREATE INDEX idx_trajectory_road_lanes_geometry ON trajectory_road_lanes USING GIST(geometry);
+CREATE INDEX idx_trajectory_road_lanes_analysis_id ON trajectory_road_lanes(analysis_id);
 ```
 
 ## 性能优化建议

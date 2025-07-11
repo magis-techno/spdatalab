@@ -1,7 +1,17 @@
 """轨迹与车道空间关系分析模块。
 
-基于现有的轨迹生成模块，实现轨迹与车道的空间关系分析。
-通过对轨迹进行分段、采样和缓冲区分析，识别轨迹在不同车道上的行驶特征。
+二阶段分析的第二阶段：基于trajectory_road_analysis模块的输出结果，
+对预筛选的候选车道进行精细的空间关系分析。
+
+依赖关系：
+1. 必须先运行 trajectory_road_analysis 获得候选车道
+2. 基于 trajectory_road_lanes 表中的候选车道进行分析
+3. 通过 road_analysis_id 关联两个阶段的分析结果
+
+主要功能：
+- 基于候选车道进行轨迹分段、采样和缓冲区分析
+- 智能质量检查和轨迹重构
+- 识别轨迹在不同车道上的行驶特征
 """
 
 from __future__ import annotations
@@ -52,8 +62,8 @@ DEFAULT_CONFIG = {
     'window_size': 20,                # 采样点数
     'window_overlap': 0.5,            # 重叠率
     
-    # 车道分析配置
-    'lane_table': 'public.road_lanes',
+    # 车道分析配置（基于trajectory_road_analysis结果）
+    'road_analysis_lanes_table': 'trajectory_road_lanes',  # 来自trajectory_road_analysis的lane结果
     'buffer_radius': 15.0,            # 米
     'max_lane_distance': 50.0,        # 米
     
@@ -90,16 +100,18 @@ def signal_handler(signum, frame):
 class TrajectoryLaneAnalyzer:
     """轨迹车道分析器主类"""
     
-    def __init__(self, config: Dict[str, Any] = None):
+    def __init__(self, config: Dict[str, Any] = None, road_analysis_id: str = None):
         """初始化分析器
         
         Args:
             config: 配置参数字典
+            road_analysis_id: trajectory_road_analysis的分析ID，用于获取候选车道
         """
         self.config = DEFAULT_CONFIG.copy()
         if config:
             self.config.update(config)
         
+        self.road_analysis_id = road_analysis_id
         self.engine = create_engine(LOCAL_DSN, future=True)
         self.stats = {
             'total_scenes': 0,
@@ -531,7 +543,7 @@ class TrajectoryLaneAnalyzer:
         }
         
     def find_nearest_lane(self, point: Dict) -> Optional[str]:
-        """查找最近的车道
+        """查找最近的车道（基于trajectory_road_analysis结果）
         
         Args:
             point: 轨迹点
@@ -543,22 +555,31 @@ class TrajectoryLaneAnalyzer:
             logger.warning("轨迹点数据无效")
             return None
         
+        if not self.road_analysis_id:
+            logger.error("未指定road_analysis_id，无法查找候选车道")
+            return None
+        
         coordinate = point['coordinate']
         lng, lat = coordinate[0], coordinate[1]
         
-        lane_table = self.config['lane_table']
+        road_lanes_table = self.config['road_analysis_lanes_table']
         max_distance = self.config['max_lane_distance']
         
         # 将距离从米转换为度（粗略转换）
         max_distance_degrees = max_distance / 111320.0
         
         try:
-            # 使用PostGIS查找最近的车道
-            # 假设车道表包含id和geometry字段
+            # 从trajectory_road_analysis的结果中查找最近的车道
             sql = text(f"""
-                SELECT id, ST_Distance(geometry, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)) as distance
-                FROM {lane_table}
-                WHERE ST_DWithin(geometry, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326), :max_distance)
+                SELECT 
+                    lane_id, 
+                    ST_Distance(geometry, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)) as distance,
+                    lane_type,
+                    road_id
+                FROM {road_lanes_table}
+                WHERE analysis_id = :road_analysis_id
+                AND geometry IS NOT NULL
+                AND ST_DWithin(geometry, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326), :max_distance)
                 ORDER BY distance
                 LIMIT 1
             """)
@@ -567,6 +588,7 @@ class TrajectoryLaneAnalyzer:
                 result = conn.execute(sql, {
                     'lng': lng,
                     'lat': lat,
+                    'road_analysis_id': self.road_analysis_id,
                     'max_distance': max_distance_degrees
                 })
                 
@@ -575,10 +597,12 @@ class TrajectoryLaneAnalyzer:
                 if row:
                     lane_id = row[0]
                     distance = row[1]
-                    logger.debug(f"找到最近车道: {lane_id}, 距离: {distance:.6f}度")
+                    lane_type = row[2]
+                    road_id = row[3]
+                    logger.debug(f"找到最近车道: {lane_id} (type: {lane_type}, road: {road_id}), 距离: {distance:.6f}度")
                     return str(lane_id)
                 else:
-                    logger.debug(f"未找到最大距离内的车道: ({lng:.6f}, {lat:.6f})")
+                    logger.debug(f"未找到最大距离内的候选车道: ({lng:.6f}, {lat:.6f})")
                     return None
                     
         except Exception as e:
@@ -586,7 +610,7 @@ class TrajectoryLaneAnalyzer:
             return None
         
     def create_lane_buffer(self, lane_id: str) -> Any:
-        """为车道创建缓冲区
+        """为车道创建缓冲区（基于trajectory_road_analysis结果）
         
         Args:
             lane_id: 车道ID
@@ -598,23 +622,30 @@ class TrajectoryLaneAnalyzer:
             logger.warning("车道ID为空")
             return None
         
-        lane_table = self.config['lane_table']
+        if not self.road_analysis_id:
+            logger.error("未指定road_analysis_id，无法查找候选车道")
+            return None
+        
+        road_lanes_table = self.config['road_analysis_lanes_table']
         buffer_radius = self.config['buffer_radius']
         
         # 将缓冲区半径从米转换为度（粗略转换）
         buffer_radius_degrees = buffer_radius / 111320.0
         
         try:
-            # 使用PostGIS创建缓冲区
+            # 从trajectory_road_analysis结果中查找车道几何并创建缓冲区
             sql = text(f"""
-                SELECT ST_Buffer(geometry, :buffer_radius) as buffer_geom
-                FROM {lane_table}
-                WHERE id = :lane_id
+                SELECT ST_AsText(ST_Buffer(geometry, :buffer_radius)) as buffer_geom
+                FROM {road_lanes_table}
+                WHERE analysis_id = :road_analysis_id
+                AND lane_id = :lane_id
+                AND geometry IS NOT NULL
             """)
             
             with self.engine.connect() as conn:
                 result = conn.execute(sql, {
-                    'lane_id': lane_id,
+                    'road_analysis_id': self.road_analysis_id,
+                    'lane_id': int(lane_id),
                     'buffer_radius': buffer_radius_degrees
                 })
                 
@@ -629,7 +660,7 @@ class TrajectoryLaneAnalyzer:
                     logger.debug(f"创建车道缓冲区: {lane_id}, 半径: {buffer_radius}米")
                     return buffer_geom
                 else:
-                    logger.warning(f"未找到车道: {lane_id}")
+                    logger.warning(f"未在候选车道中找到: {lane_id}")
                     return None
                     
         except Exception as e:
@@ -1333,16 +1364,23 @@ def main():
     parser = argparse.ArgumentParser(
         description='轨迹车道分析模块 - 轨迹与车道空间关系分析',
         epilog="""
+前提条件:
+  必须先运行 trajectory_road_analysis 获得道路分析结果，本模块基于其输出的候选车道进行精细分析
+  
 支持的输入格式:
   1. 文本文件 (.txt): 每行一个scene_id
   2. Dataset文件 (.json/.parquet): 包含scene_id和data_name映射的数据集文件
   
 分析流程:
-  scene_id → polyline → 采样 → 滑窗分析 → 车道分段 → buffer分析 → 质量检查 → 轨迹重构 → 结果输出
+  trajectory_road_analysis结果 → 候选车道 → polyline → 采样 → 滑窗分析 → 车道分段 → buffer分析 → 质量检查 → 轨迹重构 → 结果输出
   
 示例:
-  python -m spdatalab.fusion.trajectory_lane_analysis --input scenes.txt --output-prefix my_analysis
-  python -m spdatalab.fusion.trajectory_lane_analysis --input dataset.json --lane-table public.road_lanes --buffer-radius 20
+  # 第一步：运行道路分析（获得road_analysis_id）
+  python -m spdatalab.fusion.trajectory_road_analysis --trajectory-id my_traj --trajectory-geom "LINESTRING(...)"
+  
+  # 第二步：基于道路分析结果进行车道分析
+  python -m spdatalab.fusion.trajectory_lane_analysis --input scenes.txt --road-analysis-id trajectory_road_20241201_123456 --output-prefix my_analysis
+  python -m spdatalab.fusion.trajectory_lane_analysis --input dataset.json --road-analysis-id trajectory_road_20241201_123456 --buffer-radius 20
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -1370,8 +1408,10 @@ def main():
                        help='滑窗重叠率')
     
     # 车道分析参数
-    parser.add_argument('--lane-table', default='public.road_lanes',
-                       help='车道数据表名')
+    parser.add_argument('--road-analysis-id', required=True,
+                       help='trajectory_road_analysis的分析ID（必需，用于获取候选车道）')
+    parser.add_argument('--road-lanes-table', default='trajectory_road_lanes',
+                       help='道路分析结果车道表名')
     parser.add_argument('--buffer-radius', type=float, default=15.0,
                        help='车道缓冲区半径（米）')
     parser.add_argument('--max-lane-distance', type=float, default=50.0,
@@ -1416,7 +1456,7 @@ def main():
             'uniform_step': args.uniform_step,
             'window_size': args.window_size,
             'window_overlap': args.window_overlap,
-            'lane_table': args.lane_table,
+            'road_analysis_lanes_table': args.road_lanes_table,
             'buffer_radius': args.buffer_radius,
             'max_lane_distance': args.max_lane_distance,
             'min_points_single_lane': args.min_points_single_lane,
@@ -1440,13 +1480,14 @@ def main():
             
         # 输出配置信息
         logger.info(f"输出表前缀: {args.output_prefix}")
+        logger.info(f"道路分析ID: {args.road_analysis_id}")
         logger.info(f"采样策略: {config['sampling_strategy']}")
-        logger.info(f"车道表: {config['lane_table']}")
+        logger.info(f"候选车道表: {config['road_analysis_lanes_table']}")
         logger.info(f"缓冲区半径: {config['buffer_radius']}米")
         logger.info(f"单车道最少点数: {config['min_points_single_lane']}")
         
         # 创建分析器并执行分析
-        analyzer = TrajectoryLaneAnalyzer(config)
+        analyzer = TrajectoryLaneAnalyzer(config, road_analysis_id=args.road_analysis_id)
         stats = analyzer.process_scene_mappings(mappings_df)
         
         # 输出统计信息
