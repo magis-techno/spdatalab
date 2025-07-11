@@ -79,8 +79,32 @@ SELECT
 """
     print(validation_sql)
     
-    # 3. 检查表基本信息
-    print(f"\n-- 步骤3: 检查lane表基本信息")
+    # 3. 检查表结构和列信息
+    print(f"\n-- 步骤3a: 检查lane表结构")
+    lane_structure_sql = f"""
+SELECT 
+    column_name,
+    data_type,
+    is_nullable
+FROM information_schema.columns 
+WHERE table_name = '{config.lane_table}'
+ORDER BY ordinal_position;
+"""
+    print(lane_structure_sql)
+    
+    print(f"\n-- 步骤3b: 检查intersection表结构")
+    intersection_structure_sql = f"""
+SELECT 
+    column_name,
+    data_type,
+    is_nullable
+FROM information_schema.columns 
+WHERE table_name = '{config.intersection_table}'
+ORDER BY ordinal_position;
+"""
+    print(intersection_structure_sql)
+    
+    print(f"\n-- 步骤3c: 检查lane表基本信息（使用wkb_geometry）")
     lane_table_sql = f"""
 SELECT 
     COUNT(*) as total_lanes,
@@ -91,7 +115,7 @@ WHERE wkb_geometry IS NOT NULL;
 """
     print(lane_table_sql)
     
-    print(f"\n-- 步骤4: 检查intersection表基本信息")
+    print(f"\n-- 步骤3d: 检查intersection表基本信息（使用wkb_geometry）")
     intersection_table_sql = f"""
 SELECT 
     COUNT(*) as total_intersections,
@@ -102,8 +126,21 @@ WHERE wkb_geometry IS NOT NULL;
 """
     print(intersection_table_sql)
     
+    print(f"\n-- 步骤3e: 检查可能的几何列名")
+    geometry_columns_sql = f"""
+SELECT 
+    f_table_name,
+    f_geometry_column,
+    coord_dimension,
+    srid,
+    type
+FROM geometry_columns 
+WHERE f_table_name IN ('{config.lane_table}', '{config.intersection_table}');
+"""
+    print(geometry_columns_sql)
+    
     # 4. 使用WITH子句的完整查询
-    print(f"\n-- 步骤5: 使用WITH子句的完整lane查询")
+    print(f"\n-- 步骤4: 使用WITH子句的完整lane查询")
     lane_with_buffer_sql = f"""
 WITH buffer_geom AS (
     SELECT 
@@ -130,7 +167,7 @@ LIMIT 10;
 """
     print(lane_with_buffer_sql)
     
-    print(f"\n-- 步骤6: 使用WITH子句的完整intersection查询")
+    print(f"\n-- 步骤5: 使用WITH子句的完整intersection查询")
     intersection_with_buffer_sql = f"""
 WITH buffer_geom AS (
     SELECT 
@@ -155,7 +192,7 @@ LIMIT 10;
     print(intersection_with_buffer_sql)
     
     # 5. 简化的空间查询（用于快速测试）
-    print(f"\n-- 步骤7: 简化的空间查询（不计算距离）")
+    print(f"\n-- 步骤6: 简化的空间查询（不计算距离）")
     simple_lane_sql = f"""
 SELECT 
     l.id as lane_id,
@@ -173,7 +210,7 @@ LIMIT 10;
     print(simple_lane_sql)
     
     # 6. 检查特定区域的数据
-    print(f"\n-- 步骤8: 检查轨迹附近的数据密度")
+    print(f"\n-- 步骤7: 检查轨迹附近的数据密度")
     density_sql = f"""
 SELECT 
     COUNT(*) as nearby_lanes
@@ -190,9 +227,10 @@ AND wkb_geometry IS NOT NULL;
     print("\n" + "=" * 80)
     print("调试建议:")
     print("1. 依次执行上述SQL语句")
-    print("2. 检查每个步骤的结果")
-    print("3. 如果步骤1-4都正常，但步骤5-6无结果，可能是空间索引问题")
-    print("4. 如果步骤8显示附近有数据，但步骤5-6无结果，检查几何投影和缓冲区大小")
+    print("2. 首先执行步骤3a-3e检查表结构和列信息")
+    print("3. 如果wkb_geometry列不存在，请根据步骤3e的结果使用正确的几何列名")
+    print("4. 如果步骤1-4都正常，但步骤5-6无结果，可能是空间索引问题")
+    print("5. 如果步骤7显示附近有数据，但步骤4-6无结果，检查几何投影和缓冲区大小")
     print("=" * 80)
 
 
