@@ -2,12 +2,7 @@
 """
 轨迹道路分析模块测试脚本
 
-测试功能：
-1. 基本配置测试
-2. 数据库表创建测试
-3. 轨迹缓冲区创建测试
-4. 空间查询测试
-5. 完整分析流程测试
+专注于基于GeoJSON的完整链路测试
 """
 
 import logging
@@ -126,7 +121,7 @@ def geojson_geometry_to_wkt(geometry: Dict[str, Any]) -> str:
         return ""
 
 def create_sample_geojson(output_file: str = "sample_trajectories.geojson"):
-    """创建示例GeoJSON文件
+    """创建示例GeoJSON文件（北京、上海真实道路坐标）
     
     Args:
         output_file: 输出文件路径
@@ -138,17 +133,19 @@ def create_sample_geojson(output_file: str = "sample_trajectories.geojson"):
                 "type": "Feature",
                 "properties": {
                     "id": "trajectory_beijing_001",
-                    "name": "北京市区轨迹1",
-                    "description": "从三环到四环的示例轨迹"
+                    "name": "北京三环主路",
+                    "description": "北京三环东路到朝阳门"
                 },
                 "geometry": {
                     "type": "LineString",
                     "coordinates": [
-                        [116.3, 39.9],
-                        [116.31, 39.91],
-                        [116.32, 39.92],
-                        [116.33, 39.93],
-                        [116.34, 39.94]
+                        [116.4526, 39.9042],  # 三环东路
+                        [116.4556, 39.9052],
+                        [116.4586, 39.9062],
+                        [116.4616, 39.9072],
+                        [116.4646, 39.9082],
+                        [116.4676, 39.9092],
+                        [116.4706, 39.9102]   # 朝阳门附近
                     ]
                 }
             },
@@ -156,18 +153,18 @@ def create_sample_geojson(output_file: str = "sample_trajectories.geojson"):
                 "type": "Feature",
                 "properties": {
                     "id": "trajectory_beijing_002",
-                    "name": "北京市区轨迹2",
-                    "description": "朝阳区环路轨迹"
+                    "name": "北京四环主路",
+                    "description": "北京四环东路段"
                 },
                 "geometry": {
                     "type": "LineString",
                     "coordinates": [
-                        [116.4, 39.8],
-                        [116.41, 39.81],
-                        [116.42, 39.82],
-                        [116.43, 39.83],
-                        [116.44, 39.84],
-                        [116.45, 39.85]
+                        [116.4826, 39.9242],
+                        [116.4856, 39.9252],
+                        [116.4886, 39.9262],
+                        [116.4916, 39.9272],
+                        [116.4946, 39.9282],
+                        [116.4976, 39.9292]
                     ]
                 }
             },
@@ -175,16 +172,17 @@ def create_sample_geojson(output_file: str = "sample_trajectories.geojson"):
                 "type": "Feature",
                 "properties": {
                     "id": "trajectory_shanghai_001",
-                    "name": "上海市区轨迹",
-                    "description": "浦东新区轨迹"
+                    "name": "上海内环主路",
+                    "description": "上海内环高架东段"
                 },
                 "geometry": {
                     "type": "LineString",
                     "coordinates": [
-                        [121.5, 31.2],
-                        [121.51, 31.21],
-                        [121.52, 31.22],
-                        [121.53, 31.23]
+                        [121.5026, 31.2242],
+                        [121.5056, 31.2252],
+                        [121.5086, 31.2262],
+                        [121.5116, 31.2272],
+                        [121.5146, 31.2282]
                     ]
                 }
             }
@@ -200,471 +198,164 @@ def create_sample_geojson(output_file: str = "sample_trajectories.geojson"):
         logger.error(f"创建示例GeoJSON文件失败: {e}")
         return False
 
-def test_config():
-    """测试配置类"""
-    logger.info("=== 测试配置类 ===")
+def test_complete_analysis_pipeline(geojson_file: str, verbose: bool = False):
+    """完整的轨迹道路分析链路测试
     
-    config = TrajectoryRoadAnalysisConfig()
-    
-    # 检查默认配置
-    assert config.buffer_distance == 3.0
-    assert config.forward_chain_limit == 500.0
-    assert config.backward_chain_limit == 100.0
-    assert config.max_recursion_depth == 50
-    
-    logger.info("✓ 配置类测试通过")
-
-def test_analyzer_initialization():
-    """测试分析器初始化"""
-    logger.info("=== 测试分析器初始化 ===")
+    Args:
+        geojson_file: GeoJSON文件路径
+        verbose: 是否详细输出
+    """
+    logger.info("=== 开始完整链路测试 ===")
     
     try:
-        analyzer = TrajectoryRoadAnalyzer()
-        logger.info("✓ 分析器初始化成功")
-        
-        # 测试配置
-        assert analyzer.config.buffer_distance == 3.0
-        logger.info("✓ 配置加载正确")
-        
-    except Exception as e:
-        logger.error(f"✗ 分析器初始化失败: {e}")
-        raise
-
-def test_trajectory_buffer():
-    """测试轨迹缓冲区创建"""
-    logger.info("=== 测试轨迹缓冲区创建 ===")
-    
-    try:
-        analyzer = TrajectoryRoadAnalyzer()
-        
-        # 测试轨迹WKT（示例线段）
-        test_trajectory_wkt = "LINESTRING(116.3 39.9, 116.31 39.91, 116.32 39.92)"
-        
-        # 创建缓冲区
-        buffer_geom = analyzer._create_trajectory_buffer(test_trajectory_wkt)
-        
-        if buffer_geom:
-            logger.info("✓ 轨迹缓冲区创建成功")
-            logger.info(f"缓冲区几何类型: {buffer_geom[:50]}...")
-        else:
-            logger.error("✗ 轨迹缓冲区创建失败")
-            
-    except Exception as e:
-        logger.error(f"✗ 轨迹缓冲区测试失败: {e}")
-
-def test_simple_analysis():
-    """测试简单分析流程"""
-    logger.info("=== 测试简单分析流程 ===")
-    
-    try:
-        # 使用便捷接口
-        test_trajectory_id = "test_trajectory_001"
-        test_trajectory_wkt = "LINESTRING(116.3 39.9, 116.31 39.91, 116.32 39.92)"
-        
-        analysis_id, summary = analyze_trajectory_road_elements(
-            trajectory_id=test_trajectory_id,
-            trajectory_geom=test_trajectory_wkt
-        )
-        
-        logger.info(f"✓ 分析完成: {analysis_id}")
-        logger.info(f"分析汇总: {summary}")
-        
-        # 生成报告
-        report = create_trajectory_road_analysis_report(analysis_id)
-        logger.info("✓ 生成分析报告成功")
-        
-        # 输出报告的前几行
-        report_lines = report.split('\n')
-        for line in report_lines[:10]:
-            logger.info(f"报告: {line}")
-        
-        return analysis_id
-        
-    except Exception as e:
-        logger.error(f"✗ 简单分析流程测试失败: {e}")
-        return None
-
-def test_database_tables():
-    """测试数据库表创建"""
-    logger.info("=== 测试数据库表创建 ===")
-    
-    try:
-        analyzer = TrajectoryRoadAnalyzer()
-        
-        # 检查表是否存在
-        tables_to_check = [
-            analyzer.config.analysis_table,
-            analyzer.config.lanes_table,
-            analyzer.config.intersections_table,
-            analyzer.config.roads_table
-        ]
-        
-        for table_name in tables_to_check:
-            from sqlalchemy import text
-            check_sql = text("""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
-                    WHERE table_schema = 'public' 
-                    AND table_name = :table_name
-                );
-            """)
-            
-            with analyzer.local_engine.connect() as conn:
-                result = conn.execute(check_sql, {'table_name': table_name}).fetchone()
-                exists = result[0] if result else False
-                
-                if exists:
-                    logger.info(f"✓ 表 {table_name} 存在")
-                else:
-                    logger.warning(f"⚠ 表 {table_name} 不存在")
-        
-        logger.info("✓ 数据库表检查完成")
-        
-    except Exception as e:
-        logger.error(f"✗ 数据库表测试失败: {e}")
-
-def test_mock_data_analysis():
-    """测试模拟数据分析"""
-    logger.info("=== 测试模拟数据分析 ===")
-    
-    # 模拟一些测试轨迹数据
-    test_trajectories = [
-        ("trajectory_001", "LINESTRING(116.3 39.9, 116.31 39.91, 116.32 39.92)"),
-        ("trajectory_002", "LINESTRING(116.4 39.8, 116.41 39.81, 116.42 39.82)"),
-        ("trajectory_003", "LINESTRING(116.5 39.7, 116.51 39.71, 116.52 39.72)")
-    ]
-    
-    results = []
-    
-    for trajectory_id, trajectory_wkt in test_trajectories:
-        try:
-            logger.info(f"分析轨迹: {trajectory_id}")
-            
-            analysis_id, summary = analyze_trajectory_road_elements(
-                trajectory_id=trajectory_id,
-                trajectory_geom=trajectory_wkt
-            )
-            
-            results.append({
-                'trajectory_id': trajectory_id,
-                'analysis_id': analysis_id,
-                'summary': summary
-            })
-            
-            logger.info(f"✓ 轨迹 {trajectory_id} 分析完成")
-            
-        except Exception as e:
-            logger.error(f"✗ 轨迹 {trajectory_id} 分析失败: {e}")
-            results.append({
-                'trajectory_id': trajectory_id,
-                'analysis_id': None,
-                'error': str(e)
-            })
-    
-    logger.info(f"✓ 模拟数据分析完成，成功: {len([r for r in results if r.get('analysis_id')])}")
-    return results
-
-def test_geojson_support():
-    """测试GeoJSON文件支持"""
-    logger.info("=== 测试GeoJSON文件支持 ===")
-    
-    # 创建示例GeoJSON文件
-    sample_file = "test_sample_trajectories.geojson"
-    if create_sample_geojson(sample_file):
-        logger.info("✓ 示例GeoJSON文件创建成功")
-    else:
-        logger.error("✗ 示例GeoJSON文件创建失败")
-        return
-    
-    try:
-        # 测试加载GeoJSON文件
-        trajectories = load_trajectories_from_geojson(sample_file)
-        
-        if trajectories:
-            logger.info(f"✓ GeoJSON文件加载成功，找到 {len(trajectories)} 个轨迹")
-            
-            # 测试分析前几个轨迹
-            results = []
-            for i, (trajectory_id, trajectory_wkt) in enumerate(trajectories[:2]):  # 只测试前2个
-                try:
-                    logger.info(f"分析GeoJSON轨迹: {trajectory_id}")
-                    
-                    analysis_id, summary = analyze_trajectory_road_elements(
-                        trajectory_id=trajectory_id,
-                        trajectory_geom=trajectory_wkt
-                    )
-                    
-                    results.append({
-                        'trajectory_id': trajectory_id,
-                        'analysis_id': analysis_id,
-                        'summary': summary
-                    })
-                    
-                    logger.info(f"✓ GeoJSON轨迹 {trajectory_id} 分析完成")
-                    
-                except Exception as e:
-                    logger.error(f"✗ GeoJSON轨迹 {trajectory_id} 分析失败: {e}")
-                    results.append({
-                        'trajectory_id': trajectory_id,
-                        'analysis_id': None,
-                        'error': str(e)
-                    })
-            
-            successful_analyses = len([r for r in results if r.get('analysis_id')])
-            logger.info(f"✓ GeoJSON轨迹分析完成，成功: {successful_analyses}/{len(results)}")
-        else:
-            logger.error("✗ GeoJSON文件加载失败")
-    
-    except Exception as e:
-        logger.error(f"✗ GeoJSON支持测试失败: {e}")
-    
-    finally:
-        # 清理测试文件
-        try:
-            Path(sample_file).unlink()
-            logger.info("✓ 清理测试文件完成")
-        except:
-            pass
-
-def test_geojson_geometry_conversion():
-    """测试GeoJSON几何转换"""
-    logger.info("=== 测试GeoJSON几何转换 ===")
-    
-    test_cases = [
-        {
-            "name": "LineString",
-            "geometry": {
-                "type": "LineString",
-                "coordinates": [[116.3, 39.9], [116.31, 39.91], [116.32, 39.92]]
-            },
-            "expected_prefix": "LINESTRING"
-        },
-        {
-            "name": "MultiLineString",
-            "geometry": {
-                "type": "MultiLineString",
-                "coordinates": [[[116.3, 39.9], [116.31, 39.91]], [[116.4, 39.8], [116.41, 39.81]]]
-            },
-            "expected_prefix": "LINESTRING"
-        },
-        {
-            "name": "Point",
-            "geometry": {
-                "type": "Point",
-                "coordinates": [116.3, 39.9]
-            },
-            "expected_prefix": "POINT"
-        },
-        {
-            "name": "Polygon",
-            "geometry": {
-                "type": "Polygon",
-                "coordinates": [[[116.3, 39.9], [116.31, 39.91], [116.32, 39.92], [116.3, 39.9]]]
-            },
-            "expected_prefix": "LINESTRING"
-        }
-    ]
-    
-    for test_case in test_cases:
-        try:
-            wkt = geojson_geometry_to_wkt(test_case["geometry"])
-            
-            if wkt and wkt.startswith(test_case["expected_prefix"]):
-                logger.info(f"✓ {test_case['name']} 转换成功: {wkt[:50]}...")
-            else:
-                logger.error(f"✗ {test_case['name']} 转换失败: {wkt}")
-                
-        except Exception as e:
-            logger.error(f"✗ {test_case['name']} 转换异常: {e}")
-
-def run_all_tests(geojson_file: str = None):
-    """运行所有测试"""
-    logger.info("开始运行轨迹道路分析模块测试...")
-    
-    # 基础测试
-    tests = [
-        test_config,
-        test_analyzer_initialization,
-        test_database_tables,
-        test_trajectory_buffer,
-        test_simple_analysis,
-        test_mock_data_analysis,
-        test_geojson_geometry_conversion,
-        test_geojson_support
-    ]
-    
-    passed = 0
-    failed = 0
-    
-    for test_func in tests:
-        try:
-            test_func()
-            passed += 1
-            logger.info(f"✓ {test_func.__name__} 通过")
-        except Exception as e:
-            failed += 1
-            logger.error(f"✗ {test_func.__name__} 失败: {e}")
-    
-    # 如果指定了GeoJSON文件，运行GeoJSON文件测试
-    if geojson_file:
-        logger.info(f"\n=== 运行GeoJSON文件测试: {geojson_file} ===")
-        try:
-            test_geojson_file_analysis(geojson_file)
-            passed += 1
-            logger.info("✓ GeoJSON文件测试通过")
-        except Exception as e:
-            failed += 1
-            logger.error(f"✗ GeoJSON文件测试失败: {e}")
-    
-    logger.info(f"\n=== 测试结果汇总 ===")
-    logger.info(f"通过: {passed}")
-    logger.info(f"失败: {failed}")
-    logger.info(f"总计: {passed + failed}")
-    
-    if failed == 0:
-        logger.info("🎉 所有测试通过！")
-    else:
-        logger.warning(f"⚠ {failed} 个测试失败")
-    
-    return failed == 0
-
-def test_geojson_file_analysis(geojson_file: str):
-    """测试指定的GeoJSON文件分析"""
-    logger.info(f"=== 测试GeoJSON文件分析: {geojson_file} ===")
-    
-    if not Path(geojson_file).exists():
-        logger.error(f"GeoJSON文件不存在: {geojson_file}")
-        return
-    
-    try:
-        # 加载轨迹数据
+        # 1. 加载轨迹数据
+        logger.info("1. 加载轨迹数据...")
         trajectories = load_trajectories_from_geojson(geojson_file)
         
         if not trajectories:
-            logger.error("GeoJSON文件中没有有效的轨迹数据")
-            return
+            logger.error("没有加载到轨迹数据")
+            return False
         
-        logger.info(f"从GeoJSON文件加载了 {len(trajectories)} 个轨迹")
+        logger.info(f"加载了 {len(trajectories)} 个轨迹")
         
-        # 分析所有轨迹
-        results = []
+        # 2. 初始化分析器
+        logger.info("2. 初始化分析器...")
+        config = TrajectoryRoadAnalysisConfig()
+        analyzer = TrajectoryRoadAnalyzer(config)
+        
+        # 3. 执行分析
+        logger.info("3. 执行轨迹道路分析...")
+        
+        analysis_ids = []
         for trajectory_id, trajectory_wkt in trajectories:
+            logger.info(f"分析轨迹: {trajectory_id}")
+            
             try:
-                logger.info(f"分析轨迹: {trajectory_id}")
-                
-                analysis_id, summary = analyze_trajectory_road_elements(
+                # 执行轨迹分析
+                analysis_id = analyzer.analyze_trajectory_roads(
                     trajectory_id=trajectory_id,
                     trajectory_geom=trajectory_wkt
                 )
                 
-                results.append({
-                    'trajectory_id': trajectory_id,
-                    'analysis_id': analysis_id,
-                    'summary': summary
-                })
-                
-                logger.info(f"✓ 轨迹 {trajectory_id} 分析完成")
-                
-                # 输出分析汇总的前几行
-                if summary:
-                    logger.info(f"  - 分析ID: {analysis_id}")
-                    for key, value in list(summary.items())[:5]:
-                        logger.info(f"  - {key}: {value}")
-                
+                if analysis_id:
+                    analysis_ids.append(analysis_id)
+                    logger.info(f"✓ 轨迹 {trajectory_id} 分析成功，分析ID: {analysis_id}")
+                    
+                    if verbose:
+                        # 获取分析汇总
+                        summary = analyzer.get_analysis_summary(analysis_id)
+                        logger.info(f"  - 总lanes: {summary.get('total_lanes', 0)}")
+                        logger.info(f"  - 总intersections: {summary.get('total_intersections', 0)}")
+                        logger.info(f"  - 总roads: {summary.get('total_roads', 0)}")
+                else:
+                    logger.warning(f"✗ 轨迹 {trajectory_id} 分析失败")
             except Exception as e:
-                logger.error(f"✗ 轨迹 {trajectory_id} 分析失败: {e}")
-                results.append({
-                    'trajectory_id': trajectory_id,
-                    'analysis_id': None,
-                    'error': str(e)
-                })
+                logger.error(f"✗ 轨迹 {trajectory_id} 分析出错: {e}")
         
-        successful_analyses = len([r for r in results if r.get('analysis_id')])
-        logger.info(f"✓ GeoJSON文件分析完成，成功: {successful_analyses}/{len(results)}")
+        # 4. 导出QGIS可视化
+        logger.info("4. 导出QGIS可视化...")
         
-        # 为成功的分析生成报告
-        for result in results:
-            if result.get('analysis_id'):
-                try:
-                    report = create_trajectory_road_analysis_report(result['analysis_id'])
-                    logger.info(f"生成报告: {result['trajectory_id']}")
-                    # 输出报告的前几行
-                    report_lines = report.split('\n')
-                    for line in report_lines[:5]:
-                        if line.strip():
-                            logger.info(f"  {line}")
-                except Exception as e:
-                    logger.warning(f"生成报告失败: {result['trajectory_id']}, {e}")
+        for analysis_id in analysis_ids:
+            try:
+                export_info = analyzer.export_results_for_qgis(analysis_id)
+                logger.info(f"✓ QGIS导出完成: {analysis_id}")
+                if verbose:
+                    logger.info(f"  导出信息: {export_info}")
+            except Exception as e:
+                logger.error(f"✗ QGIS导出失败: {analysis_id}, {e}")
+        
+        # 5. 生成分析报告
+        logger.info("5. 生成分析报告...")
+        for analysis_id in analysis_ids:
+            try:
+                report = create_trajectory_road_analysis_report(analysis_id, config)
+                
+                if report:
+                    logger.info(f"✓ 分析报告生成成功: {analysis_id}")
+                    
+                    if verbose:
+                        logger.info("=== 分析报告摘要 ===")
+                        # 输出报告的前几行
+                        report_lines = report.split('\n')
+                        for line in report_lines[:10]:
+                            if line.strip():
+                                logger.info(f"  {line}")
+                else:
+                    logger.warning(f"✗ 分析报告生成失败: {analysis_id}")
+            except Exception as e:
+                                 logger.error(f"✗ 生成分析报告出错: {analysis_id}, {e}")
+        
+        logger.info("=== 完整链路测试完成 ===")
+        logger.info(f"总共分析了 {len(analysis_ids)} 个轨迹")
+        return len(analysis_ids) > 0
         
     except Exception as e:
-        logger.error(f"GeoJSON文件分析失败: {e}")
-        raise
+        logger.error(f"完整链路测试失败: {e}")
+        return False
 
 def main():
-    """主函数，支持命令行参数"""
+    """主函数，CLI入口点"""
     parser = argparse.ArgumentParser(
-        description='轨迹道路分析模块测试工具',
-        epilog="""
-使用示例:
-  # 运行所有默认测试
-  python test_trajectory_road_analysis.py
-  
-  # 测试GeoJSON文件
-  python test_trajectory_road_analysis.py --geojson trajectories.geojson
-  
-  # 创建示例GeoJSON文件
-  python test_trajectory_road_analysis.py --create-sample
-  
-  # 详细日志输出
-  python test_trajectory_road_analysis.py --verbose
-        """,
+        description='轨迹道路分析模块测试',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
-    parser.add_argument('--geojson', '-g', 
-                       help='指定GeoJSON文件进行轨迹分析测试')
-    parser.add_argument('--create-sample', '-c', action='store_true',
+    parser.add_argument('--geojson', type=str, help='GeoJSON文件路径')
+    parser.add_argument('--create-sample', action='store_true', 
                        help='创建示例GeoJSON文件')
-    parser.add_argument('--output', '-o', default='sample_trajectories.geojson',
-                       help='示例GeoJSON文件的输出路径')
-    parser.add_argument('--verbose', '-v', action='store_true',
-                       help='详细日志输出')
+    parser.add_argument('--verbose', '-v', action='store_true', 
+                       help='详细输出')
+    parser.add_argument('--output', type=str, default='sample_trajectories.geojson',
+                       help='示例文件输出路径')
     
     args = parser.parse_args()
     
-    # 配置日志
-    level = logging.DEBUG if args.verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler('test_trajectory_road_analysis.log')
-        ]
-    )
+    # 设置日志级别
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
     
-    # 创建示例文件
-    if args.create_sample:
-        logger.info(f"创建示例GeoJSON文件: {args.output}")
-        if create_sample_geojson(args.output):
-            logger.info("✓ 示例文件创建成功")
-            logger.info(f"可以使用以下命令测试:")
-            logger.info(f"  python test_trajectory_road_analysis.py --geojson {args.output}")
-            return 0
-        else:
-            logger.error("✗ 示例文件创建失败")
-            return 1
-    
-    # 运行测试
     try:
-        success = run_all_tests(geojson_file=args.geojson)
-        return 0 if success else 1
-    except KeyboardInterrupt:
-        logger.info("测试被用户中断")
-        return 1
+        # 创建示例文件
+        if args.create_sample:
+            logger.info("创建示例GeoJSON文件...")
+            if create_sample_geojson(args.output):
+                logger.info(f"示例文件已创建: {args.output}")
+                logger.info("使用方法: python test_trajectory_road_analysis.py --geojson sample_trajectories.geojson")
+            else:
+                logger.error("创建示例文件失败")
+                return 1
+        
+        # 执行GeoJSON文件分析
+        if args.geojson:
+            geojson_file = args.geojson
+            
+            if not Path(geojson_file).exists():
+                logger.error(f"GeoJSON文件不存在: {geojson_file}")
+                return 1
+            
+            logger.info(f"开始测试GeoJSON文件: {geojson_file}")
+            success = test_complete_analysis_pipeline(geojson_file, args.verbose)
+            
+            if success:
+                logger.info("✓ 测试成功完成")
+                return 0
+            else:
+                logger.error("✗ 测试失败")
+                return 1
+        
+        # 如果没有指定参数，显示帮助
+        if not args.create_sample and not args.geojson:
+            parser.print_help()
+            logger.info("\n建议使用:")
+            logger.info("  1. 创建示例: python test_trajectory_road_analysis.py --create-sample")
+            logger.info("  2. 测试分析: python test_trajectory_road_analysis.py --geojson sample_trajectories.geojson")
+            return 0
+        
+        return 0
+        
     except Exception as e:
-        logger.error(f"测试执行失败: {e}")
+        logger.error(f"程序执行失败: {e}")
         return 1
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     sys.exit(main())
