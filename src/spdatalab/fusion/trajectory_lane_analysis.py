@@ -45,7 +45,7 @@ from spdatalab.dataset.trajectory import (
 
 # 数据库配置
 LOCAL_DSN = "postgresql+psycopg://postgres:postgres@local_pg:5432/postgres"
-POINT_TABLE = "public.ddi_data_points"
+POINT_TABLE = "ddi_data_points"  # Hive中的轨迹点表名（不带schema前缀）
 
 # 默认配置
 DEFAULT_CONFIG = {
@@ -464,7 +464,8 @@ class TrajectoryLaneAnalyzer:
         logger.info(f"配置: buffer_radius={buffer_radius}m, points_limit={points_limit}, recent_days={recent_days}")
         
         try:
-            with self.engine.connect() as conn:
+            # 使用hive_cursor连接dataset_gy1轨迹数据库
+            with hive_cursor("dataset_gy1") as cur:
                 for i, lane in enumerate(nearby_lanes):
                     logger.info(f"查询lane [{i+1}/{len(nearby_lanes)}]: {lane['lane_id']} (type: {lane['lane_type']})")
                     
@@ -475,8 +476,8 @@ class TrajectoryLaneAnalyzer:
                         recent_timestamp = int(time.time()) - (recent_days * 24 * 3600)
                         time_filter = f"AND p.timestamp >= {recent_timestamp}"
                     
-                    # 为lane创建buffer并查询轨迹点
-                    sql = text(f"""
+                    # 为lane创建buffer并查询轨迹点 (使用Hive/Trino兼容的空间函数)
+                    sql = f"""
                         SELECT 
                             p.dataset_name,
                             p.timestamp,
@@ -490,20 +491,20 @@ class TrajectoryLaneAnalyzer:
                         AND ST_DWithin(
                             p.point_lla,
                             ST_Buffer(
-                                ST_SetSRID(ST_GeomFromText(:lane_geom), 4326)::geography,
-                                :buffer_radius
-                            )::geometry,
+                                ST_GeomFromText('{lane['geometry_wkt']}'),
+                                {buffer_radius / 111320.0}
+                            ),
                             0
                         )
                         {time_filter}
                         ORDER BY p.timestamp DESC
                         LIMIT {points_limit}
-                    """)
+                    """
                     
                     # 在verbose模式下输出DataGrip可执行的SQL
                     if logger.isEnabledFor(logging.DEBUG):
                         datagrip_sql = f"""
--- 查询Lane {lane['lane_id']} buffer内的轨迹点
+-- 查询Lane {lane['lane_id']} buffer内的轨迹点 (dataset_gy1)
 SELECT 
     p.dataset_name,
     p.timestamp,
@@ -517,40 +518,48 @@ WHERE p.point_lla IS NOT NULL
 AND ST_DWithin(
     p.point_lla,
     ST_Buffer(
-        ST_SetSRID(ST_GeomFromText('{lane['geometry_wkt']}'), 4326)::geography,
-        {buffer_radius}
-    )::geometry,
+        ST_GeomFromText('{lane['geometry_wkt']}'),
+        {buffer_radius / 111320.0}
+    ),
     0
 )
 {time_filter}
 ORDER BY p.timestamp DESC
 LIMIT {points_limit};
 """
-                        logger.debug(f"=== DataGrip可执行SQL (Lane {lane['lane_id']}) ===")
+                        logger.debug(f"=== DataGrip可执行SQL (Lane {lane['lane_id']}) - dataset_gy1 ===")
                         logger.debug(datagrip_sql)
                     
                     # 执行查询
                     start_time = time.time()
-                    result = conn.execute(sql, {
-                        'lane_geom': lane['geometry_wkt'],
-                        'buffer_radius': buffer_radius
-                    })
+                    cur.execute(sql)
+                    result = cur.fetchall()
+                    columns = [d[0] for d in cur.description]
                     query_time = time.time() - start_time
                     
                     points_found = 0
                     unique_data_names = set()
                     
+                    # 处理Hive查询结果
                     for row in result:
+                        # row是tuple，按照SQL select顺序解析
                         data_name = row[0]
+                        timestamp = row[1]
+                        longitude = row[2]
+                        latitude = row[3]
+                        twist_linear = row[4]
+                        avp_flag = row[5]
+                        workstage = row[6]
+                        
                         unique_data_names.add(data_name)
                         
                         point_info = {
-                            'timestamp': row[1],
-                            'longitude': row[2],
-                            'latitude': row[3],
-                            'twist_linear': row[4],
-                            'avp_flag': row[5],
-                            'workstage': row[6],
+                            'timestamp': timestamp,
+                            'longitude': longitude,
+                            'latitude': latitude,
+                            'twist_linear': twist_linear,
+                            'avp_flag': avp_flag,
+                            'workstage': workstage,
                             'lane_id': lane['lane_id'],
                             'lane_type': lane['lane_type']
                         }
@@ -651,6 +660,57 @@ LIMIT {points_limit};
         
         return filtered
     
+    def _fetch_complete_trajectory_from_hive(self, data_name: str) -> pd.DataFrame:
+        """从Hive数据库获取完整轨迹数据
+        
+        Args:
+            data_name: 数据名称
+            
+        Returns:
+            包含轨迹点信息的DataFrame
+        """
+        try:
+            with hive_cursor("dataset_gy1") as cur:
+                # 查询完整轨迹数据
+                sql = f"""
+                    SELECT 
+                        dataset_name,
+                        timestamp,
+                        ST_X(point_lla) as longitude,
+                        ST_Y(point_lla) as latitude,
+                        twist_linear,
+                        avp_flag,
+                        workstage
+                    FROM {POINT_TABLE}
+                    WHERE dataset_name = '{data_name}'
+                    AND point_lla IS NOT NULL
+                    ORDER BY timestamp ASC
+                """
+                
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"=== 获取完整轨迹SQL (dataset_gy1) ===")
+                    logger.debug(f"data_name: {data_name}")
+                    logger.debug(sql)
+                
+                cur.execute(sql)
+                rows = cur.fetchall()
+                
+                if not rows:
+                    logger.warning(f"未找到data_name的轨迹数据: {data_name}")
+                    return pd.DataFrame()
+                
+                # 构建DataFrame
+                columns = ['dataset_name', 'timestamp', 'longitude', 'latitude', 
+                          'twist_linear', 'avp_flag', 'workstage']
+                df = pd.DataFrame(rows, columns=columns)
+                
+                logger.debug(f"查询到 {len(df)} 个轨迹点: {data_name}")
+                return df
+                
+        except Exception as e:
+            logger.error(f"查询完整轨迹失败: {data_name}, 错误: {str(e)}")
+            return pd.DataFrame()
+    
     def _extract_complete_trajectories(self, filtered_trajectories: Dict[str, Dict]) -> Dict[str, Dict]:
         """提取符合条件的完整轨迹
         
@@ -664,8 +724,8 @@ LIMIT {points_limit};
         
         for data_name, trajectory_info in filtered_trajectories.items():
             try:
-                # 查询完整轨迹数据
-                points_df = fetch_trajectory_points(data_name)
+                # 查询完整轨迹数据 (使用Hive连接)
+                points_df = self._fetch_complete_trajectory_from_hive(data_name)
                 
                 if points_df.empty:
                     logger.warning(f"无法获取完整轨迹数据: {data_name}")
