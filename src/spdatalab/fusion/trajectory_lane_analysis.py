@@ -161,12 +161,11 @@ class TrajectoryLaneAnalyzer:
         """
         # 从analysis_id中提取基础部分，生成符合期望的表名格式
         # 用户期望的表名格式：integrated_**_lane
+        # 注意：PostgreSQL表名最大63个字符
         
         # 如果analysis_id包含road_analysis_id，使用它来生成表名
         if self.road_analysis_id:
             # 从road_analysis_id中提取基础部分
-            # 例如：integrated_20250714_034207_road_f8f65ca59e094aa89f3121fa2510c506
-            # 应该生成：integrated_20250714_034207_road_f8f65ca59e094aa89f3121fa2510c506_lanes
             base_name = self.road_analysis_id
             
             logger.info(f"生成动态表名，基于road_analysis_id: {self.road_analysis_id}")
@@ -181,26 +180,62 @@ class TrajectoryLaneAnalyzer:
                 base_name = base_name.replace('_road_', '_')
                 logger.debug(f"替换_road_为_: {base_name}")
             
+            # 更激进的截断策略，确保表名不超过63字符
+            # 最长的后缀是 "_hits" (5字符)，给base_name留58字符
+            max_base_len = 58
+            
+            if len(base_name) > max_base_len:
+                # 保留前缀和UUID的最后部分
+                # 例如：integrated_20250714_133413_f8f65ca5 -> integrated_20250714_f8f65ca5
+                parts = base_name.split('_')
+                if len(parts) >= 3:
+                    # 保留前两部分和最后一个UUID的前8位
+                    uuid_part = parts[-1][:8] if parts[-1] else ''
+                    truncated_base = f"{parts[0]}_{parts[1]}_{uuid_part}"
+                else:
+                    # 简单截断
+                    truncated_base = base_name[:max_base_len]
+                
+                logger.warning(f"表名过长，截断: {base_name} -> {truncated_base}")
+                base_name = truncated_base
+            
+            # 使用更短的后缀
             table_names = {
-                'lane_analysis_main_table': f"{base_name}_lanes",
-                'lane_hits_table': f"{base_name}_lane_hits", 
-                'lane_trajectories_table': f"{base_name}_lane_trajectories"
+                'lane_analysis_main_table': f"{base_name}_lane",      # 5字符后缀
+                'lane_hits_table': f"{base_name}_hits",               # 5字符后缀
+                'lane_trajectories_table': f"{base_name}_traj"        # 5字符后缀
             }
             
+            # 验证表名长度
+            for key, table_name in table_names.items():
+                if len(table_name) > 63:
+                    logger.error(f"❌ 表名仍然过长: {table_name} ({len(table_name)} 字符)")
+                    # 进一步截断
+                    table_names[key] = table_name[:63]
+                    logger.warning(f"强制截断表名: {table_names[key]}")
+                else:
+                    logger.debug(f"✓ 表名长度合适: {table_name} ({len(table_name)} 字符)")
+            
             logger.info(f"生成的车道分析表名:")
-            logger.info(f"  - 主表: {table_names['lane_analysis_main_table']}")
-            logger.info(f"  - 命中表: {table_names['lane_hits_table']}")
-            logger.info(f"  - 轨迹表: {table_names['lane_trajectories_table']}")
+            logger.info(f"  - 主表: {table_names['lane_analysis_main_table']} ({len(table_names['lane_analysis_main_table'])} 字符)")
+            logger.info(f"  - 命中表: {table_names['lane_hits_table']} ({len(table_names['lane_hits_table'])} 字符)")
+            logger.info(f"  - 轨迹表: {table_names['lane_trajectories_table']} ({len(table_names['lane_trajectories_table'])} 字符)")
             
             return table_names
         else:
             # 如果没有road_analysis_id，使用analysis_id
             logger.info(f"生成动态表名，基于analysis_id: {analysis_id}")
             
+            # 截断analysis_id以避免表名过长，给后缀留5字符
+            max_base_len = 58
+            if len(analysis_id) > max_base_len:
+                analysis_id = analysis_id[:max_base_len]
+                logger.warning(f"analysis_id过长，已截断")
+            
             table_names = {
-                'lane_analysis_main_table': f"{analysis_id}_lanes",
+                'lane_analysis_main_table': f"{analysis_id}_lane",
                 'lane_hits_table': f"{analysis_id}_hits", 
-                'lane_trajectories_table': f"{analysis_id}_trajectories"
+                'lane_trajectories_table': f"{analysis_id}_traj"
             }
             
             logger.info(f"生成的车道分析表名:")
@@ -886,6 +921,8 @@ LIMIT {points_limit};
         """保存主分析记录"""
         table_name = dynamic_table_names['lane_analysis_main_table']
         
+        logger.info(f"准备保存主分析记录到表: {table_name} (长度: {len(table_name)} 字符)")
+        
         # 动态创建表（如果不存在）
         create_table_sql = text(f"""
             CREATE TABLE IF NOT EXISTS {table_name} (
@@ -923,31 +960,41 @@ LIMIT {points_limit};
         """)
         
         with self.engine.connect() as conn:
-            # 创建表
-            conn.execute(create_table_sql)
-            
-            # 删除现有记录
-            conn.execute(delete_sql, {
-                'analysis_id': analysis_id,
-                'input_trajectory_id': input_trajectory_id
-            })
-            
-            # 插入新记录
-            conn.execute(insert_sql, {
-                'analysis_id': analysis_id,
-                'input_trajectory_id': input_trajectory_id,
-                'road_analysis_id': self.road_analysis_id,
-                'candidate_lanes_found': self.stats.get('candidate_lanes_found', 0),
-                'trajectory_points_found': self.stats.get('trajectory_points_found', 0),
-                'unique_data_names_found': self.stats.get('unique_data_names_found', 0),
-                'trajectories_passed_filter': self.stats.get('trajectories_passed_filter', 0),
-                'trajectories_multi_lane': self.stats.get('trajectories_multi_lane', 0),
-                'trajectories_sufficient_points': self.stats.get('trajectories_sufficient_points', 0),
-                'complete_trajectories_count': len(complete_trajectories)
-            })
-            conn.commit()
-            
-        logger.info(f"✓ 主分析记录已保存到表: {table_name}")
+            try:
+                # 创建表
+                logger.debug(f"创建主分析表: {table_name}")
+                conn.execute(create_table_sql)
+                conn.commit()
+                
+                # 删除现有记录
+                logger.debug(f"删除现有主分析记录: analysis_id={analysis_id}")
+                conn.execute(delete_sql, {
+                    'analysis_id': analysis_id,
+                    'input_trajectory_id': input_trajectory_id
+                })
+                
+                # 插入新记录
+                logger.debug(f"插入新的主分析记录")
+                conn.execute(insert_sql, {
+                    'analysis_id': analysis_id,
+                    'input_trajectory_id': input_trajectory_id,
+                    'road_analysis_id': self.road_analysis_id,
+                    'candidate_lanes_found': self.stats.get('candidate_lanes_found', 0),
+                    'trajectory_points_found': self.stats.get('trajectory_points_found', 0),
+                    'unique_data_names_found': self.stats.get('unique_data_names_found', 0),
+                    'trajectories_passed_filter': self.stats.get('trajectories_passed_filter', 0),
+                    'trajectories_multi_lane': self.stats.get('trajectories_multi_lane', 0),
+                    'trajectories_sufficient_points': self.stats.get('trajectories_sufficient_points', 0),
+                    'complete_trajectories_count': len(complete_trajectories)
+                })
+                conn.commit()
+                
+                logger.info(f"✓ 主分析记录已保存到表: {table_name}")
+                
+            except Exception as e:
+                logger.error(f"❌ 保存主分析记录失败: {e}")
+                logger.error(f"表名: {table_name} (长度: {len(table_name)} 字符)")
+                raise
 
     def _save_trajectory_hits_records(self, analysis_id: str, trajectory_hits: Dict, dynamic_table_names: Dict[str, str]):
         """保存轨迹命中记录"""
@@ -955,6 +1002,8 @@ LIMIT {points_limit};
         
         if not trajectory_hits:
             return
+        
+        logger.info(f"准备保存轨迹命中记录到表: {table_name}")
         
         # 动态创建表（如果不存在）
         create_table_sql = text(f"""
@@ -984,24 +1033,65 @@ LIMIT {points_limit};
         """)
         
         with self.engine.connect() as conn:
-            # 创建表
-            conn.execute(create_table_sql)
-            
-            # 删除现有记录
-            conn.execute(delete_sql, {'analysis_id': analysis_id})
-            
-            # 插入新记录
-            for data_name, hit_info in trajectory_hits.items():
-                conn.execute(insert_sql, {
-                    'analysis_id': analysis_id,
-                    'data_name': data_name,
-                    'total_points': hit_info.get('total_points', 0),
-                    'total_lanes': hit_info.get('total_lanes', 0),
-                    'filter_reason': hit_info.get('filter_reason', 'hit_found')
-                })
-            conn.commit()
-            
-        logger.info(f"✓ 轨迹命中记录已保存到表: {table_name} ({len(trajectory_hits)} 条记录)")
+            try:
+                # 创建表
+                logger.debug(f"创建表: {table_name}")
+                conn.execute(create_table_sql)
+                conn.commit()
+                
+                # 验证表结构
+                verify_sql = text(f"""
+                    SELECT column_name, data_type 
+                    FROM information_schema.columns 
+                    WHERE table_name = '{table_name}' 
+                    AND table_schema = 'public'
+                    ORDER BY ordinal_position
+                """)
+                
+                columns_result = conn.execute(verify_sql).fetchall()
+                column_names = [row[0] for row in columns_result]
+                
+                logger.debug(f"表 {table_name} 的列: {column_names}")
+                
+                # 检查必需的列是否存在
+                required_columns = ['analysis_id', 'data_name', 'total_points', 'total_lanes', 'filter_reason']
+                missing_columns = [col for col in required_columns if col not in column_names]
+                
+                if missing_columns:
+                    logger.error(f"❌ 表 {table_name} 缺少列: {missing_columns}")
+                    raise Exception(f"表结构不完整，缺少列: {missing_columns}")
+                
+                logger.debug(f"✓ 表结构验证通过: {table_name}")
+                
+                # 删除现有记录
+                logger.debug(f"删除现有记录: analysis_id={analysis_id}")
+                conn.execute(delete_sql, {'analysis_id': analysis_id})
+                
+                # 插入新记录
+                logger.debug(f"插入 {len(trajectory_hits)} 条新记录")
+                for data_name, hit_info in trajectory_hits.items():
+                    conn.execute(insert_sql, {
+                        'analysis_id': analysis_id,
+                        'data_name': data_name,
+                        'total_points': hit_info.get('total_points', 0),
+                        'total_lanes': hit_info.get('total_lanes', 0),
+                        'filter_reason': hit_info.get('filter_reason', 'hit_found')
+                    })
+                
+                conn.commit()
+                logger.info(f"✓ 轨迹命中记录已保存到表: {table_name} ({len(trajectory_hits)} 条记录)")
+                
+            except Exception as e:
+                logger.error(f"❌ 保存轨迹命中记录失败: {e}")
+                logger.error(f"表名: {table_name}")
+                logger.error(f"表名长度: {len(table_name)} 字符")
+                
+                # 如果是表名过长的问题，尝试使用更短的表名
+                if len(table_name) > 63:
+                    logger.error(f"表名超出PostgreSQL限制63字符，尝试使用更短的表名")
+                    # 这里可以添加重试逻辑，使用更短的表名
+                    
+                raise
 
     def _save_complete_trajectories_records(self, analysis_id: str, complete_trajectories: Dict, dynamic_table_names: Dict[str, str]):
         """保存完整轨迹记录"""
@@ -1009,6 +1099,8 @@ LIMIT {points_limit};
         
         if not complete_trajectories:
             return
+        
+        logger.info(f"准备保存完整轨迹记录到表: {table_name} (长度: {len(table_name)} 字符)")
         
         # 动态创建表（如果不存在）
         create_table_sql = text(f"""
@@ -1058,42 +1150,54 @@ LIMIT {points_limit};
         """)
         
         with self.engine.connect() as conn:
-            # 创建表
-            conn.execute(create_table_sql)
-            
-            # 尝试添加几何列（如果已存在会被忽略）
             try:
-                conn.execute(add_geometry_sql)
+                # 创建表
+                logger.debug(f"创建完整轨迹表: {table_name}")
+                conn.execute(create_table_sql)
+                conn.commit()
+                
+                # 尝试添加几何列（如果已存在会被忽略）
+                try:
+                    logger.debug(f"添加几何列到表: {table_name}")
+                    conn.execute(add_geometry_sql)
+                    conn.commit()
+                except Exception as e:
+                    # 几何列可能已存在，忽略错误
+                    logger.debug(f"几何列可能已存在: {e}")
+                
+                # 删除现有记录
+                logger.debug(f"删除现有轨迹记录: analysis_id={analysis_id}")
+                conn.execute(delete_sql, {'analysis_id': analysis_id})
+                
+                # 插入新记录
+                logger.debug(f"插入 {len(complete_trajectories)} 条完整轨迹记录")
+                for data_name, trajectory in complete_trajectories.items():
+                    conn.execute(insert_sql, {
+                        'analysis_id': analysis_id,
+                        'data_name': data_name,
+                        'filter_reason': trajectory.get('filter_reason', ''),
+                        'lanes_touched_count': len(trajectory.get('lanes_touched', [])),
+                        'hit_points_count': trajectory.get('hit_points_count', 0),
+                        'total_points': trajectory.get('total_points', 0),
+                        'valid_coordinates': trajectory.get('valid_coordinates', 0),
+                        'trajectory_length': trajectory.get('trajectory_length', 0.0),
+                        'avg_speed': trajectory.get('avg_speed', 0.0),
+                        'max_speed': trajectory.get('max_speed', 0.0),
+                        'min_speed': trajectory.get('min_speed', 0.0),
+                        'avp_ratio': trajectory.get('avp_ratio', 0.0),
+                        'start_time': trajectory.get('start_time', 0),
+                        'end_time': trajectory.get('end_time', 0),
+                        'duration': trajectory.get('duration', 0),
+                        'geometry_wkt': trajectory.get('geometry_wkt', '')
+                    })
+                conn.commit()
+                
+                logger.info(f"✓ 完整轨迹记录已保存到表: {table_name} ({len(complete_trajectories)} 条记录)")
+                
             except Exception as e:
-                # 几何列可能已存在，忽略错误
-                logger.debug(f"几何列可能已存在: {e}")
-            
-            # 删除现有记录
-            conn.execute(delete_sql, {'analysis_id': analysis_id})
-            
-            # 插入新记录
-            for data_name, trajectory in complete_trajectories.items():
-                conn.execute(insert_sql, {
-                    'analysis_id': analysis_id,
-                    'data_name': data_name,
-                    'filter_reason': trajectory.get('filter_reason', ''),
-                    'lanes_touched_count': len(trajectory.get('lanes_touched', [])),
-                    'hit_points_count': trajectory.get('hit_points_count', 0),
-                    'total_points': trajectory.get('total_points', 0),
-                    'valid_coordinates': trajectory.get('valid_coordinates', 0),
-                    'trajectory_length': trajectory.get('trajectory_length', 0.0),
-                    'avg_speed': trajectory.get('avg_speed', 0.0),
-                    'max_speed': trajectory.get('max_speed', 0.0),
-                    'min_speed': trajectory.get('min_speed', 0.0),
-                    'avp_ratio': trajectory.get('avp_ratio', 0.0),
-                    'start_time': trajectory.get('start_time', 0),
-                    'end_time': trajectory.get('end_time', 0),
-                    'duration': trajectory.get('duration', 0),
-                    'geometry_wkt': trajectory.get('geometry_wkt', '')
-                })
-            conn.commit()
-            
-        logger.info(f"✓ 完整轨迹记录已保存到表: {table_name} ({len(complete_trajectories)} 条记录)")
+                logger.error(f"❌ 保存完整轨迹记录失败: {e}")
+                logger.error(f"表名: {table_name} (长度: {len(table_name)} 字符)")
+                raise
 
 
 def batch_analyze_lanes_from_road_results(
