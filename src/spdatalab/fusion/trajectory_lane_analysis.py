@@ -692,8 +692,16 @@ def batch_analyze_lanes_from_road_results(
             
             # **关键修复**：确保配置中包含正确的道路分析结果表名
             analyzer_config = (config or {}).copy()
-            # 直接使用road_analysis_id作为表名前缀
-            lanes_table_name = f"{road_analysis_id}_lanes"
+            # 从road_analysis_id中提取批量分析ID，构造正确的表名
+            # road_analysis_id格式: {batch_analysis_id}_road_{trajectory_id}
+            # 需要提取batch_analysis_id部分
+            if '_road_' in road_analysis_id:
+                batch_part = road_analysis_id.split('_road_')[0]
+                lanes_table_name = f"{batch_part}_road_lanes"
+            else:
+                # 兜底逻辑
+                lanes_table_name = f"{road_analysis_id}_lanes"
+            
             analyzer_config['road_analysis_lanes_table'] = lanes_table_name
             
             logger.info(f"车道分析器配置: road_analysis_id={road_analysis_id}, lanes_table={lanes_table_name}")
@@ -812,8 +820,16 @@ def batch_analyze_lanes_from_trajectory_records(
             
             # **关键修复**：确保配置中包含正确的道路分析结果表名
             analyzer_config = (config or {}).copy()
-            # 直接使用road_analysis_id作为表名前缀
-            lanes_table_name = f"{road_analysis_id}_lanes"
+            # 从road_analysis_id中提取批量分析ID，构造正确的表名
+            # road_analysis_id格式: {batch_analysis_id}_road_{trajectory_id}
+            # 需要提取batch_analysis_id部分
+            if '_road_' in road_analysis_id:
+                batch_part = road_analysis_id.split('_road_')[0]
+                lanes_table_name = f"{batch_part}_road_lanes"
+            else:
+                # 兜底逻辑
+                lanes_table_name = f"{road_analysis_id}_lanes"
+            
             analyzer_config['road_analysis_lanes_table'] = lanes_table_name
             
             logger.info(f"车道分析器配置: road_analysis_id={road_analysis_id}, lanes_table={lanes_table_name}")
