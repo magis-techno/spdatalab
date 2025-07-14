@@ -19,6 +19,7 @@ import argparse
 import json
 import signal
 import sys
+import time
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Optional, Iterator, Tuple, Union, Any
@@ -66,6 +67,9 @@ DEFAULT_CONFIG = {
     'road_analysis_lanes_table': 'trajectory_road_lanes',  # 来自trajectory_road_analysis的lane结果
     'buffer_radius': 15.0,            # 米
     'max_lane_distance': 50.0,        # 米
+    'points_limit_per_lane': 1000,    # 每个lane最多查询的轨迹点数
+    'enable_time_filter': True,       # 启用时间过滤
+    'recent_days': 30,                # 只查询最近N天的数据
     
     # 轨迹质量检查配置
     'min_points_single_lane': 5,      # 单车道最少点数
@@ -451,10 +455,25 @@ class TrajectoryLaneAnalyzer:
         buffer_radius = self.config['buffer_radius']
         trajectory_hits = {}
         
+        # 配置参数
+        points_limit = self.config.get('points_limit_per_lane', 1000)
+        enable_time_filter = self.config.get('enable_time_filter', True)
+        recent_days = self.config.get('recent_days', 30)  # 只查询最近30天的数据
+        
+        logger.info(f"开始查询{len(nearby_lanes)}个lanes的buffer内轨迹点")
+        logger.info(f"配置: buffer_radius={buffer_radius}m, points_limit={points_limit}, recent_days={recent_days}")
+        
         try:
             with self.engine.connect() as conn:
-                for lane in nearby_lanes:
-                    logger.debug(f"查询lane {lane['lane_id']} 的buffer内轨迹点")
+                for i, lane in enumerate(nearby_lanes):
+                    logger.info(f"查询lane [{i+1}/{len(nearby_lanes)}]: {lane['lane_id']} (type: {lane['lane_type']})")
+                    
+                    # 构建时间过滤条件
+                    time_filter = ""
+                    if enable_time_filter:
+                        # 最近N天的时间戳过滤（假设timestamp是Unix时间戳）
+                        recent_timestamp = int(time.time()) - (recent_days * 24 * 3600)
+                        time_filter = f"AND p.timestamp >= {recent_timestamp}"
                     
                     # 为lane创建buffer并查询轨迹点
                     sql = text(f"""
@@ -476,17 +495,55 @@ class TrajectoryLaneAnalyzer:
                             )::geometry,
                             0
                         )
-                        LIMIT 1000
+                        {time_filter}
+                        ORDER BY p.timestamp DESC
+                        LIMIT {points_limit}
                     """)
                     
+                    # 在verbose模式下输出DataGrip可执行的SQL
+                    if logger.isEnabledFor(logging.DEBUG):
+                        datagrip_sql = f"""
+-- 查询Lane {lane['lane_id']} buffer内的轨迹点
+SELECT 
+    p.dataset_name,
+    p.timestamp,
+    ST_X(p.point_lla) as longitude,
+    ST_Y(p.point_lla) as latitude,
+    p.twist_linear,
+    p.avp_flag,
+    p.workstage
+FROM {POINT_TABLE} p
+WHERE p.point_lla IS NOT NULL
+AND ST_DWithin(
+    p.point_lla,
+    ST_Buffer(
+        ST_SetSRID(ST_GeomFromText('{lane['geometry_wkt']}'), 4326)::geography,
+        {buffer_radius}
+    )::geometry,
+    0
+)
+{time_filter}
+ORDER BY p.timestamp DESC
+LIMIT {points_limit};
+"""
+                        logger.debug(f"=== DataGrip可执行SQL (Lane {lane['lane_id']}) ===")
+                        logger.debug(datagrip_sql)
+                    
+                    # 执行查询
+                    start_time = time.time()
                     result = conn.execute(sql, {
                         'lane_geom': lane['geometry_wkt'],
                         'buffer_radius': buffer_radius
                     })
+                    query_time = time.time() - start_time
                     
                     points_found = 0
+                    unique_data_names = set()
+                    
                     for row in result:
                         data_name = row[0]
+                        unique_data_names.add(data_name)
+                        
                         point_info = {
                             'timestamp': row[1],
                             'longitude': row[2],
@@ -511,8 +568,17 @@ class TrajectoryLaneAnalyzer:
                         
                         points_found += 1
                     
+                    # 输出查询结果统计
                     if points_found > 0:
-                        logger.debug(f"Lane {lane['lane_id']} buffer内找到 {points_found} 个轨迹点")
+                        logger.info(f"✓ Lane {lane['lane_id']} buffer内找到 {points_found} 个轨迹点")
+                        logger.info(f"  - 涉及 {len(unique_data_names)} 个不同data_name")
+                        logger.info(f"  - 查询耗时: {query_time:.2f}秒")
+                        
+                        if points_found >= points_limit:
+                            logger.warning(f"  - ⚠️ 达到限制({points_limit})，可能有更多数据未查询")
+                    else:
+                        logger.info(f"✗ Lane {lane['lane_id']} buffer内未找到轨迹点")
+                        logger.info(f"  - 查询耗时: {query_time:.2f}秒")
             
             # 转换set为list以便序列化
             for data_name in trajectory_hits:
@@ -520,12 +586,29 @@ class TrajectoryLaneAnalyzer:
                 trajectory_hits[data_name]['total_points'] = len(trajectory_hits[data_name]['points'])
                 trajectory_hits[data_name]['total_lanes'] = len(trajectory_hits[data_name]['lanes_touched'])
             
-            logger.info(f"buffer查询完成，找到 {len(trajectory_hits)} 个data_name的轨迹点")
+            logger.info(f"🎯 buffer查询完成，找到 {len(trajectory_hits)} 个data_name的轨迹点")
+            
+            # 输出详细统计
+            if trajectory_hits:
+                total_points = sum(hit['total_points'] for hit in trajectory_hits.values())
+                multi_lane_count = sum(1 for hit in trajectory_hits.values() if hit['total_lanes'] > 1)
+                
+                logger.info(f"📊 查询统计:")
+                logger.info(f"  - 总轨迹点数: {total_points}")
+                logger.info(f"  - 多车道轨迹数: {multi_lane_count}")
+                logger.info(f"  - 单车道轨迹数: {len(trajectory_hits) - multi_lane_count}")
+                
+                # 输出前几个data_name示例
+                logger.info(f"  - 前5个data_name示例:")
+                for i, (data_name, hit) in enumerate(list(trajectory_hits.items())[:5]):
+                    logger.info(f"    {i+1}. {data_name}: {hit['total_points']}点, {hit['total_lanes']}lanes")
             
             return trajectory_hits
             
         except Exception as e:
             logger.error(f"查询buffer内轨迹点失败: {e}")
+            import traceback
+            logger.error(f"详细错误: {traceback.format_exc()}")
             return {}
     
     def _apply_filtering_rules(self, trajectory_hits: Dict[str, Dict]) -> Dict[str, Dict]:
