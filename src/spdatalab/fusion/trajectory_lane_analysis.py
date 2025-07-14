@@ -924,6 +924,12 @@ LIMIT {points_limit};
         """保存主分析记录"""
         table_name = self.config.get('lane_analysis_main_table', 'trajectory_lane_analysis')
         
+        # 先删除可能存在的记录（避免重复）
+        delete_sql = text(f"""
+            DELETE FROM {table_name} 
+            WHERE analysis_id = :analysis_id AND input_trajectory_id = :input_trajectory_id
+        """)
+        
         insert_sql = text(f"""
             INSERT INTO {table_name} 
             (analysis_id, input_trajectory_id, road_analysis_id, candidate_lanes_found,
@@ -934,17 +940,16 @@ LIMIT {points_limit};
                 :trajectory_points_found, :unique_data_names_found, :trajectories_passed_filter,
                 :trajectories_multi_lane, :trajectories_sufficient_points, :complete_trajectories_count
             )
-            ON CONFLICT (analysis_id, input_trajectory_id) DO UPDATE SET
-                candidate_lanes_found = EXCLUDED.candidate_lanes_found,
-                trajectory_points_found = EXCLUDED.trajectory_points_found,
-                unique_data_names_found = EXCLUDED.unique_data_names_found,
-                trajectories_passed_filter = EXCLUDED.trajectories_passed_filter,
-                trajectories_multi_lane = EXCLUDED.trajectories_multi_lane,
-                trajectories_sufficient_points = EXCLUDED.trajectories_sufficient_points,
-                complete_trajectories_count = EXCLUDED.complete_trajectories_count
         """)
         
         with self.engine.connect() as conn:
+            # 删除现有记录
+            conn.execute(delete_sql, {
+                'analysis_id': analysis_id,
+                'input_trajectory_id': input_trajectory_id
+            })
+            
+            # 插入新记录
             conn.execute(insert_sql, {
                 'analysis_id': analysis_id,
                 'input_trajectory_id': input_trajectory_id,
@@ -966,17 +971,23 @@ LIMIT {points_limit};
         if not trajectory_hits:
             return
         
+        # 先删除可能存在的记录（避免重复）
+        delete_sql = text(f"""
+            DELETE FROM {table_name} 
+            WHERE analysis_id = :analysis_id
+        """)
+        
         insert_sql = text(f"""
             INSERT INTO {table_name} 
             (analysis_id, data_name, total_points, total_lanes, filter_reason)
             VALUES (:analysis_id, :data_name, :total_points, :total_lanes, :filter_reason)
-            ON CONFLICT (analysis_id, data_name) DO UPDATE SET
-                total_points = EXCLUDED.total_points,
-                total_lanes = EXCLUDED.total_lanes,
-                filter_reason = EXCLUDED.filter_reason
         """)
         
         with self.engine.connect() as conn:
+            # 删除现有记录
+            conn.execute(delete_sql, {'analysis_id': analysis_id})
+            
+            # 插入新记录
             for data_name, hit_info in trajectory_hits.items():
                 conn.execute(insert_sql, {
                     'analysis_id': analysis_id,
@@ -994,6 +1005,12 @@ LIMIT {points_limit};
         if not complete_trajectories:
             return
         
+        # 先删除可能存在的记录（避免重复）
+        delete_sql = text(f"""
+            DELETE FROM {table_name} 
+            WHERE analysis_id = :analysis_id
+        """)
+        
         insert_sql = text(f"""
             INSERT INTO {table_name} 
             (analysis_id, data_name, filter_reason, lanes_touched_count, hit_points_count,
@@ -1005,24 +1022,13 @@ LIMIT {points_limit};
                 :min_speed, :avp_ratio, :start_time, :end_time, :duration,
                 ST_SetSRID(ST_GeomFromText(:geometry_wkt), 4326)
             )
-            ON CONFLICT (analysis_id, data_name) DO UPDATE SET
-                filter_reason = EXCLUDED.filter_reason,
-                lanes_touched_count = EXCLUDED.lanes_touched_count,
-                hit_points_count = EXCLUDED.hit_points_count,
-                total_points = EXCLUDED.total_points,
-                valid_coordinates = EXCLUDED.valid_coordinates,
-                trajectory_length = EXCLUDED.trajectory_length,
-                avg_speed = EXCLUDED.avg_speed,
-                max_speed = EXCLUDED.max_speed,
-                min_speed = EXCLUDED.min_speed,
-                avp_ratio = EXCLUDED.avp_ratio,
-                start_time = EXCLUDED.start_time,
-                end_time = EXCLUDED.end_time,
-                duration = EXCLUDED.duration,
-                geometry = EXCLUDED.geometry
         """)
         
         with self.engine.connect() as conn:
+            # 删除现有记录
+            conn.execute(delete_sql, {'analysis_id': analysis_id})
+            
+            # 插入新记录
             for data_name, trajectory in complete_trajectories.items():
                 conn.execute(insert_sql, {
                     'analysis_id': analysis_id,
