@@ -205,6 +205,12 @@ class IntegratedTrajectoryAnalyzer:
             lane_config['trajectory_buffer_table'] = f"{lane_analysis_id}_buffer"
             lane_config['quality_check_table'] = f"{lane_analysis_id}_quality"
             
+            # **关键修复**：设置正确的道路分析结果表名
+            road_analysis_id = f"{self.analysis_id}_road"
+            lane_config['road_analysis_lanes_table'] = f"{road_analysis_id}_lanes"
+            
+            logger.info(f"车道分析将使用道路分析结果表: {lane_config['road_analysis_lanes_table']}")
+            
             # 执行批量车道分析
             lane_results = batch_analyze_lanes_from_road_results(
                 road_analysis_results=road_results,

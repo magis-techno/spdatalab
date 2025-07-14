@@ -113,6 +113,11 @@ class TrajectoryLaneAnalyzer:
         
         self.road_analysis_id = road_analysis_id
         self.engine = create_engine(LOCAL_DSN, future=True)
+        
+        # **新增验证**：如果提供了road_analysis_id，验证配置和数据一致性
+        if self.road_analysis_id:
+            self._validate_road_analysis_connection()
+        
         self.stats = {
             'total_scenes': 0,
             'processed_scenes': 0,
@@ -126,6 +131,91 @@ class TrajectoryLaneAnalyzer:
             'start_time': None,
             'end_time': None
         }
+    
+    def _validate_road_analysis_connection(self):
+        """验证与道路分析结果的连接"""
+        road_lanes_table = self.config['road_analysis_lanes_table']
+        
+        logger.info(f"验证道路分析连接: road_analysis_id={self.road_analysis_id}")
+        logger.info(f"预期的道路分析结果表: {road_lanes_table}")
+        
+        try:
+            with self.engine.connect() as conn:
+                # 检查表是否存在
+                table_check_sql = text(f"""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_schema = 'public' 
+                        AND table_name = '{road_lanes_table}'
+                    );
+                """)
+                
+                table_exists = conn.execute(table_check_sql).scalar()
+                
+                if not table_exists:
+                    logger.error(f"❌ 道路分析结果表不存在: {road_lanes_table}")
+                    logger.error("可能的原因:")
+                    logger.error("1. 道路分析尚未完成")
+                    logger.error("2. 表名配置不正确")
+                    logger.error("3. 数据库连接问题")
+                    return False
+                
+                logger.info(f"✓ 道路分析结果表存在: {road_lanes_table}")
+                
+                # 检查指定analysis_id的数据
+                count_sql = text(f"""
+                    SELECT COUNT(*) FROM {road_lanes_table}
+                    WHERE analysis_id = :road_analysis_id
+                """)
+                
+                lane_count = conn.execute(count_sql, {'road_analysis_id': self.road_analysis_id}).scalar()
+                
+                if lane_count == 0:
+                    logger.error(f"❌ 表中没有找到analysis_id={self.road_analysis_id}的数据")
+                    
+                    # 查看表中实际有哪些analysis_id
+                    available_ids_sql = text(f"""
+                        SELECT DISTINCT analysis_id, COUNT(*) as lane_count
+                        FROM {road_lanes_table}
+                        GROUP BY analysis_id
+                        ORDER BY lane_count DESC
+                        LIMIT 5
+                    """)
+                    
+                    available_results = conn.execute(available_ids_sql).fetchall()
+                    if available_results:
+                        logger.error("表中可用的analysis_id:")
+                        for row in available_results:
+                            logger.error(f"  - {row[0]} ({row[1]} lanes)")
+                    else:
+                        logger.error("表中没有任何数据")
+                    
+                    return False
+                
+                logger.info(f"✓ 找到 {lane_count} 个候选lanes (analysis_id={self.road_analysis_id})")
+                
+                # 获取一些统计信息
+                stats_sql = text(f"""
+                    SELECT 
+                        lane_type,
+                        COUNT(*) as count
+                    FROM {road_lanes_table}
+                    WHERE analysis_id = :road_analysis_id
+                    GROUP BY lane_type
+                    ORDER BY count DESC
+                """)
+                
+                type_stats = conn.execute(stats_sql, {'road_analysis_id': self.road_analysis_id}).fetchall()
+                if type_stats:
+                    logger.info("候选lanes类型分布:")
+                    for row in type_stats:
+                        logger.info(f"  - {row[0]}: {row[1]} lanes")
+                
+                return True
+                
+        except Exception as e:
+            logger.error(f"❌ 验证道路分析连接失败: {e}")
+            return False
         
     def build_trajectory_polyline(self, scene_id: str, data_name: str, points_df: pd.DataFrame) -> Optional[Dict]:
         """构建polyline格式的轨迹数据
@@ -568,23 +658,55 @@ class TrajectoryLaneAnalyzer:
         # 将距离从米转换为度（粗略转换）
         max_distance_degrees = max_distance / 111320.0
         
+        logger.debug(f"查询候选车道: 表={road_lanes_table}, road_analysis_id={self.road_analysis_id}, 点=({lng:.6f}, {lat:.6f})")
+        
         try:
-            # 从trajectory_road_analysis的结果中查找最近的车道
-            sql = text(f"""
-                SELECT 
-                    lane_id, 
-                    ST_Distance(geometry, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)) as distance,
-                    lane_type,
-                    road_id
-                FROM {road_lanes_table}
-                WHERE analysis_id = :road_analysis_id
-                AND geometry IS NOT NULL
-                AND ST_DWithin(geometry, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326), :max_distance)
-                ORDER BY distance
-                LIMIT 1
+            # 首先验证表是否存在
+            table_check_sql = text(f"""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_schema = 'public' 
+                    AND table_name = '{road_lanes_table}'
+                );
             """)
             
             with self.engine.connect() as conn:
+                table_exists = conn.execute(table_check_sql).scalar()
+                
+                if not table_exists:
+                    logger.error(f"道路分析结果表不存在: {road_lanes_table}")
+                    return None
+                
+                # 检查表中是否有对应road_analysis_id的数据
+                count_sql = text(f"""
+                    SELECT COUNT(*) FROM {road_lanes_table}
+                    WHERE analysis_id = :road_analysis_id
+                """)
+                
+                count_result = conn.execute(count_sql, {'road_analysis_id': self.road_analysis_id})
+                lane_count = count_result.scalar()
+                
+                if lane_count == 0:
+                    logger.warning(f"道路分析结果表中没有找到analysis_id={self.road_analysis_id}的数据，可用的候选lanes数量: 0")
+                    return None
+                
+                logger.debug(f"道路分析结果表中找到 {lane_count} 个候选lanes")
+                
+                # 从trajectory_road_analysis的结果中查找最近的车道
+                sql = text(f"""
+                    SELECT 
+                        lane_id, 
+                        ST_Distance(geometry, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)) as distance,
+                        lane_type,
+                        road_id
+                    FROM {road_lanes_table}
+                    WHERE analysis_id = :road_analysis_id
+                    AND geometry IS NOT NULL
+                    AND ST_DWithin(geometry, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326), :max_distance)
+                    ORDER BY distance
+                    LIMIT 1
+                """)
+                
                 result = conn.execute(sql, {
                     'lng': lng,
                     'lat': lat,
@@ -602,11 +724,12 @@ class TrajectoryLaneAnalyzer:
                     logger.debug(f"找到最近车道: {lane_id} (type: {lane_type}, road: {road_id}), 距离: {distance:.6f}度")
                     return str(lane_id)
                 else:
-                    logger.debug(f"未找到最大距离内的候选车道: ({lng:.6f}, {lat:.6f})")
+                    logger.debug(f"未找到最大距离内的候选车道: ({lng:.6f}, {lat:.6f}), 最大距离: {max_distance}米")
                     return None
                     
         except Exception as e:
             logger.error(f"车道查询失败: {str(e)}")
+            logger.error(f"查询参数: 表={road_lanes_table}, road_analysis_id={self.road_analysis_id}")
             return None
         
     def create_lane_buffer(self, lane_id: str) -> Any:
@@ -1401,8 +1524,16 @@ def batch_analyze_lanes_from_road_results(
             # 获取轨迹信息
             data_name = road_summary.get('data_name', trajectory_id)
             
+            # **关键修复**：确保配置中包含正确的道路分析结果表名
+            analyzer_config = (config or {}).copy()
+            if 'road_analysis_lanes_table' not in analyzer_config:
+                # 如果配置中没有指定，尝试从road_analysis_id推导
+                analyzer_config['road_analysis_lanes_table'] = f"{road_analysis_id}_lanes"
+            
+            logger.info(f"车道分析器配置: road_analysis_id={road_analysis_id}, lanes_table={analyzer_config['road_analysis_lanes_table']}")
+            
             # 创建车道分析器
-            analyzer = TrajectoryLaneAnalyzer(config=config, road_analysis_id=road_analysis_id)
+            analyzer = TrajectoryLaneAnalyzer(config=analyzer_config, road_analysis_id=road_analysis_id)
             
             # 创建单个轨迹的映射DataFrame
             single_mapping = pd.DataFrame([{
