@@ -491,7 +491,7 @@ class TrajectoryLaneAnalyzer:
                         AND ST_DWithin(
                             p.point_lla,
                             ST_Buffer(
-                                ST_GeomFromText('{lane['geometry_wkt']}'),
+                                ST_SetSRID(ST_GeomFromText('{lane['geometry_wkt']}'), 4326),
                                 {buffer_radius / 111320.0}
                             ),
                             0
@@ -518,7 +518,7 @@ WHERE p.point_lla IS NOT NULL
 AND ST_DWithin(
     p.point_lla,
     ST_Buffer(
-        ST_GeomFromText('{lane['geometry_wkt']}'),
+        ST_SetSRID(ST_GeomFromText('{lane['geometry_wkt']}'), 4326),
         {buffer_radius / 111320.0}
     ),
     0
