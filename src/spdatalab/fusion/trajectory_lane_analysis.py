@@ -286,7 +286,8 @@ class TrajectoryLaneAnalyzer:
                 total_points INTEGER DEFAULT 0,
                 total_lanes INTEGER DEFAULT 0,
                 filter_reason VARCHAR(100),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(analysis_id, data_name)
             )
         """)
         
