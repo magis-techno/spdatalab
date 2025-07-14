@@ -87,7 +87,12 @@ DEFAULT_CONFIG = {
     # 数据库表名
     'trajectory_segments_table': 'trajectory_lane_segments',
     'trajectory_buffer_table': 'trajectory_lane_buffer',
-    'quality_check_table': 'trajectory_quality_check'
+    'quality_check_table': 'trajectory_quality_check',
+    
+    # 车道分析结果表名
+    'lane_analysis_main_table': 'trajectory_lane_analysis',
+    'lane_hits_table': 'trajectory_lane_hits', 
+    'lane_trajectories_table': 'trajectory_lane_complete_trajectories'
 }
 
 # 全局变量
@@ -128,6 +133,9 @@ class TrajectoryLaneAnalyzer:
         # **新增验证**：如果提供了road_analysis_id，验证配置和数据一致性
         if self.road_analysis_id:
             self._validate_road_analysis_connection()
+        
+        # 初始化车道分析结果表
+        self._init_lane_analysis_tables()
         
         self.stats = {
             'input_trajectories': 0,
@@ -228,6 +236,110 @@ class TrajectoryLaneAnalyzer:
             logger.error(f"❌ 验证道路分析连接失败: {e}")
             return False
     
+    def _init_lane_analysis_tables(self):
+        """初始化车道分析相关的数据库表"""
+        self._init_lane_analysis_main_table()
+        self._init_lane_hits_table()
+        self._init_lane_trajectories_table()
+    
+    def _init_lane_analysis_main_table(self):
+        """初始化车道分析主表"""
+        table_name = self.config.get('lane_analysis_main_table', 'trajectory_lane_analysis')
+        
+        create_table_sql = text(f"""
+            CREATE TABLE IF NOT EXISTS {table_name} (
+                id SERIAL PRIMARY KEY,
+                analysis_id VARCHAR(100) NOT NULL,
+                input_trajectory_id VARCHAR(100) NOT NULL,
+                road_analysis_id VARCHAR(100),
+                candidate_lanes_found INTEGER DEFAULT 0,
+                trajectory_points_found INTEGER DEFAULT 0,
+                unique_data_names_found INTEGER DEFAULT 0,
+                trajectories_passed_filter INTEGER DEFAULT 0,
+                trajectories_multi_lane INTEGER DEFAULT 0,
+                trajectories_sufficient_points INTEGER DEFAULT 0,
+                complete_trajectories_count INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(analysis_id, input_trajectory_id)
+            )
+        """)
+        
+        try:
+            with self.engine.connect() as conn:
+                conn.execute(create_table_sql)
+                conn.commit()
+            logger.debug(f"车道分析主表 {table_name} 初始化完成")
+        except Exception as e:
+            logger.warning(f"车道分析主表初始化失败: {e}")
+    
+    def _init_lane_hits_table(self):
+        """初始化车道轨迹点命中表"""
+        table_name = self.config.get('lane_hits_table', 'trajectory_lane_hits')
+        
+        create_table_sql = text(f"""
+            CREATE TABLE IF NOT EXISTS {table_name} (
+                id SERIAL PRIMARY KEY,
+                analysis_id VARCHAR(100) NOT NULL,
+                data_name VARCHAR(255) NOT NULL,
+                lane_id BIGINT,
+                lane_type VARCHAR(50),
+                total_points INTEGER DEFAULT 0,
+                total_lanes INTEGER DEFAULT 0,
+                filter_reason VARCHAR(100),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        create_index_sql = text(f"""
+            CREATE INDEX IF NOT EXISTS idx_{table_name}_analysis_data 
+            ON {table_name}(analysis_id, data_name)
+        """)
+        
+        try:
+            with self.engine.connect() as conn:
+                conn.execute(create_table_sql)
+                conn.execute(create_index_sql)
+                conn.commit()
+            logger.debug(f"车道命中表 {table_name} 初始化完成")
+        except Exception as e:
+            logger.warning(f"车道命中表初始化失败: {e}")
+    
+    def _init_lane_trajectories_table(self):
+        """初始化完整轨迹结果表"""
+        table_name = self.config.get('lane_trajectories_table', 'trajectory_lane_complete_trajectories')
+        
+        create_table_sql = text(f"""
+            CREATE TABLE IF NOT EXISTS {table_name} (
+                id SERIAL PRIMARY KEY,
+                analysis_id VARCHAR(100) NOT NULL,
+                data_name VARCHAR(255) NOT NULL,
+                filter_reason VARCHAR(100),
+                lanes_touched_count INTEGER DEFAULT 0,
+                hit_points_count INTEGER DEFAULT 0,
+                total_points INTEGER DEFAULT 0,
+                valid_coordinates INTEGER DEFAULT 0,
+                trajectory_length FLOAT,
+                avg_speed FLOAT,
+                max_speed FLOAT,
+                min_speed FLOAT,
+                avp_ratio FLOAT,
+                start_time BIGINT,
+                end_time BIGINT,
+                duration BIGINT,
+                geometry GEOMETRY,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(analysis_id, data_name)
+            )
+        """)
+        
+        try:
+            with self.engine.connect() as conn:
+                conn.execute(create_table_sql)
+                conn.commit()
+            logger.debug(f"完整轨迹表 {table_name} 初始化完成")
+        except Exception as e:
+            logger.warning(f"完整轨迹表初始化失败: {e}")
+    
     def analyze_trajectory_neighbors(self, input_trajectory_id: str, input_trajectory_geom: str) -> Dict[str, Any]:
         """分析输入轨迹的邻近轨迹
         
@@ -285,8 +397,13 @@ class TrajectoryLaneAnalyzer:
             logger.info(f"轨迹邻近性分析完成: {input_trajectory_id}")
             logger.info(f"符合条件的轨迹数: {len(complete_trajectories)}")
             
+            # 保存分析结果到数据库
+            analysis_id = f"lane_analysis_{input_trajectory_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            self._save_lane_analysis_results(analysis_id, input_trajectory_id, trajectory_hits, complete_trajectories)
+            
             return {
                 'input_trajectory_id': input_trajectory_id,
+                'analysis_id': analysis_id,
                 'candidate_lanes': nearby_lanes,
                 'trajectory_hits': trajectory_hits,
                 'filtered_trajectories': filtered_trajectories,
@@ -784,6 +901,148 @@ LIMIT {points_limit};
         logger.info(f"提取完整轨迹完成: {len(complete_trajectories)} 个")
         return complete_trajectories
 
+    def _save_lane_analysis_results(self, analysis_id: str, input_trajectory_id: str, 
+                                   trajectory_hits: Dict, complete_trajectories: Dict):
+        """保存车道分析结果到数据库"""
+        try:
+            # 1. 保存主分析记录
+            self._save_main_analysis_record(analysis_id, input_trajectory_id, complete_trajectories)
+            
+            # 2. 保存轨迹命中记录
+            self._save_trajectory_hits_records(analysis_id, trajectory_hits)
+            
+            # 3. 保存完整轨迹记录
+            self._save_complete_trajectories_records(analysis_id, complete_trajectories)
+            
+            logger.info(f"✓ 车道分析结果已保存到数据库: {analysis_id}")
+            
+        except Exception as e:
+            logger.error(f"保存车道分析结果失败: {analysis_id}, 错误: {e}")
+
+    def _save_main_analysis_record(self, analysis_id: str, input_trajectory_id: str, complete_trajectories: Dict):
+        """保存主分析记录"""
+        table_name = self.config.get('lane_analysis_main_table', 'trajectory_lane_analysis')
+        
+        insert_sql = text(f"""
+            INSERT INTO {table_name} 
+            (analysis_id, input_trajectory_id, road_analysis_id, candidate_lanes_found,
+             trajectory_points_found, unique_data_names_found, trajectories_passed_filter,
+             trajectories_multi_lane, trajectories_sufficient_points, complete_trajectories_count)
+            VALUES (
+                :analysis_id, :input_trajectory_id, :road_analysis_id, :candidate_lanes_found,
+                :trajectory_points_found, :unique_data_names_found, :trajectories_passed_filter,
+                :trajectories_multi_lane, :trajectories_sufficient_points, :complete_trajectories_count
+            )
+            ON CONFLICT (analysis_id, input_trajectory_id) DO UPDATE SET
+                candidate_lanes_found = EXCLUDED.candidate_lanes_found,
+                trajectory_points_found = EXCLUDED.trajectory_points_found,
+                unique_data_names_found = EXCLUDED.unique_data_names_found,
+                trajectories_passed_filter = EXCLUDED.trajectories_passed_filter,
+                trajectories_multi_lane = EXCLUDED.trajectories_multi_lane,
+                trajectories_sufficient_points = EXCLUDED.trajectories_sufficient_points,
+                complete_trajectories_count = EXCLUDED.complete_trajectories_count
+        """)
+        
+        with self.engine.connect() as conn:
+            conn.execute(insert_sql, {
+                'analysis_id': analysis_id,
+                'input_trajectory_id': input_trajectory_id,
+                'road_analysis_id': self.road_analysis_id,
+                'candidate_lanes_found': self.stats.get('candidate_lanes_found', 0),
+                'trajectory_points_found': self.stats.get('trajectory_points_found', 0),
+                'unique_data_names_found': self.stats.get('unique_data_names_found', 0),
+                'trajectories_passed_filter': self.stats.get('trajectories_passed_filter', 0),
+                'trajectories_multi_lane': self.stats.get('trajectories_multi_lane', 0),
+                'trajectories_sufficient_points': self.stats.get('trajectories_sufficient_points', 0),
+                'complete_trajectories_count': len(complete_trajectories)
+            })
+            conn.commit()
+
+    def _save_trajectory_hits_records(self, analysis_id: str, trajectory_hits: Dict):
+        """保存轨迹命中记录"""
+        table_name = self.config.get('lane_hits_table', 'trajectory_lane_hits')
+        
+        if not trajectory_hits:
+            return
+        
+        insert_sql = text(f"""
+            INSERT INTO {table_name} 
+            (analysis_id, data_name, total_points, total_lanes, filter_reason)
+            VALUES (:analysis_id, :data_name, :total_points, :total_lanes, :filter_reason)
+            ON CONFLICT (analysis_id, data_name) DO UPDATE SET
+                total_points = EXCLUDED.total_points,
+                total_lanes = EXCLUDED.total_lanes,
+                filter_reason = EXCLUDED.filter_reason
+        """)
+        
+        with self.engine.connect() as conn:
+            for data_name, hit_info in trajectory_hits.items():
+                conn.execute(insert_sql, {
+                    'analysis_id': analysis_id,
+                    'data_name': data_name,
+                    'total_points': hit_info.get('total_points', 0),
+                    'total_lanes': hit_info.get('total_lanes', 0),
+                    'filter_reason': hit_info.get('filter_reason', 'hit_found')
+                })
+            conn.commit()
+
+    def _save_complete_trajectories_records(self, analysis_id: str, complete_trajectories: Dict):
+        """保存完整轨迹记录"""
+        table_name = self.config.get('lane_trajectories_table', 'trajectory_lane_complete_trajectories')
+        
+        if not complete_trajectories:
+            return
+        
+        insert_sql = text(f"""
+            INSERT INTO {table_name} 
+            (analysis_id, data_name, filter_reason, lanes_touched_count, hit_points_count,
+             total_points, valid_coordinates, trajectory_length, avg_speed, max_speed,
+             min_speed, avp_ratio, start_time, end_time, duration, geometry)
+            VALUES (
+                :analysis_id, :data_name, :filter_reason, :lanes_touched_count, :hit_points_count,
+                :total_points, :valid_coordinates, :trajectory_length, :avg_speed, :max_speed,
+                :min_speed, :avp_ratio, :start_time, :end_time, :duration,
+                ST_SetSRID(ST_GeomFromText(:geometry_wkt), 4326)
+            )
+            ON CONFLICT (analysis_id, data_name) DO UPDATE SET
+                filter_reason = EXCLUDED.filter_reason,
+                lanes_touched_count = EXCLUDED.lanes_touched_count,
+                hit_points_count = EXCLUDED.hit_points_count,
+                total_points = EXCLUDED.total_points,
+                valid_coordinates = EXCLUDED.valid_coordinates,
+                trajectory_length = EXCLUDED.trajectory_length,
+                avg_speed = EXCLUDED.avg_speed,
+                max_speed = EXCLUDED.max_speed,
+                min_speed = EXCLUDED.min_speed,
+                avp_ratio = EXCLUDED.avp_ratio,
+                start_time = EXCLUDED.start_time,
+                end_time = EXCLUDED.end_time,
+                duration = EXCLUDED.duration,
+                geometry = EXCLUDED.geometry
+        """)
+        
+        with self.engine.connect() as conn:
+            for data_name, trajectory in complete_trajectories.items():
+                conn.execute(insert_sql, {
+                    'analysis_id': analysis_id,
+                    'data_name': data_name,
+                    'filter_reason': trajectory.get('filter_reason', ''),
+                    'lanes_touched_count': len(trajectory.get('lanes_touched', [])),
+                    'hit_points_count': trajectory.get('hit_points_count', 0),
+                    'total_points': trajectory.get('total_points', 0),
+                    'valid_coordinates': trajectory.get('valid_coordinates', 0),
+                    'trajectory_length': trajectory.get('trajectory_length', 0.0),
+                    'avg_speed': trajectory.get('avg_speed', 0.0),
+                    'max_speed': trajectory.get('max_speed', 0.0),
+                    'min_speed': trajectory.get('min_speed', 0.0),
+                    'avp_ratio': trajectory.get('avp_ratio', 0.0),
+                    'start_time': trajectory.get('start_time', 0),
+                    'end_time': trajectory.get('end_time', 0),
+                    'duration': trajectory.get('duration', 0),
+                    'geometry_wkt': trajectory.get('geometry_wkt', '')
+                })
+            conn.commit()
+
 
 def batch_analyze_lanes_from_road_results(
     road_analysis_results: List[Tuple[str, str, Dict[str, Any]]],
@@ -894,7 +1153,7 @@ def batch_analyze_lanes_from_road_results(
             logger.error(f"分析轨迹邻近性失败: {trajectory_id}, 错误: {e}")
             lane_results.append((trajectory_id, None, {
                 'error': str(e),
-                'road_analysis_id': road_analysis_id,
+                'road_analysis_id': road_analysis_map.get(trajectory_id, (None, {}))[0],
                 'properties': road_summary.get('properties', {})
             }))
     
