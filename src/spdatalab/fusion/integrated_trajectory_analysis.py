@@ -144,11 +144,19 @@ class IntegratedTrajectoryAnalyzer:
         road_analysis_id = f"{self.analysis_id}_road"
         
         try:
+            # 创建动态表名配置
+            road_config = self.config.road_analysis_config
+            # 动态修改表名以包含分析ID
+            road_config.analysis_table = f"{road_analysis_id}_analysis"
+            road_config.lanes_table = f"{road_analysis_id}_lanes"
+            road_config.intersections_table = f"{road_analysis_id}_intersections"
+            road_config.roads_table = f"{road_analysis_id}_roads"
+            
             # 执行批量道路分析
             road_results = batch_analyze_trajectories_from_geojson(
                 geojson_file=geojson_file,
                 batch_analysis_id=road_analysis_id,
-                config=self.config.road_analysis_config
+                config=road_config
             )
             
             if not road_results:
@@ -190,11 +198,18 @@ class IntegratedTrajectoryAnalyzer:
         lane_analysis_id = f"{self.analysis_id}_lane"
         
         try:
+            # 创建动态表名配置
+            lane_config = self.config.lane_analysis_config.__dict__.copy()
+            # 动态修改表名以包含分析ID
+            lane_config['trajectory_segments_table'] = f"{lane_analysis_id}_segments"
+            lane_config['trajectory_buffer_table'] = f"{lane_analysis_id}_buffer"
+            lane_config['quality_check_table'] = f"{lane_analysis_id}_quality"
+            
             # 执行批量车道分析
             lane_results = batch_analyze_lanes_from_road_results(
                 road_analysis_results=road_results,
                 batch_analysis_id=lane_analysis_id,
-                config=self.config.lane_analysis_config.__dict__
+                config=lane_config
             )
             
             if not lane_results:

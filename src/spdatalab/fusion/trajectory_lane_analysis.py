@@ -963,9 +963,9 @@ class TrajectoryLaneAnalyzer:
             conn.execute(create_sql)
             conn.commit()
             
-            # 添加几何列
+            # 添加几何列（使用现代PostGIS语法）
             geom_sql = text(f"""
-                SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRING', 2);
+                ALTER TABLE {table_name} ADD COLUMN geometry geometry(LINESTRING, 4326);
             """)
             
             conn.execute(geom_sql)
@@ -1031,9 +1031,9 @@ class TrajectoryLaneAnalyzer:
             conn.execute(create_sql)
             conn.commit()
             
-            # 添加几何列
+            # 添加几何列（使用现代PostGIS语法）
             geom_sql = text(f"""
-                SELECT AddGeometryColumn('public', '{table_name}', 'filtered_trajectory', 4326, 'LINESTRING', 2);
+                ALTER TABLE {table_name} ADD COLUMN filtered_trajectory geometry(LINESTRING, 4326);
             """)
             
             conn.execute(geom_sql)
@@ -1101,9 +1101,9 @@ class TrajectoryLaneAnalyzer:
             conn.execute(create_sql)
             conn.commit()
             
-            # 添加几何列
+            # 添加几何列（使用现代PostGIS语法）
             geom_sql = text(f"""
-                SELECT AddGeometryColumn('public', '{table_name}', 'reconstructed_trajectory', 4326, 'LINESTRING', 2);
+                ALTER TABLE {table_name} ADD COLUMN reconstructed_trajectory geometry(LINESTRING, 4326);
             """)
             
             conn.execute(geom_sql)
