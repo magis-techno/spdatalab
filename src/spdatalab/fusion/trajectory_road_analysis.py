@@ -1194,8 +1194,8 @@ def create_trajectory_road_analysis_report(
     # 其他统计
     report_lines.extend([
         f"",
-        f"- **Intersection数量**: {summary.get('intersection_count', 0)} 个",
-        f"- **Road数量**: {summary.get('road_count', 0)} 个",
+        f"- **Intersection数量**: {summary.get('total_intersections', 0)} 个",
+        f"- **Road数量**: {summary.get('total_roads', 0)} 个",
         f"",
         f"## QGIS可视化",
         f"",
@@ -1216,6 +1216,239 @@ def create_trajectory_road_analysis_report(
             f"{summary['error']}",
             f"```"
         ])
+    
+    return "\n".join(report_lines)
+
+
+def batch_analyze_trajectories_from_geojson(
+    geojson_file: str,
+    batch_analysis_id: Optional[str] = None,
+    config: Optional[TrajectoryRoadAnalysisConfig] = None
+) -> List[Tuple[str, str, Dict[str, Any]]]:
+    """
+    从GeoJSON文件批量分析轨迹道路元素
+    
+    Args:
+        geojson_file: GeoJSON文件路径
+        batch_analysis_id: 批量分析ID（可选，自动生成）
+        config: 自定义配置
+        
+    Returns:
+        分析结果列表 [(trajectory_id, analysis_id, summary), ...]
+    """
+    from .geojson_utils import load_trajectories_from_geojson
+    
+    if not batch_analysis_id:
+        batch_analysis_id = f"batch_road_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    
+    logger.info(f"开始批量轨迹道路分析: {batch_analysis_id}")
+    logger.info(f"GeoJSON文件: {geojson_file}")
+    
+    # 加载轨迹记录
+    try:
+        trajectories = load_trajectories_from_geojson(geojson_file)
+        if not trajectories:
+            logger.warning("未加载到任何轨迹记录")
+            return []
+        
+        logger.info(f"加载到 {len(trajectories)} 条轨迹记录")
+    except Exception as e:
+        logger.error(f"加载GeoJSON文件失败: {e}")
+        return []
+    
+    # 批量分析
+    analyzer = TrajectoryRoadAnalyzer(config or TrajectoryRoadAnalysisConfig())
+    results = []
+    
+    for i, trajectory in enumerate(trajectories):
+        try:
+            logger.info(f"分析轨迹 [{i+1}/{len(trajectories)}]: {trajectory.scene_id}")
+            
+            # 生成分析ID
+            analysis_id = f"{batch_analysis_id}_{trajectory.scene_id}"
+            
+            # 执行道路分析
+            result_analysis_id = analyzer.analyze_trajectory_roads(
+                trajectory_id=trajectory.scene_id,
+                trajectory_geom=trajectory.geometry_wkt,
+                analysis_id=analysis_id
+            )
+            
+            # 获取汇总信息
+            summary = analyzer.get_analysis_summary(result_analysis_id)
+            summary['data_name'] = trajectory.data_name
+            summary['properties'] = trajectory.properties
+            
+            results.append((trajectory.scene_id, result_analysis_id, summary))
+            
+            logger.info(f"✓ 完成轨迹分析: {trajectory.scene_id}")
+            
+        except Exception as e:
+            logger.error(f"分析轨迹失败: {trajectory.scene_id}, 错误: {e}")
+            results.append((trajectory.scene_id, None, {
+                'error': str(e),
+                'data_name': trajectory.data_name,
+                'properties': trajectory.properties
+            }))
+    
+    # 统计结果
+    successful_count = len([r for r in results if r[1] is not None])
+    failed_count = len(results) - successful_count
+    
+    logger.info(f"批量轨迹道路分析完成: {batch_analysis_id}")
+    logger.info(f"  - 成功: {successful_count}")
+    logger.info(f"  - 失败: {failed_count}")
+    logger.info(f"  - 总计: {len(results)}")
+    
+    return results
+
+
+def batch_analyze_trajectories_from_records(
+    trajectory_records: List,
+    batch_analysis_id: Optional[str] = None,
+    config: Optional[TrajectoryRoadAnalysisConfig] = None
+) -> List[Tuple[str, str, Dict[str, Any]]]:
+    """
+    从轨迹记录列表批量分析轨迹道路元素
+    
+    Args:
+        trajectory_records: 轨迹记录列表 (TrajectoryRecord对象)
+        batch_analysis_id: 批量分析ID（可选，自动生成）
+        config: 自定义配置
+        
+    Returns:
+        分析结果列表 [(trajectory_id, analysis_id, summary), ...]
+    """
+    if not batch_analysis_id:
+        batch_analysis_id = f"batch_road_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    
+    logger.info(f"开始批量轨迹道路分析: {batch_analysis_id}")
+    logger.info(f"轨迹记录数: {len(trajectory_records)}")
+    
+    # 批量分析
+    analyzer = TrajectoryRoadAnalyzer(config or TrajectoryRoadAnalysisConfig())
+    results = []
+    
+    for i, trajectory in enumerate(trajectory_records):
+        try:
+            logger.info(f"分析轨迹 [{i+1}/{len(trajectory_records)}]: {trajectory.scene_id}")
+            
+            # 生成分析ID
+            analysis_id = f"{batch_analysis_id}_{trajectory.scene_id}"
+            
+            # 执行道路分析
+            result_analysis_id = analyzer.analyze_trajectory_roads(
+                trajectory_id=trajectory.scene_id,
+                trajectory_geom=trajectory.geometry_wkt,
+                analysis_id=analysis_id
+            )
+            
+            # 获取汇总信息
+            summary = analyzer.get_analysis_summary(result_analysis_id)
+            summary['data_name'] = trajectory.data_name
+            summary['properties'] = trajectory.properties
+            
+            results.append((trajectory.scene_id, result_analysis_id, summary))
+            
+            logger.info(f"✓ 完成轨迹分析: {trajectory.scene_id}")
+            
+        except Exception as e:
+            logger.error(f"分析轨迹失败: {trajectory.scene_id}, 错误: {e}")
+            results.append((trajectory.scene_id, None, {
+                'error': str(e),
+                'data_name': trajectory.data_name,
+                'properties': trajectory.properties
+            }))
+    
+    # 统计结果
+    successful_count = len([r for r in results if r[1] is not None])
+    failed_count = len(results) - successful_count
+    
+    logger.info(f"批量轨迹道路分析完成: {batch_analysis_id}")
+    logger.info(f"  - 成功: {successful_count}")
+    logger.info(f"  - 失败: {failed_count}")
+    logger.info(f"  - 总计: {len(results)}")
+    
+    return results
+
+
+def create_batch_road_analysis_report(
+    results: List[Tuple[str, str, Dict[str, Any]]],
+    batch_analysis_id: str
+) -> str:
+    """
+    创建批量轨迹道路分析报告
+    
+    Args:
+        results: 批量分析结果
+        batch_analysis_id: 批量分析ID
+        
+    Returns:
+        报告文本
+    """
+    successful_results = [r for r in results if r[1] is not None]
+    failed_results = [r for r in results if r[1] is None]
+    
+    report_lines = [
+        f"# 批量轨迹道路分析报告",
+        f"",
+        f"**批量分析ID**: {batch_analysis_id}",
+        f"**分析时间**: {datetime.now().isoformat()}",
+        f"",
+        f"## 总体统计",
+        f"",
+        f"- **总轨迹数**: {len(results)}",
+        f"- **成功分析**: {len(successful_results)}",
+        f"- **失败分析**: {len(failed_results)}",
+        f"- **成功率**: {len(successful_results)/len(results)*100:.1f}%",
+        f"",
+    ]
+    
+    if successful_results:
+        # 成功分析统计
+        total_lanes = sum(r[2].get('total_lanes', 0) for r in successful_results)
+        total_intersections = sum(r[2].get('total_intersections', 0) for r in successful_results)
+        total_roads = sum(r[2].get('total_roads', 0) for r in successful_results)
+        
+        report_lines.extend([
+            f"## 成功分析汇总",
+            f"",
+            f"- **总Lane数**: {total_lanes}",
+            f"- **总Intersection数**: {total_intersections}",
+            f"- **总Road数**: {total_roads}",
+            f"- **平均Lane数/轨迹**: {total_lanes/len(successful_results):.1f}",
+            f"",
+        ])
+        
+        # 成功分析详情
+        report_lines.extend([
+            f"## 成功分析详情",
+            f"",
+            f"| 轨迹ID | 分析ID | Lane数 | Intersection数 | Road数 |",
+            f"|--------|--------|-------|---------------|-------|",
+        ])
+        
+        for trajectory_id, analysis_id, summary in successful_results[:10]:  # 只显示前10个
+            lanes = summary.get('total_lanes', 0)
+            intersections = summary.get('total_intersections', 0)
+            roads = summary.get('total_roads', 0)
+            report_lines.append(f"| {trajectory_id} | {analysis_id} | {lanes} | {intersections} | {roads} |")
+        
+        if len(successful_results) > 10:
+            report_lines.append(f"| ... | ... | ... | ... | ... |")
+            report_lines.append(f"| (共{len(successful_results)}个成功分析) | | | | |")
+    
+    if failed_results:
+        # 失败分析详情
+        report_lines.extend([
+            f"",
+            f"## 失败分析详情",
+            f"",
+        ])
+        
+        for trajectory_id, _, summary in failed_results:
+            error_msg = summary.get('error', '未知错误')
+            report_lines.append(f"- **{trajectory_id}**: {error_msg}")
     
     return "\n".join(report_lines)
 

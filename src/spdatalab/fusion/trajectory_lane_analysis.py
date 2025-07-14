@@ -1359,6 +1359,303 @@ class TrajectoryLaneAnalyzer:
         
         return self.stats
 
+
+def batch_analyze_lanes_from_road_results(
+    road_analysis_results: List[Tuple[str, str, Dict[str, Any]]],
+    batch_analysis_id: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None
+) -> List[Tuple[str, str, Dict[str, Any]]]:
+    """
+    基于道路分析结果批量进行车道分析
+    
+    Args:
+        road_analysis_results: 道路分析结果列表 [(trajectory_id, road_analysis_id, summary), ...]
+        batch_analysis_id: 批量分析ID（可选，自动生成）
+        config: 轨迹车道分析配置
+        
+    Returns:
+        车道分析结果列表 [(trajectory_id, lane_analysis_id, summary), ...]
+    """
+    if not batch_analysis_id:
+        batch_analysis_id = f"batch_lane_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    
+    logger.info(f"开始批量轨迹车道分析: {batch_analysis_id}")
+    logger.info(f"道路分析结果数: {len(road_analysis_results)}")
+    
+    # 过滤出成功的道路分析结果
+    successful_road_results = [r for r in road_analysis_results if r[1] is not None]
+    
+    if not successful_road_results:
+        logger.warning("没有成功的道路分析结果，跳过车道分析")
+        return []
+    
+    logger.info(f"有效的道路分析结果: {len(successful_road_results)}")
+    
+    # 批量车道分析
+    lane_results = []
+    
+    for i, (trajectory_id, road_analysis_id, road_summary) in enumerate(successful_road_results):
+        try:
+            logger.info(f"分析轨迹车道 [{i+1}/{len(successful_road_results)}]: {trajectory_id}")
+            
+            # 获取轨迹信息
+            data_name = road_summary.get('data_name', trajectory_id)
+            
+            # 创建车道分析器
+            analyzer = TrajectoryLaneAnalyzer(config=config, road_analysis_id=road_analysis_id)
+            
+            # 创建单个轨迹的映射DataFrame
+            single_mapping = pd.DataFrame([{
+                'scene_id': trajectory_id,
+                'data_name': data_name,
+                'road_analysis_id': road_analysis_id
+            }])
+            
+            # 执行车道分析
+            analysis_stats = analyzer.process_scene_mappings(single_mapping)
+            
+            # 生成车道分析ID
+            lane_analysis_id = f"{batch_analysis_id}_{trajectory_id}"
+            
+            # 构建车道分析汇总
+            lane_summary = {
+                'lane_analysis_id': lane_analysis_id,
+                'road_analysis_id': road_analysis_id,
+                'trajectory_id': trajectory_id,
+                'data_name': data_name,
+                'processed_scenes': analysis_stats.get('processed_scenes', 0),
+                'successful_trajectories': analysis_stats.get('successful_trajectories', 0),
+                'failed_scenes': analysis_stats.get('failed_scenes', 0),
+                'quality_passed': analysis_stats.get('quality_passed', 0),
+                'quality_failed': analysis_stats.get('quality_failed', 0),
+                'total_reconstructed': analysis_stats.get('total_reconstructed', 0),
+                'duration': analysis_stats.get('duration'),
+                'properties': road_summary.get('properties', {})
+            }
+            
+            lane_results.append((trajectory_id, lane_analysis_id, lane_summary))
+            
+            logger.info(f"✓ 完成轨迹车道分析: {trajectory_id}")
+            
+        except Exception as e:
+            logger.error(f"分析轨迹车道失败: {trajectory_id}, 错误: {e}")
+            lane_results.append((trajectory_id, None, {
+                'error': str(e),
+                'road_analysis_id': road_analysis_id,
+                'data_name': road_summary.get('data_name', trajectory_id),
+                'properties': road_summary.get('properties', {})
+            }))
+    
+    # 统计结果
+    successful_count = len([r for r in lane_results if r[1] is not None])
+    failed_count = len(lane_results) - successful_count
+    
+    logger.info(f"批量轨迹车道分析完成: {batch_analysis_id}")
+    logger.info(f"  - 成功: {successful_count}")
+    logger.info(f"  - 失败: {failed_count}")
+    logger.info(f"  - 总计: {len(lane_results)}")
+    
+    return lane_results
+
+
+def batch_analyze_lanes_from_trajectory_records(
+    trajectory_records: List,
+    road_analysis_results: List[Tuple[str, str, Dict[str, Any]]],
+    batch_analysis_id: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None
+) -> List[Tuple[str, str, Dict[str, Any]]]:
+    """
+    基于轨迹记录和道路分析结果批量进行车道分析
+    
+    Args:
+        trajectory_records: 轨迹记录列表 (TrajectoryRecord对象)
+        road_analysis_results: 道路分析结果列表 [(trajectory_id, road_analysis_id, summary), ...]
+        batch_analysis_id: 批量分析ID（可选，自动生成）
+        config: 轨迹车道分析配置
+        
+    Returns:
+        车道分析结果列表 [(trajectory_id, lane_analysis_id, summary), ...]
+    """
+    if not batch_analysis_id:
+        batch_analysis_id = f"batch_lane_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    
+    logger.info(f"开始批量轨迹车道分析: {batch_analysis_id}")
+    logger.info(f"轨迹记录数: {len(trajectory_records)}")
+    logger.info(f"道路分析结果数: {len(road_analysis_results)}")
+    
+    # 创建trajectory_id到road_analysis_id的映射
+    road_analysis_map = {r[0]: r[1] for r in road_analysis_results if r[1] is not None}
+    
+    # 过滤出有对应道路分析结果的轨迹记录
+    valid_trajectories = [t for t in trajectory_records if t.scene_id in road_analysis_map]
+    
+    if not valid_trajectories:
+        logger.warning("没有找到有效的轨迹记录与道路分析结果的匹配")
+        return []
+    
+    logger.info(f"有效的轨迹记录: {len(valid_trajectories)}")
+    
+    # 构建映射DataFrame
+    mappings_data = []
+    for trajectory in valid_trajectories:
+        road_analysis_id = road_analysis_map[trajectory.scene_id]
+        mappings_data.append({
+            'scene_id': trajectory.scene_id,
+            'data_name': trajectory.data_name,
+            'road_analysis_id': road_analysis_id
+        })
+    
+    mappings_df = pd.DataFrame(mappings_data)
+    
+    # 批量车道分析
+    lane_results = []
+    
+    # 按road_analysis_id分组处理（相同road_analysis_id的可以一起处理）
+    grouped_mappings = mappings_df.groupby('road_analysis_id')
+    
+    for road_analysis_id, group_df in grouped_mappings:
+        try:
+            logger.info(f"处理道路分析组: {road_analysis_id} ({len(group_df)} 个轨迹)")
+            
+            # 创建车道分析器
+            analyzer = TrajectoryLaneAnalyzer(config=config, road_analysis_id=road_analysis_id)
+            
+            # 执行车道分析
+            analysis_stats = analyzer.process_scene_mappings(group_df)
+            
+            # 为每个轨迹生成结果
+            for _, row in group_df.iterrows():
+                trajectory_id = row['scene_id']
+                data_name = row['data_name']
+                
+                # 生成车道分析ID
+                lane_analysis_id = f"{batch_analysis_id}_{trajectory_id}"
+                
+                # 构建车道分析汇总
+                lane_summary = {
+                    'lane_analysis_id': lane_analysis_id,
+                    'road_analysis_id': road_analysis_id,
+                    'trajectory_id': trajectory_id,
+                    'data_name': data_name,
+                    'processed_scenes': analysis_stats.get('processed_scenes', 0),
+                    'successful_trajectories': analysis_stats.get('successful_trajectories', 0),
+                    'failed_scenes': analysis_stats.get('failed_scenes', 0),
+                    'quality_passed': analysis_stats.get('quality_passed', 0),
+                    'quality_failed': analysis_stats.get('quality_failed', 0),
+                    'total_reconstructed': analysis_stats.get('total_reconstructed', 0),
+                    'duration': analysis_stats.get('duration'),
+                    'group_processing': True
+                }
+                
+                lane_results.append((trajectory_id, lane_analysis_id, lane_summary))
+                
+                logger.info(f"✓ 完成轨迹车道分析: {trajectory_id}")
+                
+        except Exception as e:
+            logger.error(f"分析道路分析组失败: {road_analysis_id}, 错误: {e}")
+            # 为该组的所有轨迹添加错误结果
+            for _, row in group_df.iterrows():
+                trajectory_id = row['scene_id']
+                data_name = row['data_name']
+                lane_results.append((trajectory_id, None, {
+                    'error': str(e),
+                    'road_analysis_id': road_analysis_id,
+                    'data_name': data_name
+                }))
+    
+    # 统计结果
+    successful_count = len([r for r in lane_results if r[1] is not None])
+    failed_count = len(lane_results) - successful_count
+    
+    logger.info(f"批量轨迹车道分析完成: {batch_analysis_id}")
+    logger.info(f"  - 成功: {successful_count}")
+    logger.info(f"  - 失败: {failed_count}")
+    logger.info(f"  - 总计: {len(lane_results)}")
+    
+    return lane_results
+
+
+def create_batch_lane_analysis_report(
+    lane_results: List[Tuple[str, str, Dict[str, Any]]],
+    batch_analysis_id: str
+) -> str:
+    """
+    创建批量轨迹车道分析报告
+    
+    Args:
+        lane_results: 批量车道分析结果
+        batch_analysis_id: 批量分析ID
+        
+    Returns:
+        报告文本
+    """
+    successful_results = [r for r in lane_results if r[1] is not None]
+    failed_results = [r for r in lane_results if r[1] is None]
+    
+    report_lines = [
+        f"# 批量轨迹车道分析报告",
+        f"",
+        f"**批量分析ID**: {batch_analysis_id}",
+        f"**分析时间**: {datetime.now().isoformat()}",
+        f"",
+        f"## 总体统计",
+        f"",
+        f"- **总轨迹数**: {len(lane_results)}",
+        f"- **成功分析**: {len(successful_results)}",
+        f"- **失败分析**: {len(failed_results)}",
+        f"- **成功率**: {len(successful_results)/len(lane_results)*100:.1f}%",
+        f"",
+    ]
+    
+    if successful_results:
+        # 成功分析统计
+        total_quality_passed = sum(r[2].get('quality_passed', 0) for r in successful_results)
+        total_quality_failed = sum(r[2].get('quality_failed', 0) for r in successful_results)
+        total_reconstructed = sum(r[2].get('total_reconstructed', 0) for r in successful_results)
+        
+        report_lines.extend([
+            f"## 成功分析汇总",
+            f"",
+            f"- **总质量通过数**: {total_quality_passed}",
+            f"- **总质量失败数**: {total_quality_failed}",
+            f"- **总重构轨迹数**: {total_reconstructed}",
+            f"- **平均质量通过率**: {total_quality_passed/(total_quality_passed+total_quality_failed)*100:.1f}%" if (total_quality_passed+total_quality_failed) > 0 else "- **平均质量通过率**: N/A",
+            f"",
+        ])
+        
+        # 成功分析详情
+        report_lines.extend([
+            f"## 成功分析详情",
+            f"",
+            f"| 轨迹ID | 分析ID | 质量通过 | 质量失败 | 重构轨迹 |",
+            f"|--------|--------|----------|----------|----------|",
+        ])
+        
+        for trajectory_id, lane_analysis_id, summary in successful_results[:10]:  # 只显示前10个
+            quality_passed = summary.get('quality_passed', 0)
+            quality_failed = summary.get('quality_failed', 0)
+            reconstructed = summary.get('total_reconstructed', 0)
+            report_lines.append(f"| {trajectory_id} | {lane_analysis_id} | {quality_passed} | {quality_failed} | {reconstructed} |")
+        
+        if len(successful_results) > 10:
+            report_lines.append(f"| ... | ... | ... | ... | ... |")
+            report_lines.append(f"| (共{len(successful_results)}个成功分析) | | | | |")
+    
+    if failed_results:
+        # 失败分析详情
+        report_lines.extend([
+            f"",
+            f"## 失败分析详情",
+            f"",
+        ])
+        
+        for trajectory_id, _, summary in failed_results:
+            error_msg = summary.get('error', '未知错误')
+            report_lines.append(f"- **{trajectory_id}**: {error_msg}")
+    
+    return "\n".join(report_lines)
+
+
 def main():
     """主函数，CLI入口点"""
     parser = argparse.ArgumentParser(
