@@ -342,29 +342,49 @@ class IntegratedTrajectoryAnalyzer:
         }
     
     def _calculate_lane_analysis_stats(self, lane_results: List[Tuple[str, str, Dict[str, Any]]]) -> Dict[str, Any]:
-        """计算车道分析统计"""
+        """计算车道分析统计（邻近性分析）"""
         if not lane_results:
             return {}
         
         successful_results = [r for r in lane_results if r[1] is not None]
         
         if not successful_results:
-            return {'total_quality_passed': 0, 'total_quality_failed': 0, 'total_reconstructed': 0}
+            return {
+                'total_candidate_lanes': 0, 
+                'total_trajectory_points': 0, 
+                'total_complete_trajectories': 0,
+                'total_multi_lane_trajectories': 0,
+                'total_sufficient_points_trajectories': 0
+            }
         
-        total_quality_passed = sum(r[2].get('quality_passed', 0) for r in successful_results)
-        total_quality_failed = sum(r[2].get('quality_failed', 0) for r in successful_results)
-        total_reconstructed = sum(r[2].get('total_reconstructed', 0) for r in successful_results)
+        # 新的邻近性分析统计字段
+        total_candidate_lanes = sum(r[2].get('candidate_lanes_found', 0) for r in successful_results)
+        total_trajectory_points = sum(r[2].get('trajectory_points_found', 0) for r in successful_results)
+        total_complete_trajectories = sum(r[2].get('complete_trajectories_count', 0) for r in successful_results)
+        total_multi_lane = sum(r[2].get('trajectories_multi_lane', 0) for r in successful_results)
+        total_sufficient_points = sum(r[2].get('trajectories_sufficient_points', 0) for r in successful_results)
         
-        total_quality_checks = total_quality_passed + total_quality_failed
-        quality_pass_rate = (total_quality_passed / total_quality_checks * 100) if total_quality_checks > 0 else 0
+        # 计算平均值
+        num_input_trajectories = len(successful_results)
+        avg_candidate_lanes = round(total_candidate_lanes / num_input_trajectories, 2) if num_input_trajectories > 0 else 0
+        avg_trajectory_points = round(total_trajectory_points / num_input_trajectories, 2) if num_input_trajectories > 0 else 0
+        avg_complete_trajectories = round(total_complete_trajectories / num_input_trajectories, 2) if num_input_trajectories > 0 else 0
+        
+        # 计算过滤效率
+        total_passed_filter = total_multi_lane + total_sufficient_points
+        filter_efficiency = round((total_passed_filter / num_input_trajectories * 100), 2) if num_input_trajectories > 0 else 0
         
         return {
-            'total_quality_passed': total_quality_passed,
-            'total_quality_failed': total_quality_failed,
-            'total_reconstructed': total_reconstructed,
-            'quality_pass_rate': round(quality_pass_rate, 2),
-            'avg_quality_passed_per_trajectory': round(total_quality_passed / len(successful_results), 2),
-            'avg_reconstructed_per_trajectory': round(total_reconstructed / len(successful_results), 2)
+            'total_candidate_lanes': total_candidate_lanes,
+            'total_trajectory_points': total_trajectory_points,
+            'total_complete_trajectories': total_complete_trajectories,
+            'total_multi_lane_trajectories': total_multi_lane,
+            'total_sufficient_points_trajectories': total_sufficient_points,
+            'avg_candidate_lanes_per_input': avg_candidate_lanes,
+            'avg_trajectory_points_per_input': avg_trajectory_points,
+            'avg_complete_trajectories_per_input': avg_complete_trajectories,
+            'filter_efficiency_percentage': filter_efficiency,
+            'input_trajectories_analyzed': num_input_trajectories
         }
     
     def _post_process_results(self, integrated_results: Dict[str, Any]):
@@ -467,12 +487,16 @@ class IntegratedTrajectoryAnalyzer:
             report_lines.extend([
                 f"## 车道分析统计",
                 f"",
-                f"- **总质量通过数**: {lane_stats['total_quality_passed']}",
-                f"- **总质量失败数**: {lane_stats['total_quality_failed']}",
-                f"- **总重构轨迹数**: {lane_stats['total_reconstructed']}",
-                f"- **质量通过率**: {lane_stats['quality_pass_rate']}%",
-                f"- **平均质量通过数/轨迹**: {lane_stats['avg_quality_passed_per_trajectory']}",
-                f"- **平均重构轨迹数/轨迹**: {lane_stats['avg_reconstructed_per_trajectory']}",
+                f"- **总候选车道数**: {lane_stats['total_candidate_lanes']}",
+                f"- **总轨迹点数**: {lane_stats['total_trajectory_points']}",
+                f"- **总完整轨迹数**: {lane_stats['total_complete_trajectories']}",
+                f"- **多车道轨迹数**: {lane_stats['total_multi_lane_trajectories']}",
+                f"- **足够点轨迹数**: {lane_stats['total_sufficient_points_trajectories']}",
+                f"- **平均候选车道数/输入轨迹**: {lane_stats['avg_candidate_lanes_per_input']}",
+                f"- **平均轨迹点数/输入轨迹**: {lane_stats['avg_trajectory_points_per_input']}",
+                f"- **平均完整轨迹数/输入轨迹**: {lane_stats['avg_complete_trajectories_per_input']}",
+                f"- **过滤效率**: {lane_stats['filter_efficiency_percentage']}%",
+                f"- **输入轨迹分析数**: {lane_stats['input_trajectories_analyzed']}",
                 f"",
             ])
         
@@ -774,10 +798,16 @@ def _print_detailed_results(results: Dict[str, Any]):
     lane_stats = summary.get('lane_analysis_stats', {})
     if lane_stats:
         print("\n车道分析统计:")
-        print(f"  总质量通过数: {lane_stats.get('total_quality_passed', 0)}")
-        print(f"  总质量失败数: {lane_stats.get('total_quality_failed', 0)}")
-        print(f"  总重构轨迹数: {lane_stats.get('total_reconstructed', 0)}")
-        print(f"  质量通过率: {lane_stats.get('quality_pass_rate', 0):.1f}%")
+        print(f"  总候选车道数: {lane_stats.get('total_candidate_lanes', 0)}")
+        print(f"  总轨迹点数: {lane_stats.get('total_trajectory_points', 0)}")
+        print(f"  总完整轨迹数: {lane_stats.get('total_complete_trajectories', 0)}")
+        print(f"  多车道轨迹数: {lane_stats.get('total_multi_lane_trajectories', 0)}")
+        print(f"  足够点轨迹数: {lane_stats.get('total_sufficient_points_trajectories', 0)}")
+        print(f"  平均候选车道数/输入轨迹: {lane_stats.get('avg_candidate_lanes_per_input', 0):.1f}")
+        print(f"  平均轨迹点数/输入轨迹: {lane_stats.get('avg_trajectory_points_per_input', 0):.1f}")
+        print(f"  平均完整轨迹数/输入轨迹: {lane_stats.get('avg_complete_trajectories_per_input', 0):.1f}")
+        print(f"  过滤效率: {lane_stats.get('filter_efficiency_percentage', 0):.1f}%")
+        print(f"  输入轨迹分析数: {lane_stats.get('input_trajectories_analyzed', 0)}")
     
     # 错误详情
     errors = results.get('errors', [])

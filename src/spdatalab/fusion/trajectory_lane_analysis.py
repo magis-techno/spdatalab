@@ -98,7 +98,14 @@ def signal_handler(signum, frame):
     interrupted = True
 
 class TrajectoryLaneAnalyzer:
-    """轨迹车道分析器主类"""
+    """轨迹车道分析器主类
+    
+    功能：基于输入轨迹查询其他相关轨迹
+    1. 对输入轨迹执行road_analysis获得候选lanes
+    2. 基于输入轨迹分段找到邻近的候选lanes
+    3. 为lanes创建buffer，在轨迹点数据库中查询其他轨迹点
+    4. 根据过滤规则保留符合条件的完整轨迹
+    """
     
     def __init__(self, config: Dict[str, Any] = None, road_analysis_id: str = None):
         """初始化分析器
@@ -119,15 +126,15 @@ class TrajectoryLaneAnalyzer:
             self._validate_road_analysis_connection()
         
         self.stats = {
-            'total_scenes': 0,
-            'processed_scenes': 0,
-            'successful_trajectories': 0,
-            'failed_scenes': 0,
-            'empty_scenes': 0,
-            'missing_data_names': 0,
-            'quality_passed': 0,
-            'quality_failed': 0,
-            'total_reconstructed': 0,
+            'input_trajectories': 0,
+            'processed_trajectories': 0,
+            'candidate_lanes_found': 0,
+            'buffer_queries_executed': 0,
+            'trajectory_points_found': 0,
+            'unique_data_names_found': 0,
+            'trajectories_passed_filter': 0,
+            'trajectories_multi_lane': 0,
+            'trajectories_sufficient_points': 0,
             'start_time': None,
             'end_time': None
         }
@@ -216,1271 +223,423 @@ class TrajectoryLaneAnalyzer:
         except Exception as e:
             logger.error(f"❌ 验证道路分析连接失败: {e}")
             return False
-        
-    def build_trajectory_polyline(self, scene_id: str, data_name: str, points_df: pd.DataFrame) -> Optional[Dict]:
-        """构建polyline格式的轨迹数据
+    
+    def analyze_trajectory_neighbors(self, input_trajectory_id: str, input_trajectory_geom: str) -> Dict[str, Any]:
+        """分析输入轨迹的邻近轨迹
         
         Args:
-            scene_id: 场景ID
-            data_name: 数据名称
-            points_df: 轨迹点DataFrame
+            input_trajectory_id: 输入轨迹ID
+            input_trajectory_geom: 输入轨迹几何WKT字符串
             
         Returns:
-            轨迹polyline数据
+            分析结果字典
         """
-        if points_df.empty:
-            logger.warning(f"轨迹点数据为空: {data_name}")
-            return None
+        logger.info(f"开始轨迹邻近性分析: {input_trajectory_id}")
+        
+        self.stats['input_trajectories'] += 1
+        self.stats['start_time'] = datetime.now()
         
         try:
-            # 确保数据按时间排序
-            points_df = points_df.sort_values('timestamp')
+            # 1. 对输入轨迹进行分段采样
+            trajectory_segments = self._segment_input_trajectory(input_trajectory_geom)
+            if not trajectory_segments:
+                logger.warning(f"轨迹分段失败: {input_trajectory_id}")
+                return {'error': '轨迹分段失败'}
             
-            # 提取坐标点序列
-            coordinates = []
-            timestamps = []
-            speeds = []
-            avp_flags = []
-            workstages = []
+            logger.info(f"输入轨迹分为 {len(trajectory_segments)} 段")
             
-            for _, row in points_df.iterrows():
-                if pd.notna(row['longitude']) and pd.notna(row['latitude']):
-                    coordinates.append((float(row['longitude']), float(row['latitude'])))
-                    timestamps.append(int(row['timestamp']))
-                    
-                    # 提取速度信息
-                    if 'twist_linear' in row and pd.notna(row['twist_linear']):
-                        speeds.append(float(row['twist_linear']))
-                    else:
-                        speeds.append(0.0)
-                    
-                    # 提取AVP标志
-                    if 'avp_flag' in row and pd.notna(row['avp_flag']):
-                        avp_flags.append(int(row['avp_flag']))
-                    else:
-                        avp_flags.append(0)
-                    
-                    # 提取工作阶段
-                    if 'workstage' in row and pd.notna(row['workstage']):
-                        workstages.append(int(row['workstage']))
-                    else:
-                        workstages.append(0)
+            # 2. 为每段找到邻近的候选lanes
+            nearby_lanes = self._find_nearby_candidate_lanes(trajectory_segments)
+            if not nearby_lanes:
+                logger.warning(f"未找到邻近的候选lanes: {input_trajectory_id}")
+                return {'error': '未找到邻近的候选lanes'}
             
-            if len(coordinates) < 2:
-                logger.warning(f"有效轨迹点数量不足，无法构建轨迹线: {len(coordinates)}")
-                return None
+            self.stats['candidate_lanes_found'] = len(nearby_lanes)
+            logger.info(f"找到 {len(nearby_lanes)} 个邻近候选lanes")
             
-            # 构建LineString几何（用于后续空间分析）
-            trajectory_geom = LineString(coordinates)
+            # 3. 为lanes创建buffer，查询轨迹点数据库
+            trajectory_hits = self._query_trajectory_points_in_buffers(nearby_lanes)
             
-            # 计算基本统计信息
-            speed_data = [s for s in speeds if s > 0]  # 过滤无效速度
-            avp_data = [a for a in avp_flags if a in [0, 1]]  # 过滤无效AVP
+            self.stats['buffer_queries_executed'] = len(nearby_lanes)
+            self.stats['trajectory_points_found'] = sum(len(hits['points']) for hits in trajectory_hits.values())
+            self.stats['unique_data_names_found'] = len(trajectory_hits)
             
-            polyline_data = {
-                'scene_id': scene_id,
-                'data_name': data_name,
-                'polyline': coordinates,  # 坐标序列 [(lng, lat), ...]
-                'timestamps': timestamps,  # 时间戳序列
-                'speeds': speeds,  # 速度序列
-                'avp_flags': avp_flags,  # AVP标志序列
-                'workstages': workstages,  # 工作阶段序列
-                'geometry': trajectory_geom,  # 几何对象（用于空间分析）
-                
-                # 统计信息
-                'start_time': min(timestamps),
-                'end_time': max(timestamps),
-                'duration': max(timestamps) - min(timestamps),
-                'total_points': len(coordinates),
-                'avg_speed': round(sum(speed_data) / len(speed_data), 2) if speed_data else 0.0,
-                'max_speed': round(max(speed_data), 2) if speed_data else 0.0,
-                'min_speed': round(min(speed_data), 2) if speed_data else 0.0,
-                'avp_ratio': round(sum(avp_data) / len(avp_data), 3) if avp_data else 0.0,
-                'trajectory_length': trajectory_geom.length  # 轨迹长度（度）
+            logger.info(f"在buffer中找到 {self.stats['trajectory_points_found']} 个轨迹点")
+            logger.info(f"涉及 {self.stats['unique_data_names_found']} 个不同的data_name")
+            
+            # 4. 应用过滤规则
+            filtered_trajectories = self._apply_filtering_rules(trajectory_hits)
+            
+            self.stats['trajectories_passed_filter'] = len(filtered_trajectories)
+            
+            # 5. 提取符合条件的完整轨迹
+            complete_trajectories = self._extract_complete_trajectories(filtered_trajectories)
+            
+            self.stats['processed_trajectories'] += 1
+            self.stats['end_time'] = datetime.now()
+            
+            logger.info(f"轨迹邻近性分析完成: {input_trajectory_id}")
+            logger.info(f"符合条件的轨迹数: {len(complete_trajectories)}")
+            
+            return {
+                'input_trajectory_id': input_trajectory_id,
+                'candidate_lanes': nearby_lanes,
+                'trajectory_hits': trajectory_hits,
+                'filtered_trajectories': filtered_trajectories,
+                'complete_trajectories': complete_trajectories,
+                'stats': self.stats.copy()
             }
             
-            logger.debug(f"构建polyline轨迹: {scene_id} ({data_name}), 点数: {len(coordinates)}")
-            return polyline_data
-            
         except Exception as e:
-            logger.error(f"构建polyline轨迹失败: {scene_id} ({data_name}), 错误: {str(e)}")
-            return None
-        
-    def sample_trajectory(self, polyline_data: Dict) -> List[Dict]:
-        """对轨迹进行采样
-        
-        Args:
-            polyline_data: polyline格式的轨迹数据
-            
-        Returns:
-            采样后的轨迹点列表
-        """
-        if not polyline_data or not polyline_data.get('polyline'):
-            logger.warning("轨迹数据为空，无法采样")
-            return []
-        
-        strategy = self.config['sampling_strategy']
-        
-        try:
-            if strategy == 'distance':
-                return self._distance_based_sampling(polyline_data)
-            elif strategy == 'time':
-                return self._time_based_sampling(polyline_data)
-            elif strategy == 'uniform':
-                return self._uniform_sampling(polyline_data)
-            else:
-                logger.error(f"未知的采样策略: {strategy}")
-                return []
-                
-        except Exception as e:
-            logger.error(f"轨迹采样失败: {str(e)}")
-            return []
+            logger.error(f"轨迹邻近性分析失败: {input_trajectory_id}, 错误: {e}")
+            return {'error': str(e)}
     
-    def _distance_based_sampling(self, polyline_data: Dict) -> List[Dict]:
-        """基于距离的采样
+    def _segment_input_trajectory(self, trajectory_geom: str) -> List[Dict]:
+        """对输入轨迹进行分段
         
         Args:
-            polyline_data: polyline格式的轨迹数据
-            
-        Returns:
-            采样后的轨迹点列表
-        """
-        coordinates = polyline_data['polyline']
-        timestamps = polyline_data['timestamps']
-        speeds = polyline_data['speeds']
-        avp_flags = polyline_data['avp_flags']
-        workstages = polyline_data['workstages']
-        
-        interval = self.config['distance_interval']  # 米
-        sampled_points = []
-        
-        # 将距离间隔从米转换为度（粗略转换，1度约等于111320米）
-        interval_degrees = interval / 111320.0
-        
-        accumulated_distance = 0.0
-        last_coord = coordinates[0]
-        
-        # 添加第一个点
-        sampled_points.append({
-            'coordinate': coordinates[0],
-            'timestamp': timestamps[0],
-            'speed': speeds[0],
-            'avp_flag': avp_flags[0],
-            'workstage': workstages[0],
-            'original_index': 0
-        })
-        
-        for i in range(1, len(coordinates)):
-            current_coord = coordinates[i]
-            
-            # 计算相邻点距离（简化的欧几里得距离）
-            dist = ((current_coord[0] - last_coord[0])**2 + 
-                   (current_coord[1] - last_coord[1])**2)**0.5
-            
-            accumulated_distance += dist
-            
-            # 当累计距离达到采样间隔时，采样
-            if accumulated_distance >= interval_degrees:
-                sampled_points.append({
-                    'coordinate': current_coord,
-                    'timestamp': timestamps[i],
-                    'speed': speeds[i],
-                    'avp_flag': avp_flags[i],
-                    'workstage': workstages[i],
-                    'original_index': i
-                })
-                accumulated_distance = 0.0
-                last_coord = current_coord
-        
-        # 确保包含最后一个点
-        if len(sampled_points) == 0 or sampled_points[-1]['original_index'] != len(coordinates) - 1:
-            sampled_points.append({
-                'coordinate': coordinates[-1],
-                'timestamp': timestamps[-1],
-                'speed': speeds[-1],
-                'avp_flag': avp_flags[-1],
-                'workstage': workstages[-1],
-                'original_index': len(coordinates) - 1
-            })
-        
-        logger.debug(f"距离采样: {len(coordinates)} -> {len(sampled_points)} 点")
-        return sampled_points
-    
-    def _time_based_sampling(self, polyline_data: Dict) -> List[Dict]:
-        """基于时间的采样
-        
-        Args:
-            polyline_data: polyline格式的轨迹数据
-            
-        Returns:
-            采样后的轨迹点列表
-        """
-        coordinates = polyline_data['polyline']
-        timestamps = polyline_data['timestamps']
-        speeds = polyline_data['speeds']
-        avp_flags = polyline_data['avp_flags']
-        workstages = polyline_data['workstages']
-        
-        interval = self.config['time_interval']  # 秒
-        sampled_points = []
-        
-        # 转换为毫秒
-        interval_ms = interval * 1000
-        
-        # 添加第一个点
-        sampled_points.append({
-            'coordinate': coordinates[0],
-            'timestamp': timestamps[0],
-            'speed': speeds[0],
-            'avp_flag': avp_flags[0],
-            'workstage': workstages[0],
-            'original_index': 0
-        })
-        
-        last_timestamp = timestamps[0]
-        
-        for i in range(1, len(coordinates)):
-            current_timestamp = timestamps[i]
-            
-            # 检查时间间隔
-            if current_timestamp - last_timestamp >= interval_ms:
-                sampled_points.append({
-                    'coordinate': coordinates[i],
-                    'timestamp': current_timestamp,
-                    'speed': speeds[i],
-                    'avp_flag': avp_flags[i],
-                    'workstage': workstages[i],
-                    'original_index': i
-                })
-                last_timestamp = current_timestamp
-        
-        # 确保包含最后一个点
-        if len(sampled_points) == 0 or sampled_points[-1]['original_index'] != len(coordinates) - 1:
-            sampled_points.append({
-                'coordinate': coordinates[-1],
-                'timestamp': timestamps[-1],
-                'speed': speeds[-1],
-                'avp_flag': avp_flags[-1],
-                'workstage': workstages[-1],
-                'original_index': len(coordinates) - 1
-            })
-        
-        logger.debug(f"时间采样: {len(coordinates)} -> {len(sampled_points)} 点")
-        return sampled_points
-    
-    def _uniform_sampling(self, polyline_data: Dict) -> List[Dict]:
-        """均匀采样
-        
-        Args:
-            polyline_data: polyline格式的轨迹数据
-            
-        Returns:
-            采样后的轨迹点列表
-        """
-        coordinates = polyline_data['polyline']
-        timestamps = polyline_data['timestamps']
-        speeds = polyline_data['speeds']
-        avp_flags = polyline_data['avp_flags']
-        workstages = polyline_data['workstages']
-        
-        step = self.config['uniform_step']  # 点数间隔
-        sampled_points = []
-        
-        # 均匀采样
-        for i in range(0, len(coordinates), step):
-            sampled_points.append({
-                'coordinate': coordinates[i],
-                'timestamp': timestamps[i],
-                'speed': speeds[i],
-                'avp_flag': avp_flags[i],
-                'workstage': workstages[i],
-                'original_index': i
-            })
-        
-        # 确保包含最后一个点
-        if len(sampled_points) == 0 or sampled_points[-1]['original_index'] != len(coordinates) - 1:
-            sampled_points.append({
-                'coordinate': coordinates[-1],
-                'timestamp': timestamps[-1],
-                'speed': speeds[-1],
-                'avp_flag': avp_flags[-1],
-                'workstage': workstages[-1],
-                'original_index': len(coordinates) - 1
-            })
-        
-        logger.debug(f"均匀采样: {len(coordinates)} -> {len(sampled_points)} 点")
-        return sampled_points
-        
-    def sliding_window_analysis(self, sampled_points: List[Dict]) -> List[Dict]:
-        """滑窗分析，识别车道变化
-        
-        Args:
-            sampled_points: 采样后的轨迹点
+            trajectory_geom: 轨迹几何WKT字符串
             
         Returns:
             轨迹分段列表
         """
-        if not sampled_points:
-            logger.warning("采样点为空，无法进行滑窗分析")
-            return []
-        
-        window_size = self.config['window_size']
-        window_overlap = self.config['window_overlap']
-        
-        # 计算滑窗步长
-        step_size = max(1, int(window_size * (1 - window_overlap)))
-        
-        segments = []
-        current_lane = None
-        segment_start = 0
-        
-        logger.debug(f"开始滑窗分析，点数: {len(sampled_points)}, 窗口大小: {window_size}, 步长: {step_size}")
-        
         try:
-            for i in range(0, len(sampled_points), step_size):
-                # 获取当前窗口的点
-                window_end = min(i + window_size, len(sampled_points))
-                window_points = sampled_points[i:window_end]
-                
-                if not window_points:
-                    continue
-                
-                # 计算窗口中心点
-                center_point = self._calculate_window_center(window_points)
-                
-                # 查找最近车道
-                nearest_lane = self.find_nearest_lane(center_point)
-                
-                # 检查车道是否变化
-                if nearest_lane != current_lane:
-                    # 结束当前segment（如果存在）
-                    if current_lane is not None and segment_start < i:
-                        segment_end = i
-                        segment_points = sampled_points[segment_start:segment_end]
-                        
-                        segments.append({
-                            'lane_id': current_lane,
-                            'start_index': segment_start,
-                            'end_index': segment_end,
-                            'points': segment_points,
-                            'points_count': len(segment_points)
-                        })
-                        
-                        logger.debug(f"车道分段: {current_lane}, 点数: {len(segment_points)}")
-                    
-                    # 开始新segment
-                    current_lane = nearest_lane
-                    segment_start = i
-                    
-                    if nearest_lane:
-                        logger.debug(f"检测到车道变化: {nearest_lane}")
-                
-                # 如果到达最后一个窗口，结束当前segment
-                if window_end >= len(sampled_points):
-                    if current_lane is not None:
-                        segment_points = sampled_points[segment_start:]
-                        
-                        segments.append({
-                            'lane_id': current_lane,
-                            'start_index': segment_start,
-                            'end_index': len(sampled_points),
-                            'points': segment_points,
-                            'points_count': len(segment_points)
-                        })
-                        
-                        logger.debug(f"最终车道分段: {current_lane}, 点数: {len(segment_points)}")
-                    break
+            from shapely import wkt
+            trajectory = wkt.loads(trajectory_geom)
             
-            logger.info(f"滑窗分析完成，生成 {len(segments)} 个车道分段")
+            if trajectory.geom_type != 'LineString':
+                logger.error(f"轨迹几何类型错误: {trajectory.geom_type}，期望: LineString")
+                return []
+            
+            # 获取轨迹坐标
+            coords = list(trajectory.coords)
+            if len(coords) < 2:
+                logger.error(f"轨迹坐标点不足: {len(coords)}")
+                return []
+            
+            # 按距离分段（每段约50米）
+            segment_distance = 50.0  # 米
+            segment_distance_degrees = segment_distance / 111320.0  # 转换为度
+            
+            segments = []
+            current_start = 0
+            accumulated_distance = 0.0
+            
+            for i in range(1, len(coords)):
+                # 计算距离
+                prev_coord = coords[i-1]
+                curr_coord = coords[i]
+                dist = ((curr_coord[0] - prev_coord[0])**2 + (curr_coord[1] - prev_coord[1])**2)**0.5
+                accumulated_distance += dist
+                
+                # 当距离达到分段阈值时创建分段
+                if accumulated_distance >= segment_distance_degrees or i == len(coords) - 1:
+                    segment_coords = coords[current_start:i+1]
+                    if len(segment_coords) >= 2:
+                        segment_geom = LineString(segment_coords)
+                        
+                        # 计算分段中心点
+                        center_coord = segment_geom.interpolate(0.5, normalized=True)
+                        
+                        segments.append({
+                            'segment_id': len(segments),
+                            'start_index': current_start,
+                            'end_index': i,
+                            'geometry': segment_geom,
+                            'center_point': (center_coord.x, center_coord.y),
+                            'length': accumulated_distance
+                        })
+                    
+                    current_start = i
+                    accumulated_distance = 0.0
+            
+            logger.debug(f"轨迹分段完成: {len(coords)} 个坐标点 → {len(segments)} 个分段")
             return segments
             
         except Exception as e:
-            logger.error(f"滑窗分析失败: {str(e)}")
+            logger.error(f"轨迹分段失败: {e}")
             return []
     
-    def _calculate_window_center(self, window_points: List[Dict]) -> Dict:
-        """计算窗口中心点
+    def _find_nearby_candidate_lanes(self, trajectory_segments: List[Dict]) -> List[Dict]:
+        """为轨迹分段找到邻近的候选lanes
         
         Args:
-            window_points: 窗口内的轨迹点
+            trajectory_segments: 轨迹分段列表
             
         Returns:
-            窗口中心点
+            邻近候选lanes列表
         """
-        if not window_points:
-            return {}
-        
-        # 计算坐标中心
-        total_lng = sum(point['coordinate'][0] for point in window_points)
-        total_lat = sum(point['coordinate'][1] for point in window_points)
-        
-        center_lng = total_lng / len(window_points)
-        center_lat = total_lat / len(window_points)
-        
-        # 计算时间中心
-        total_time = sum(point['timestamp'] for point in window_points)
-        center_time = total_time / len(window_points)
-        
-        # 计算速度平均值
-        total_speed = sum(point['speed'] for point in window_points)
-        avg_speed = total_speed / len(window_points)
-        
-        return {
-            'coordinate': (center_lng, center_lat),
-            'timestamp': int(center_time),
-            'speed': avg_speed,
-            'window_size': len(window_points)
-        }
-        
-    def find_nearest_lane(self, point: Dict) -> Optional[str]:
-        """查找最近的车道（基于trajectory_road_analysis结果）
-        
-        Args:
-            point: 轨迹点
-            
-        Returns:
-            最近车道的ID
-        """
-        if not point or 'coordinate' not in point:
-            logger.warning("轨迹点数据无效")
-            return None
-        
         if not self.road_analysis_id:
             logger.error("未指定road_analysis_id，无法查找候选车道")
-            return None
-        
-        coordinate = point['coordinate']
-        lng, lat = coordinate[0], coordinate[1]
+            return []
         
         road_lanes_table = self.config['road_analysis_lanes_table']
         max_distance = self.config['max_lane_distance']
-        
-        # 将距离从米转换为度（粗略转换）
         max_distance_degrees = max_distance / 111320.0
         
-        logger.debug(f"查询候选车道: 表={road_lanes_table}, road_analysis_id={self.road_analysis_id}, 点=({lng:.6f}, {lat:.6f})")
+        nearby_lanes = []
         
         try:
-            # 首先验证表是否存在
-            table_check_sql = text(f"""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
-                    WHERE table_schema = 'public' 
-                    AND table_name = '{road_lanes_table}'
-                );
-            """)
-            
             with self.engine.connect() as conn:
-                table_exists = conn.execute(table_check_sql).scalar()
-                
-                if not table_exists:
-                    logger.error(f"道路分析结果表不存在: {road_lanes_table}")
-                    return None
-                
-                # 检查表中是否有对应road_analysis_id的数据
-                count_sql = text(f"""
-                    SELECT COUNT(*) FROM {road_lanes_table}
-                    WHERE analysis_id = :road_analysis_id
-                """)
-                
-                count_result = conn.execute(count_sql, {'road_analysis_id': self.road_analysis_id})
-                lane_count = count_result.scalar()
-                
-                if lane_count == 0:
-                    logger.warning(f"道路分析结果表中没有找到analysis_id={self.road_analysis_id}的数据，可用的候选lanes数量: 0")
-                    return None
-                
-                logger.debug(f"道路分析结果表中找到 {lane_count} 个候选lanes")
-                
-                # 从trajectory_road_analysis的结果中查找最近的车道
-                sql = text(f"""
-                    SELECT 
-                        lane_id, 
-                        ST_Distance(geometry, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)) as distance,
-                        lane_type,
-                        road_id
-                    FROM {road_lanes_table}
-                    WHERE analysis_id = :road_analysis_id
-                    AND geometry IS NOT NULL
-                    AND ST_DWithin(geometry, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326), :max_distance)
-                    ORDER BY distance
-                    LIMIT 1
-                """)
-                
-                result = conn.execute(sql, {
-                    'lng': lng,
-                    'lat': lat,
-                    'road_analysis_id': self.road_analysis_id,
-                    'max_distance': max_distance_degrees
-                })
-                
-                row = result.fetchone()
-                
-                if row:
-                    lane_id = row[0]
-                    distance = row[1]
-                    lane_type = row[2]
-                    road_id = row[3]
-                    logger.debug(f"找到最近车道: {lane_id} (type: {lane_type}, road: {road_id}), 距离: {distance:.6f}度")
-                    return str(lane_id)
-                else:
-                    logger.debug(f"未找到最大距离内的候选车道: ({lng:.6f}, {lat:.6f}), 最大距离: {max_distance}米")
-                    return None
+                for segment in trajectory_segments:
+                    center_lng, center_lat = segment['center_point']
                     
+                    # 查询该分段附近的候选lanes
+                    sql = text(f"""
+                        SELECT 
+                            lane_id, 
+                            ST_Distance(geometry, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)) as distance,
+                            lane_type,
+                            road_id,
+                            ST_AsText(geometry) as geometry_wkt
+                        FROM {road_lanes_table}
+                        WHERE analysis_id = :road_analysis_id
+                        AND geometry IS NOT NULL
+                        AND ST_DWithin(geometry, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326), :max_distance)
+                        ORDER BY distance
+                        LIMIT 5
+                    """)
+                    
+                    result = conn.execute(sql, {
+                        'lng': center_lng,
+                        'lat': center_lat,
+                        'road_analysis_id': self.road_analysis_id,
+                        'max_distance': max_distance_degrees
+                    })
+                    
+                    segment_lanes = []
+                    for row in result:
+                        lane_info = {
+                            'lane_id': row[0],
+                            'distance': row[1],
+                            'lane_type': row[2],
+                            'road_id': row[3],
+                            'geometry_wkt': row[4],
+                            'segment_id': segment['segment_id']
+                        }
+                        segment_lanes.append(lane_info)
+                    
+                    if segment_lanes:
+                        logger.debug(f"分段 {segment['segment_id']} 找到 {len(segment_lanes)} 个邻近lanes")
+                        nearby_lanes.extend(segment_lanes)
+            
+            # 去重（同一个lane可能被多个分段找到）
+            unique_lanes = {}
+            for lane in nearby_lanes:
+                lane_id = lane['lane_id']
+                if lane_id not in unique_lanes or lane['distance'] < unique_lanes[lane_id]['distance']:
+                    unique_lanes[lane_id] = lane
+            
+            result_lanes = list(unique_lanes.values())
+            logger.info(f"去重后的邻近候选lanes: {len(result_lanes)} 个")
+            
+            return result_lanes
+            
         except Exception as e:
-            logger.error(f"车道查询失败: {str(e)}")
-            logger.error(f"查询参数: 表={road_lanes_table}, road_analysis_id={self.road_analysis_id}")
-            return None
-        
-    def create_lane_buffer(self, lane_id: str) -> Any:
-        """为车道创建缓冲区（基于trajectory_road_analysis结果）
+            logger.error(f"查找邻近候选lanes失败: {e}")
+            return []
+    
+    def _query_trajectory_points_in_buffers(self, nearby_lanes: List[Dict]) -> Dict[str, Dict]:
+        """在lanes的buffer中查询轨迹点数据库
         
         Args:
-            lane_id: 车道ID
+            nearby_lanes: 邻近候选lanes列表
             
         Returns:
-            缓冲区几何
+            按data_name分组的轨迹点命中结果
         """
-        if not lane_id:
-            logger.warning("车道ID为空")
-            return None
-        
-        if not self.road_analysis_id:
-            logger.error("未指定road_analysis_id，无法查找候选车道")
-            return None
-        
-        road_lanes_table = self.config['road_analysis_lanes_table']
         buffer_radius = self.config['buffer_radius']
+        trajectory_hits = {}
         
-        # 将缓冲区半径从米转换为度（粗略转换）
-        buffer_radius_degrees = buffer_radius / 111320.0
-        
-        try:
-            # 从trajectory_road_analysis结果中查找车道几何并创建缓冲区
-            sql = text(f"""
-                SELECT ST_AsText(ST_Buffer(geometry, :buffer_radius)) as buffer_geom
-                FROM {road_lanes_table}
-                WHERE analysis_id = :road_analysis_id
-                AND lane_id = :lane_id
-                AND geometry IS NOT NULL
-            """)
-            
-            with self.engine.connect() as conn:
-                result = conn.execute(sql, {
-                    'road_analysis_id': self.road_analysis_id,
-                    'lane_id': int(lane_id),
-                    'buffer_radius': buffer_radius_degrees
-                })
-                
-                row = result.fetchone()
-                
-                if row:
-                    buffer_wkt = row[0]
-                    # 将WKT转换为Shapely几何对象
-                    from shapely import wkt
-                    buffer_geom = wkt.loads(buffer_wkt)
-                    
-                    logger.debug(f"创建车道缓冲区: {lane_id}, 半径: {buffer_radius}米")
-                    return buffer_geom
-                else:
-                    logger.warning(f"未在候选车道中找到: {lane_id}")
-                    return None
-                    
-        except Exception as e:
-            logger.error(f"创建车道缓冲区失败: {lane_id}, 错误: {str(e)}")
-            return None
-        
-    def filter_trajectory_by_buffer(self, trajectory_points: List[Dict], buffer_geom: Any) -> List[Dict]:
-        """使用缓冲区过滤轨迹点
-        
-        Args:
-            trajectory_points: 轨迹点列表
-            buffer_geom: 缓冲区几何
-            
-        Returns:
-            过滤后的轨迹点
-        """
-        if not trajectory_points or not buffer_geom:
-            logger.warning("轨迹点或缓冲区几何为空")
-            return []
-        
-        filtered_points = []
-        
-        try:
-            for point in trajectory_points:
-                if 'coordinate' not in point:
-                    continue
-                
-                lng, lat = point['coordinate']
-                
-                # 创建点几何
-                point_geom = Point(lng, lat)
-                
-                # 检查点是否在缓冲区内
-                if buffer_geom.contains(point_geom) or buffer_geom.intersects(point_geom):
-                    filtered_points.append(point)
-            
-            logger.debug(f"缓冲区过滤: {len(trajectory_points)} -> {len(filtered_points)} 点")
-            return filtered_points
-            
-        except Exception as e:
-            logger.error(f"缓冲区过滤失败: {str(e)}")
-            return []
-        
-    def check_trajectory_quality(self, dataset_name: str, buffer_results: List[Dict]) -> Dict:
-        """检查轨迹质量
-        
-        Args:
-            dataset_name: 数据集名称
-            buffer_results: 缓冲区分析结果
-            
-        Returns:
-            质量检查结果
-        """
-        if not buffer_results:
-            return {
-                'dataset_name': dataset_name,
-                'status': 'failed',
-                'reason': '无缓冲区分析结果',
-                'lanes_covered': [],
-                'total_points': 0,
-                'total_lanes': 0
-            }
-        
-        try:
-            # 1. 统计涉及的车道数量
-            lanes_covered = set()
-            total_points = 0
-            
-            for result in buffer_results:
-                if 'lane_id' in result and result['lane_id']:
-                    lanes_covered.add(result['lane_id'])
-                
-                if 'points_count' in result:
-                    total_points += result['points_count']
-            
-            total_lanes = len(lanes_covered)
-            min_points_threshold = self.config['min_points_single_lane']
-            
-            # 2. 应用过滤规则
-            if total_lanes > 1:
-                # 多车道情况：保留（无论点数多少）
-                status = 'passed'
-                reason = f'多车道轨迹，涉及{total_lanes}个车道'
-            elif total_lanes == 1 and total_points >= min_points_threshold:
-                # 单车道但点数足够：保留
-                status = 'passed'
-                reason = f'单车道轨迹但点数充足({total_points}点 >= {min_points_threshold}点)'
-            elif total_lanes == 1:
-                # 单车道且点数不足：丢弃
-                status = 'failed'
-                reason = f'单车道轨迹点数不足({total_points}点 < {min_points_threshold}点)'
-            else:
-                # 无车道覆盖：丢弃
-                status = 'failed'
-                reason = '无车道覆盖'
-            
-            result = {
-                'dataset_name': dataset_name,
-                'status': status,
-                'reason': reason,
-                'lanes_covered': list(lanes_covered),
-                'total_points': total_points,
-                'total_lanes': total_lanes
-            }
-            
-            logger.debug(f"质量检查结果: {dataset_name} - {status} ({reason})")
-            return result
-            
-        except Exception as e:
-            logger.error(f"轨迹质量检查失败: {dataset_name}, 错误: {str(e)}")
-            return {
-                'dataset_name': dataset_name,
-                'status': 'failed',
-                'reason': f'质量检查异常: {str(e)}',
-                'lanes_covered': [],
-                'total_points': 0,
-                'total_lanes': 0
-            }
-        
-    def reconstruct_trajectory(self, dataset_name: str, quality_result: Dict) -> Optional[Dict]:
-        """重构完整轨迹
-        
-        Args:
-            dataset_name: 数据集名称
-            quality_result: 质量检查结果
-            
-        Returns:
-            重构后的轨迹数据
-        """
-        if not quality_result or quality_result.get('status') != 'passed':
-            logger.debug(f"质量检查未通过，跳过轨迹重构: {dataset_name}")
-            return None
-        
-        try:
-            # 1. 查询该dataset_name的所有原始轨迹点
-            original_points = fetch_trajectory_points(dataset_name)
-            
-            if original_points.empty:
-                logger.warning(f"无法获取原始轨迹点: {dataset_name}")
-                return None
-            
-            # 2. 按timestamp排序
-            original_points = original_points.sort_values('timestamp')
-            
-            # 3. 构建完整轨迹线
-            coordinates = []
-            for _, row in original_points.iterrows():
-                if pd.notna(row['longitude']) and pd.notna(row['latitude']):
-                    coordinates.append((float(row['longitude']), float(row['latitude'])))
-            
-            if len(coordinates) < 2:
-                logger.warning(f"有效坐标点不足，无法构建轨迹: {dataset_name}")
-                return None
-            
-            # 4. 创建LineString几何
-            trajectory_geom = LineString(coordinates)
-            
-            # 5. 计算轨迹统计
-            speed_data = original_points['twist_linear'].dropna()
-            avp_data = original_points['avp_flag'].dropna()
-            
-            reconstructed_data = {
-                'dataset_name': dataset_name,
-                'geometry': trajectory_geom,
-                'start_time': int(original_points['timestamp'].min()),
-                'end_time': int(original_points['timestamp'].max()),
-                'duration': int(original_points['timestamp'].max() - original_points['timestamp'].min()),
-                'total_points': len(original_points),
-                'valid_coordinates': len(coordinates),
-                'lanes_covered': quality_result['lanes_covered'],
-                'total_lanes': quality_result['total_lanes'],
-                'trajectory_length': trajectory_geom.length,  # 轨迹长度（度）
-                
-                # 速度统计
-                'avg_speed': round(float(speed_data.mean()), 2) if len(speed_data) > 0 else 0.0,
-                'max_speed': round(float(speed_data.max()), 2) if len(speed_data) > 0 else 0.0,
-                'min_speed': round(float(speed_data.min()), 2) if len(speed_data) > 0 else 0.0,
-                'std_speed': round(float(speed_data.std()), 2) if len(speed_data) > 1 else 0.0,
-                
-                # AVP统计
-                'avp_ratio': round(float((avp_data == 1).mean()), 3) if len(avp_data) > 0 else 0.0,
-                
-                # 质量信息
-                'quality_status': quality_result['status'],
-                'quality_reason': quality_result['reason']
-            }
-            
-            logger.debug(f"重构轨迹: {dataset_name}, 点数: {len(coordinates)}, 车道数: {quality_result['total_lanes']}")
-            return reconstructed_data
-            
-        except Exception as e:
-            logger.error(f"轨迹重构失败: {dataset_name}, 错误: {str(e)}")
-            return None
-        
-    def simplify_trajectory(self, trajectory_geom: LineString) -> LineString:
-        """简化轨迹几何
-        
-        Args:
-            trajectory_geom: 轨迹几何
-            
-        Returns:
-            简化后的轨迹几何
-        """
-        if not trajectory_geom or trajectory_geom.is_empty:
-            logger.warning("轨迹几何为空，无法简化")
-            return trajectory_geom
-        
-        tolerance = self.config['simplify_tolerance']
-        
-        # 将容差从米转换为度（粗略转换）
-        tolerance_degrees = tolerance / 111320.0
-        
-        try:
-            # 使用Douglas-Peucker算法简化轨迹
-            simplified_geom = trajectory_geom.simplify(tolerance_degrees, preserve_topology=True)
-            
-            # 记录简化效果
-            original_coords = len(trajectory_geom.coords)
-            simplified_coords = len(simplified_geom.coords)
-            
-            logger.debug(f"轨迹简化: {original_coords} -> {simplified_coords} 点 "
-                        f"(减少 {original_coords - simplified_coords} 点)")
-            
-            return simplified_geom
-            
-        except Exception as e:
-            logger.error(f"轨迹简化失败: {str(e)}")
-            return trajectory_geom  # 返回原始几何
-        
-    def create_database_tables(self) -> bool:
-        """创建数据库表结构
-        
-        Returns:
-            创建是否成功
-        """
         try:
             with self.engine.connect() as conn:
-                # 创建轨迹-车道分段表
-                if not self._create_trajectory_segments_table(conn):
-                    return False
-                
-                # 创建缓冲区分析结果表
-                if not self._create_trajectory_buffer_table(conn):
-                    return False
-                
-                # 创建轨迹质量检查表
-                if not self._create_quality_check_table(conn):
-                    return False
-                
-                logger.info("成功创建所有数据库表")
-                return True
-                
-        except Exception as e:
-            logger.error(f"创建数据库表失败: {str(e)}")
-            return False
-    
-    def _create_trajectory_segments_table(self, conn) -> bool:
-        """创建轨迹-车道分段表"""
-        table_name = self.config['trajectory_segments_table']
-        
-        try:
-            # 检查表是否已存在
-            check_sql = text(f"""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
-                    WHERE table_schema = 'public' 
-                    AND table_name = '{table_name}'
-                );
-            """)
-            
-            result = conn.execute(check_sql)
-            if result.scalar():
-                logger.info(f"轨迹分段表 {table_name} 已存在，跳过创建")
-                return True
-            
-            logger.info(f"创建轨迹分段表: {table_name}")
-            
-            # 创建表结构
-            create_sql = text(f"""
-                CREATE TABLE {table_name} (
-                    id SERIAL PRIMARY KEY,
-                    scene_id TEXT NOT NULL,
-                    data_name TEXT NOT NULL,
-                    lane_id TEXT NOT NULL,
-                    segment_index INTEGER,
-                    start_time BIGINT,
-                    end_time BIGINT,
-                    start_point_index INTEGER,
-                    end_point_index INTEGER,
-                    avg_speed NUMERIC(8,2),
-                    max_speed NUMERIC(8,2),
-                    min_speed NUMERIC(8,2),
-                    segment_length NUMERIC(10,2),
-                    original_points_count INTEGER,
-                    simplified_points_count INTEGER,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-            
-            conn.execute(create_sql)
-            conn.commit()
-            
-            # 添加几何列（使用现代PostGIS语法）
-            geom_sql = text(f"""
-                ALTER TABLE {table_name} ADD COLUMN geometry geometry(LINESTRING, 4326);
-            """)
-            
-            conn.execute(geom_sql)
-            conn.commit()
-            
-            # 创建索引
-            index_sql = text(f"""
-                CREATE INDEX idx_{table_name}_geometry ON {table_name} USING GIST(geometry);
-                CREATE INDEX idx_{table_name}_scene_id ON {table_name}(scene_id);
-                CREATE INDEX idx_{table_name}_data_name ON {table_name}(data_name);
-                CREATE INDEX idx_{table_name}_lane_id ON {table_name}(lane_id);
-                CREATE INDEX idx_{table_name}_start_time ON {table_name}(start_time);
-            """)
-            
-            conn.execute(index_sql)
-            conn.commit()
-            
-            logger.info(f"成功创建轨迹分段表: {table_name}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"创建轨迹分段表失败: {table_name}, 错误: {str(e)}")
-            return False
-    
-    def _create_trajectory_buffer_table(self, conn) -> bool:
-        """创建缓冲区分析结果表"""
-        table_name = self.config['trajectory_buffer_table']
-        
-        try:
-            # 检查表是否已存在
-            check_sql = text(f"""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
-                    WHERE table_schema = 'public' 
-                    AND table_name = '{table_name}'
-                );
-            """)
-            
-            result = conn.execute(check_sql)
-            if result.scalar():
-                logger.info(f"缓冲区分析表 {table_name} 已存在，跳过创建")
-                return True
-            
-            logger.info(f"创建缓冲区分析表: {table_name}")
-            
-            # 创建表结构
-            create_sql = text(f"""
-                CREATE TABLE {table_name} (
-                    id SERIAL PRIMARY KEY,
-                    scene_id TEXT NOT NULL,
-                    data_name TEXT NOT NULL,
-                    lane_id TEXT NOT NULL,
-                    buffer_radius NUMERIC(6,2),
-                    points_in_buffer INTEGER,
-                    total_points INTEGER,
-                    coverage_ratio NUMERIC(5,3),
-                    trajectory_length NUMERIC(10,2),
-                    avg_distance_to_lane NUMERIC(8,2),
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-            
-            conn.execute(create_sql)
-            conn.commit()
-            
-            # 添加几何列（使用现代PostGIS语法）
-            geom_sql = text(f"""
-                ALTER TABLE {table_name} ADD COLUMN filtered_trajectory geometry(LINESTRING, 4326);
-            """)
-            
-            conn.execute(geom_sql)
-            conn.commit()
-            
-            # 创建索引
-            index_sql = text(f"""
-                CREATE INDEX idx_{table_name}_geometry ON {table_name} USING GIST(filtered_trajectory);
-                CREATE INDEX idx_{table_name}_scene_id ON {table_name}(scene_id);
-                CREATE INDEX idx_{table_name}_data_name ON {table_name}(data_name);
-                CREATE INDEX idx_{table_name}_lane_id ON {table_name}(lane_id);
-            """)
-            
-            conn.execute(index_sql)
-            conn.commit()
-            
-            logger.info(f"成功创建缓冲区分析表: {table_name}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"创建缓冲区分析表失败: {table_name}, 错误: {str(e)}")
-            return False
-    
-    def _create_quality_check_table(self, conn) -> bool:
-        """创建轨迹质量检查表"""
-        table_name = self.config['quality_check_table']
-        
-        try:
-            # 检查表是否已存在
-            check_sql = text(f"""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
-                    WHERE table_schema = 'public' 
-                    AND table_name = '{table_name}'
-                );
-            """)
-            
-            result = conn.execute(check_sql)
-            if result.scalar():
-                logger.info(f"质量检查表 {table_name} 已存在，跳过创建")
-                return True
-            
-            logger.info(f"创建质量检查表: {table_name}")
-            
-            # 创建表结构
-            create_sql = text(f"""
-                CREATE TABLE {table_name} (
-                    id SERIAL PRIMARY KEY,
-                    scene_id TEXT NOT NULL,
-                    data_name TEXT NOT NULL,
-                    total_lanes_covered INTEGER,
-                    total_points_in_buffer INTEGER,
-                    quality_status TEXT NOT NULL,
-                    failure_reason TEXT,
-                    lanes_list TEXT[],
-                    avg_speed NUMERIC(8,2),
-                    max_speed NUMERIC(8,2),
-                    min_speed NUMERIC(8,2),
-                    avp_ratio NUMERIC(5,3),
-                    trajectory_length NUMERIC(10,2),
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-            
-            conn.execute(create_sql)
-            conn.commit()
-            
-            # 添加几何列（使用现代PostGIS语法）
-            geom_sql = text(f"""
-                ALTER TABLE {table_name} ADD COLUMN reconstructed_trajectory geometry(LINESTRING, 4326);
-            """)
-            
-            conn.execute(geom_sql)
-            conn.commit()
-            
-            # 创建索引
-            index_sql = text(f"""
-                CREATE INDEX idx_{table_name}_geometry ON {table_name} USING GIST(reconstructed_trajectory);
-                CREATE INDEX idx_{table_name}_scene_id ON {table_name}(scene_id);
-                CREATE INDEX idx_{table_name}_data_name ON {table_name}(data_name);
-                CREATE INDEX idx_{table_name}_quality_status ON {table_name}(quality_status);
-            """)
-            
-            conn.execute(index_sql)
-            conn.commit()
-            
-            logger.info(f"成功创建质量检查表: {table_name}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"创建质量检查表失败: {table_name}, 错误: {str(e)}")
-            return False
-        
-    def save_results(self, results: List[Dict]) -> bool:
-        """保存分析结果
-        
-        Args:
-            results: 分析结果列表
-            
-        Returns:
-            保存是否成功
-        """
-        if not results:
-            logger.warning("没有结果可保存")
-            return True
-        
-        try:
-            # 保存到质量检查表
-            saved_count = self._save_quality_results(results)
-            
-            if saved_count > 0:
-                logger.info(f"成功保存 {saved_count} 条分析结果")
-                return True
-            else:
-                logger.warning("没有有效结果被保存")
-                return False
-                
-        except Exception as e:
-            logger.error(f"保存分析结果失败: {str(e)}")
-            return False
-    
-    def _save_quality_results(self, results: List[Dict]) -> int:
-        """保存质量检查结果到数据库
-        
-        Args:
-            results: 重构后的轨迹结果列表
-            
-        Returns:
-            保存成功的记录数
-        """
-        if not results:
-            return 0
-        
-        table_name = self.config['quality_check_table']
-        
-        try:
-            # 准备GeoDataFrame数据
-            gdf_data = []
-            geometries = []
-            
-            for result in results:
-                if 'geometry' not in result or not result['geometry']:
-                    continue
-                
-                # 提取属性数据
-                row = {
-                    'scene_id': result.get('scene_id', ''),
-                    'data_name': result.get('dataset_name', ''),
-                    'total_lanes_covered': result.get('total_lanes', 0),
-                    'total_points_in_buffer': result.get('total_points', 0),
-                    'quality_status': result.get('quality_status', 'unknown'),
-                    'failure_reason': result.get('quality_reason', ''),
-                    'lanes_list': result.get('lanes_covered', []),
-                    'avg_speed': result.get('avg_speed', 0.0),
-                    'max_speed': result.get('max_speed', 0.0),
-                    'min_speed': result.get('min_speed', 0.0),
-                    'avp_ratio': result.get('avp_ratio', 0.0),
-                    'trajectory_length': result.get('trajectory_length', 0.0)
-                }
-                
-                gdf_data.append(row)
-                geometries.append(result['geometry'])
-            
-            if not gdf_data:
-                logger.warning("没有有效的几何数据可保存")
-                return 0
-            
-            # 创建GeoDataFrame
-            gdf = gpd.GeoDataFrame(gdf_data, geometry=geometries, crs=4326)
-            
-            # 保存到数据库
-            gdf.to_postgis(table_name, self.engine, if_exists='append', index=False)
-            
-            logger.info(f"成功保存 {len(gdf)} 条质量检查结果到 {table_name}")
-            return len(gdf)
-            
-        except Exception as e:
-            logger.error(f"保存质量检查结果失败: {str(e)}")
-            return 0
-        
-    def process_scene_mappings(self, mappings_df: pd.DataFrame) -> Dict:
-        """处理场景映射，执行完整的分析流程
-        
-        Args:
-            mappings_df: 场景映射DataFrame
-            
-        Returns:
-            处理统计信息
-        """
-        setup_signal_handlers()
-        
-        self.stats['total_scenes'] = len(mappings_df)
-        self.stats['start_time'] = datetime.now()
-        
-        logger.info(f"开始处理 {len(mappings_df)} 个场景的轨迹车道分析")
-        
-        # 创建数据库表
-        if not self.create_database_tables():
-            logger.error("创建数据库表失败，退出处理")
-            return self.stats
-            
-        # 查询缺失的data_name
-        missing_data_names = mappings_df[mappings_df['data_name'].isna()]
-        if len(missing_data_names) > 0:
-            logger.info(f"需要查询 {len(missing_data_names)} 个scene_id对应的data_name")
-            
-            scene_ids_to_query = missing_data_names['scene_id'].tolist()
-            db_mappings = fetch_data_names_from_scene_ids(scene_ids_to_query)
-            
-            if not db_mappings.empty:
-                for idx, row in db_mappings.iterrows():
-                    scene_id = row['scene_id']
-                    data_name = row['data_name']
-                    mask = (mappings_df['scene_id'] == scene_id) & (mappings_df['data_name'].isna())
-                    mappings_df.loc[mask, 'data_name'] = data_name
+                for lane in nearby_lanes:
+                    logger.debug(f"查询lane {lane['lane_id']} 的buffer内轨迹点")
                     
-        # 统计仍然缺失data_name的记录
-        still_missing = mappings_df[mappings_df['data_name'].isna()]
-        if len(still_missing) > 0:
-            self.stats['missing_data_names'] = len(still_missing)
-            logger.warning(f"仍有 {len(still_missing)} 个scene_id无法获取data_name，将跳过处理")
+                    # 为lane创建buffer并查询轨迹点
+                    sql = text(f"""
+                        SELECT 
+                            p.dataset_name,
+                            p.timestamp,
+                            ST_X(p.point_lla) as longitude,
+                            ST_Y(p.point_lla) as latitude,
+                            p.twist_linear,
+                            p.avp_flag,
+                            p.workstage
+                        FROM {POINT_TABLE} p
+                        WHERE p.point_lla IS NOT NULL
+                        AND ST_DWithin(
+                            p.point_lla,
+                            ST_Buffer(
+                                ST_SetSRID(ST_GeomFromText(:lane_geom), 4326)::geography,
+                                :buffer_radius
+                            )::geometry,
+                            0
+                        )
+                        LIMIT 1000
+                    """)
+                    
+                    result = conn.execute(sql, {
+                        'lane_geom': lane['geometry_wkt'],
+                        'buffer_radius': buffer_radius
+                    })
+                    
+                    points_found = 0
+                    for row in result:
+                        data_name = row[0]
+                        point_info = {
+                            'timestamp': row[1],
+                            'longitude': row[2],
+                            'latitude': row[3],
+                            'twist_linear': row[4],
+                            'avp_flag': row[5],
+                            'workstage': row[6],
+                            'lane_id': lane['lane_id'],
+                            'lane_type': lane['lane_type']
+                        }
+                        
+                        if data_name not in trajectory_hits:
+                            trajectory_hits[data_name] = {
+                                'data_name': data_name,
+                                'points': [],
+                                'lanes_touched': set(),
+                                'lane_details': []
+                            }
+                        
+                        trajectory_hits[data_name]['points'].append(point_info)
+                        trajectory_hits[data_name]['lanes_touched'].add(lane['lane_id'])
+                        
+                        points_found += 1
+                    
+                    if points_found > 0:
+                        logger.debug(f"Lane {lane['lane_id']} buffer内找到 {points_found} 个轨迹点")
             
-        # 过滤出有效的映射
-        valid_mappings = mappings_df[mappings_df['data_name'].notna()]
+            # 转换set为list以便序列化
+            for data_name in trajectory_hits:
+                trajectory_hits[data_name]['lanes_touched'] = list(trajectory_hits[data_name]['lanes_touched'])
+                trajectory_hits[data_name]['total_points'] = len(trajectory_hits[data_name]['points'])
+                trajectory_hits[data_name]['total_lanes'] = len(trajectory_hits[data_name]['lanes_touched'])
+            
+            logger.info(f"buffer查询完成，找到 {len(trajectory_hits)} 个data_name的轨迹点")
+            
+            return trajectory_hits
+            
+        except Exception as e:
+            logger.error(f"查询buffer内轨迹点失败: {e}")
+            return {}
+    
+    def _apply_filtering_rules(self, trajectory_hits: Dict[str, Dict]) -> Dict[str, Dict]:
+        """应用过滤规则
         
-        # 主处理循环
-        batch_results = []
-        batch_size = self.config['batch_size']
+        Args:
+            trajectory_hits: 轨迹点命中结果
+            
+        Returns:
+            符合条件的轨迹
+        """
+        min_points_threshold = self.config.get('min_points_single_lane', 5)
+        filtered = {}
         
-        for i, (idx, row) in enumerate(valid_mappings.iterrows()):
-            if interrupted:
-                logger.info("处理被中断")
-                break
-                
-            scene_id = row['scene_id']
-            data_name = row['data_name']
+        for data_name, hit_info in trajectory_hits.items():
+            total_lanes = hit_info['total_lanes']
+            total_points = hit_info['total_points']
             
-            logger.info(f"处理场景 [{i+1}/{len(valid_mappings)}]: {scene_id} ({data_name})")
+            # 过滤规则1：与2个及以上lane相邻
+            if total_lanes >= 2:
+                filtered[data_name] = hit_info.copy()
+                filtered[data_name]['filter_reason'] = f'multi_lane_{total_lanes}_lanes'
+                self.stats['trajectories_multi_lane'] += 1
+                logger.debug(f"保留轨迹 {data_name}: 多车道 ({total_lanes} lanes)")
+                continue
             
+            # 过滤规则2：命中点数超过阈值
+            if total_points >= min_points_threshold:
+                filtered[data_name] = hit_info.copy()
+                filtered[data_name]['filter_reason'] = f'sufficient_points_{total_points}_points'
+                self.stats['trajectories_sufficient_points'] += 1
+                logger.debug(f"保留轨迹 {data_name}: 足够点数 ({total_points} points)")
+                continue
+            
+            logger.debug(f"过滤掉轨迹 {data_name}: 单车道({total_lanes})且点数不足({total_points}<{min_points_threshold})")
+        
+        logger.info(f"过滤规则应用完成: {len(trajectory_hits)} → {len(filtered)}")
+        logger.info(f"  - 多车道保留: {self.stats['trajectories_multi_lane']}")
+        logger.info(f"  - 足够点数保留: {self.stats['trajectories_sufficient_points']}")
+        
+        return filtered
+    
+    def _extract_complete_trajectories(self, filtered_trajectories: Dict[str, Dict]) -> Dict[str, Dict]:
+        """提取符合条件的完整轨迹
+        
+        Args:
+            filtered_trajectories: 符合条件的轨迹信息
+            
+        Returns:
+            完整轨迹数据
+        """
+        complete_trajectories = {}
+        
+        for data_name, trajectory_info in filtered_trajectories.items():
             try:
-                # 1. 查询轨迹点
+                # 查询完整轨迹数据
                 points_df = fetch_trajectory_points(data_name)
                 
                 if points_df.empty:
-                    self.stats['empty_scenes'] += 1
-                    logger.warning(f"data_name无轨迹数据: {data_name}")
+                    logger.warning(f"无法获取完整轨迹数据: {data_name}")
                     continue
                 
-                # 2. 构建polyline
-                polyline_data = self.build_trajectory_polyline(scene_id, data_name, points_df)
+                # 构建完整轨迹
+                points_df = points_df.sort_values('timestamp')
+                coordinates = []
+                for _, row in points_df.iterrows():
+                    if pd.notna(row['longitude']) and pd.notna(row['latitude']):
+                        coordinates.append((float(row['longitude']), float(row['latitude'])))
                 
-                if not polyline_data:
-                    self.stats['failed_scenes'] += 1
-                    logger.warning(f"polyline构建失败: {scene_id} ({data_name})")
+                if len(coordinates) < 2:
+                    logger.warning(f"轨迹坐标点不足: {data_name}")
                     continue
                 
-                # 3. 轨迹采样
-                sampled_points = self.sample_trajectory(polyline_data)
+                trajectory_geom = LineString(coordinates)
                 
-                # 4. 滑窗分析
-                segments = self.sliding_window_analysis(sampled_points)
+                # 计算统计信息
+                speed_data = points_df['twist_linear'].dropna()
+                avp_data = points_df['avp_flag'].dropna()
                 
-                # 5. 缓冲区分析
-                buffer_results = []
-                for segment in segments:
-                    lane_id = segment['lane_id']
-                    buffer_geom = self.create_lane_buffer(lane_id)
-                    filtered_points = self.filter_trajectory_by_buffer(segment['points'], buffer_geom)
+                complete_trajectory = {
+                    'data_name': data_name,
+                    'geometry': trajectory_geom,
+                    'geometry_wkt': trajectory_geom.wkt,
+                    'start_time': int(points_df['timestamp'].min()),
+                    'end_time': int(points_df['timestamp'].max()),
+                    'duration': int(points_df['timestamp'].max() - points_df['timestamp'].min()),
+                    'total_points': len(points_df),
+                    'valid_coordinates': len(coordinates),
+                    'trajectory_length': trajectory_geom.length,
                     
-                    if filtered_points:
-                        buffer_results.append({
-                            'lane_id': lane_id,
-                            'points': filtered_points,
-                            'points_count': len(filtered_points)
-                        })
+                    # 从过滤信息继承
+                    'lanes_touched': trajectory_info['lanes_touched'],
+                    'total_lanes': trajectory_info['total_lanes'],
+                    'hit_points_count': trajectory_info['total_points'],
+                    'filter_reason': trajectory_info['filter_reason'],
+                    
+                    # 速度统计
+                    'avg_speed': round(float(speed_data.mean()), 2) if len(speed_data) > 0 else 0.0,
+                    'max_speed': round(float(speed_data.max()), 2) if len(speed_data) > 0 else 0.0,
+                    'min_speed': round(float(speed_data.min()), 2) if len(speed_data) > 0 else 0.0,
+                    
+                    # AVP统计
+                    'avp_ratio': round(float((avp_data == 1).mean()), 3) if len(avp_data) > 0 else 0.0
+                }
                 
-                # 6. 轨迹质量检查
-                quality_result = self.check_trajectory_quality(data_name, buffer_results)
+                complete_trajectories[data_name] = complete_trajectory
+                logger.debug(f"提取完整轨迹: {data_name}, 点数: {len(coordinates)}")
                 
-                if quality_result['status'] == 'passed':
-                    self.stats['quality_passed'] += 1
-                    
-                    # 7. 轨迹重构
-                    reconstructed = self.reconstruct_trajectory(data_name, quality_result)
-                    
-                    if reconstructed:
-                        self.stats['total_reconstructed'] += 1
-                        
-                        # 8. 轨迹简化
-                        if self.config['enable_simplification']:
-                            reconstructed['geometry'] = self.simplify_trajectory(reconstructed['geometry'])
-                        
-                        # 9. 添加到批处理结果
-                        reconstructed['scene_id'] = scene_id  # 确保包含scene_id
-                        batch_results.append(reconstructed)
-                        
-                        self.stats['successful_trajectories'] += 1
-                    else:
-                        self.stats['failed_scenes'] += 1
-                else:
-                    self.stats['quality_failed'] += 1
-                    logger.debug(f"质量检查未通过: {data_name}, 原因: {quality_result['reason']}")
-                    
             except Exception as e:
-                self.stats['failed_scenes'] += 1
-                logger.error(f"处理场景失败: {scene_id} ({data_name}), 错误: {str(e)}")
-                
-            self.stats['processed_scenes'] += 1
-            
-            # 批量保存结果
-            if len(batch_results) >= batch_size:
-                if self.save_results(batch_results):
-                    logger.info(f"批量保存完成，已处理 {self.stats['processed_scenes']} 个场景")
-                batch_results = []
+                logger.error(f"提取完整轨迹失败: {data_name}, 错误: {e}")
+                continue
         
-        # 保存剩余结果
-        if batch_results:
-            if self.save_results(batch_results):
-                logger.info(f"最终批量保存完成")
-            
-        self.stats['end_time'] = datetime.now()
-        self.stats['duration'] = self.stats['end_time'] - self.stats['start_time']
-        
-        return self.stats
+        logger.info(f"提取完整轨迹完成: {len(complete_trajectories)} 个")
+        return complete_trajectories
 
 
 def batch_analyze_lanes_from_road_results(
@@ -1489,7 +648,7 @@ def batch_analyze_lanes_from_road_results(
     config: Optional[Dict[str, Any]] = None
 ) -> List[Tuple[str, str, Dict[str, Any]]]:
     """
-    基于道路分析结果批量进行车道分析
+    基于道路分析结果批量进行车道分析（轨迹邻近性查询）
     
     Args:
         road_analysis_results: 道路分析结果列表 [(trajectory_id, road_analysis_id, summary), ...]
@@ -1502,7 +661,7 @@ def batch_analyze_lanes_from_road_results(
     if not batch_analysis_id:
         batch_analysis_id = f"batch_lane_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
-    logger.info(f"开始批量轨迹车道分析: {batch_analysis_id}")
+    logger.info(f"开始批量轨迹邻近性分析: {batch_analysis_id}")
     logger.info(f"道路分析结果数: {len(road_analysis_results)}")
     
     # 过滤出成功的道路分析结果
@@ -1519,31 +678,38 @@ def batch_analyze_lanes_from_road_results(
     
     for i, (trajectory_id, road_analysis_id, road_summary) in enumerate(successful_road_results):
         try:
-            logger.info(f"分析轨迹车道 [{i+1}/{len(successful_road_results)}]: {trajectory_id}")
+            logger.info(f"分析轨迹邻近性 [{i+1}/{len(successful_road_results)}]: {trajectory_id}")
             
-            # 获取轨迹信息
-            data_name = road_summary.get('data_name', trajectory_id)
+            # 获取轨迹几何信息
+            input_trajectory_geom = road_summary.get('input_trajectory_geom')
+            if not input_trajectory_geom:
+                logger.error(f"道路分析结果中缺少轨迹几何信息: {trajectory_id}")
+                lane_results.append((trajectory_id, None, {
+                    'error': '道路分析结果中缺少轨迹几何信息',
+                    'road_analysis_id': road_analysis_id
+                }))
+                continue
             
             # **关键修复**：确保配置中包含正确的道路分析结果表名
             analyzer_config = (config or {}).copy()
-            if 'road_analysis_lanes_table' not in analyzer_config:
-                # 如果配置中没有指定，尝试从road_analysis_id推导
-                analyzer_config['road_analysis_lanes_table'] = f"{road_analysis_id}_lanes"
+            # 直接使用road_analysis_id作为表名前缀
+            lanes_table_name = f"{road_analysis_id}_lanes"
+            analyzer_config['road_analysis_lanes_table'] = lanes_table_name
             
-            logger.info(f"车道分析器配置: road_analysis_id={road_analysis_id}, lanes_table={analyzer_config['road_analysis_lanes_table']}")
+            logger.info(f"车道分析器配置: road_analysis_id={road_analysis_id}, lanes_table={lanes_table_name}")
             
             # 创建车道分析器
             analyzer = TrajectoryLaneAnalyzer(config=analyzer_config, road_analysis_id=road_analysis_id)
             
-            # 创建单个轨迹的映射DataFrame
-            single_mapping = pd.DataFrame([{
-                'scene_id': trajectory_id,
-                'data_name': data_name,
-                'road_analysis_id': road_analysis_id
-            }])
+            # 执行邻近性分析
+            analysis_result = analyzer.analyze_trajectory_neighbors(trajectory_id, input_trajectory_geom)
             
-            # 执行车道分析
-            analysis_stats = analyzer.process_scene_mappings(single_mapping)
+            if 'error' in analysis_result:
+                lane_results.append((trajectory_id, None, {
+                    'error': analysis_result['error'],
+                    'road_analysis_id': road_analysis_id
+                }))
+                continue
             
             # 生成车道分析ID
             lane_analysis_id = f"{batch_analysis_id}_{trajectory_id}"
@@ -1553,27 +719,31 @@ def batch_analyze_lanes_from_road_results(
                 'lane_analysis_id': lane_analysis_id,
                 'road_analysis_id': road_analysis_id,
                 'trajectory_id': trajectory_id,
-                'data_name': data_name,
-                'processed_scenes': analysis_stats.get('processed_scenes', 0),
-                'successful_trajectories': analysis_stats.get('successful_trajectories', 0),
-                'failed_scenes': analysis_stats.get('failed_scenes', 0),
-                'quality_passed': analysis_stats.get('quality_passed', 0),
-                'quality_failed': analysis_stats.get('quality_failed', 0),
-                'total_reconstructed': analysis_stats.get('total_reconstructed', 0),
-                'duration': analysis_stats.get('duration'),
+                'input_trajectory_geom': input_trajectory_geom,
+                'candidate_lanes_found': analysis_result['stats']['candidate_lanes_found'],
+                'trajectory_points_found': analysis_result['stats']['trajectory_points_found'],
+                'unique_data_names_found': analysis_result['stats']['unique_data_names_found'],
+                'trajectories_passed_filter': analysis_result['stats']['trajectories_passed_filter'],
+                'trajectories_multi_lane': analysis_result['stats']['trajectories_multi_lane'],
+                'trajectories_sufficient_points': analysis_result['stats']['trajectories_sufficient_points'],
+                'complete_trajectories_count': len(analysis_result['complete_trajectories']),
+                'complete_trajectories': analysis_result['complete_trajectories'],
+                'duration': analysis_result['stats'].get('end_time', datetime.now()) - analysis_result['stats'].get('start_time', datetime.now()),
                 'properties': road_summary.get('properties', {})
             }
             
             lane_results.append((trajectory_id, lane_analysis_id, lane_summary))
             
-            logger.info(f"✓ 完成轨迹车道分析: {trajectory_id}")
+            logger.info(f"✓ 完成轨迹邻近性分析: {trajectory_id}")
+            logger.info(f"  - 找到 {lane_summary['candidate_lanes_found']} 个候选lanes")
+            logger.info(f"  - 找到 {lane_summary['trajectory_points_found']} 个轨迹点")
+            logger.info(f"  - 符合条件的轨迹: {lane_summary['complete_trajectories_count']} 个")
             
         except Exception as e:
-            logger.error(f"分析轨迹车道失败: {trajectory_id}, 错误: {e}")
+            logger.error(f"分析轨迹邻近性失败: {trajectory_id}, 错误: {e}")
             lane_results.append((trajectory_id, None, {
                 'error': str(e),
                 'road_analysis_id': road_analysis_id,
-                'data_name': road_summary.get('data_name', trajectory_id),
                 'properties': road_summary.get('properties', {})
             }))
     
@@ -1581,7 +751,7 @@ def batch_analyze_lanes_from_road_results(
     successful_count = len([r for r in lane_results if r[1] is not None])
     failed_count = len(lane_results) - successful_count
     
-    logger.info(f"批量轨迹车道分析完成: {batch_analysis_id}")
+    logger.info(f"批量轨迹邻近性分析完成: {batch_analysis_id}")
     logger.info(f"  - 成功: {successful_count}")
     logger.info(f"  - 失败: {failed_count}")
     logger.info(f"  - 总计: {len(lane_results)}")
@@ -1596,7 +766,7 @@ def batch_analyze_lanes_from_trajectory_records(
     config: Optional[Dict[str, Any]] = None
 ) -> List[Tuple[str, str, Dict[str, Any]]]:
     """
-    基于轨迹记录和道路分析结果批量进行车道分析
+    基于轨迹记录和道路分析结果批量进行车道分析（轨迹邻近性查询）
     
     Args:
         trajectory_records: 轨迹记录列表 (TrajectoryRecord对象)
@@ -1610,12 +780,15 @@ def batch_analyze_lanes_from_trajectory_records(
     if not batch_analysis_id:
         batch_analysis_id = f"batch_lane_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
-    logger.info(f"开始批量轨迹车道分析: {batch_analysis_id}")
+    logger.info(f"开始批量轨迹邻近性分析: {batch_analysis_id}")
     logger.info(f"轨迹记录数: {len(trajectory_records)}")
     logger.info(f"道路分析结果数: {len(road_analysis_results)}")
     
-    # 创建trajectory_id到road_analysis_id的映射
-    road_analysis_map = {r[0]: r[1] for r in road_analysis_results if r[1] is not None}
+    # 创建trajectory_id到road_analysis结果的映射
+    road_analysis_map = {r[0]: (r[1], r[2]) for r in road_analysis_results if r[1] is not None}
+    
+    # 创建trajectory_id到轨迹几何的映射
+    trajectory_geom_map = {t.scene_id: t.geometry_wkt for t in trajectory_records}
     
     # 过滤出有对应道路分析结果的轨迹记录
     valid_trajectories = [t for t in trajectory_records if t.scene_id in road_analysis_map]
@@ -1626,79 +799,82 @@ def batch_analyze_lanes_from_trajectory_records(
     
     logger.info(f"有效的轨迹记录: {len(valid_trajectories)}")
     
-    # 构建映射DataFrame
-    mappings_data = []
-    for trajectory in valid_trajectories:
-        road_analysis_id = road_analysis_map[trajectory.scene_id]
-        mappings_data.append({
-            'scene_id': trajectory.scene_id,
-            'data_name': trajectory.data_name,
-            'road_analysis_id': road_analysis_id
-        })
-    
-    mappings_df = pd.DataFrame(mappings_data)
-    
     # 批量车道分析
     lane_results = []
     
-    # 按road_analysis_id分组处理（相同road_analysis_id的可以一起处理）
-    grouped_mappings = mappings_df.groupby('road_analysis_id')
-    
-    for road_analysis_id, group_df in grouped_mappings:
+    for i, trajectory in enumerate(valid_trajectories):
         try:
-            logger.info(f"处理道路分析组: {road_analysis_id} ({len(group_df)} 个轨迹)")
+            trajectory_id = trajectory.scene_id
+            road_analysis_id, road_summary = road_analysis_map[trajectory_id]
+            input_trajectory_geom = trajectory_geom_map[trajectory_id]
+            
+            logger.info(f"分析轨迹邻近性 [{i+1}/{len(valid_trajectories)}]: {trajectory_id}")
+            
+            # **关键修复**：确保配置中包含正确的道路分析结果表名
+            analyzer_config = (config or {}).copy()
+            # 直接使用road_analysis_id作为表名前缀
+            lanes_table_name = f"{road_analysis_id}_lanes"
+            analyzer_config['road_analysis_lanes_table'] = lanes_table_name
+            
+            logger.info(f"车道分析器配置: road_analysis_id={road_analysis_id}, lanes_table={lanes_table_name}")
             
             # 创建车道分析器
-            analyzer = TrajectoryLaneAnalyzer(config=config, road_analysis_id=road_analysis_id)
+            analyzer = TrajectoryLaneAnalyzer(config=analyzer_config, road_analysis_id=road_analysis_id)
             
-            # 执行车道分析
-            analysis_stats = analyzer.process_scene_mappings(group_df)
+            # 执行邻近性分析
+            analysis_result = analyzer.analyze_trajectory_neighbors(trajectory_id, input_trajectory_geom)
             
-            # 为每个轨迹生成结果
-            for _, row in group_df.iterrows():
-                trajectory_id = row['scene_id']
-                data_name = row['data_name']
-                
-                # 生成车道分析ID
-                lane_analysis_id = f"{batch_analysis_id}_{trajectory_id}"
-                
-                # 构建车道分析汇总
-                lane_summary = {
-                    'lane_analysis_id': lane_analysis_id,
-                    'road_analysis_id': road_analysis_id,
-                    'trajectory_id': trajectory_id,
-                    'data_name': data_name,
-                    'processed_scenes': analysis_stats.get('processed_scenes', 0),
-                    'successful_trajectories': analysis_stats.get('successful_trajectories', 0),
-                    'failed_scenes': analysis_stats.get('failed_scenes', 0),
-                    'quality_passed': analysis_stats.get('quality_passed', 0),
-                    'quality_failed': analysis_stats.get('quality_failed', 0),
-                    'total_reconstructed': analysis_stats.get('total_reconstructed', 0),
-                    'duration': analysis_stats.get('duration'),
-                    'group_processing': True
-                }
-                
-                lane_results.append((trajectory_id, lane_analysis_id, lane_summary))
-                
-                logger.info(f"✓ 完成轨迹车道分析: {trajectory_id}")
-                
-        except Exception as e:
-            logger.error(f"分析道路分析组失败: {road_analysis_id}, 错误: {e}")
-            # 为该组的所有轨迹添加错误结果
-            for _, row in group_df.iterrows():
-                trajectory_id = row['scene_id']
-                data_name = row['data_name']
+            if 'error' in analysis_result:
                 lane_results.append((trajectory_id, None, {
-                    'error': str(e),
+                    'error': analysis_result['error'],
                     'road_analysis_id': road_analysis_id,
-                    'data_name': data_name
+                    'data_name': trajectory.data_name
                 }))
+                continue
+            
+            # 生成车道分析ID
+            lane_analysis_id = f"{batch_analysis_id}_{trajectory_id}"
+            
+            # 构建车道分析汇总
+            lane_summary = {
+                'lane_analysis_id': lane_analysis_id,
+                'road_analysis_id': road_analysis_id,
+                'trajectory_id': trajectory_id,
+                'data_name': trajectory.data_name,
+                'input_trajectory_geom': input_trajectory_geom,
+                'candidate_lanes_found': analysis_result['stats']['candidate_lanes_found'],
+                'trajectory_points_found': analysis_result['stats']['trajectory_points_found'],
+                'unique_data_names_found': analysis_result['stats']['unique_data_names_found'],
+                'trajectories_passed_filter': analysis_result['stats']['trajectories_passed_filter'],
+                'trajectories_multi_lane': analysis_result['stats']['trajectories_multi_lane'],
+                'trajectories_sufficient_points': analysis_result['stats']['trajectories_sufficient_points'],
+                'complete_trajectories_count': len(analysis_result['complete_trajectories']),
+                'complete_trajectories': analysis_result['complete_trajectories'],
+                'duration': analysis_result['stats'].get('end_time', datetime.now()) - analysis_result['stats'].get('start_time', datetime.now()),
+                'properties': trajectory.properties
+            }
+            
+            lane_results.append((trajectory_id, lane_analysis_id, lane_summary))
+            
+            logger.info(f"✓ 完成轨迹邻近性分析: {trajectory_id}")
+            logger.info(f"  - 找到 {lane_summary['candidate_lanes_found']} 个候选lanes")
+            logger.info(f"  - 找到 {lane_summary['trajectory_points_found']} 个轨迹点")
+            logger.info(f"  - 符合条件的轨迹: {lane_summary['complete_trajectories_count']} 个")
+            
+        except Exception as e:
+            logger.error(f"分析轨迹邻近性失败: {trajectory_id}, 错误: {e}")
+            lane_results.append((trajectory_id, None, {
+                'error': str(e),
+                'road_analysis_id': road_analysis_map.get(trajectory_id, (None, {}))[0],
+                'data_name': trajectory.data_name,
+                'properties': trajectory.properties
+            }))
     
     # 统计结果
     successful_count = len([r for r in lane_results if r[1] is not None])
     failed_count = len(lane_results) - successful_count
     
-    logger.info(f"批量轨迹车道分析完成: {batch_analysis_id}")
+    logger.info(f"批量轨迹邻近性分析完成: {batch_analysis_id}")
     logger.info(f"  - 成功: {successful_count}")
     logger.info(f"  - 失败: {failed_count}")
     logger.info(f"  - 总计: {len(lane_results)}")
@@ -1711,10 +887,10 @@ def create_batch_lane_analysis_report(
     batch_analysis_id: str
 ) -> str:
     """
-    创建批量轨迹车道分析报告
+    创建批量轨迹邻近性分析报告
     
     Args:
-        lane_results: 批量车道分析结果
+        lane_results: 批量邻近性分析结果
         batch_analysis_id: 批量分析ID
         
     Returns:
@@ -1724,7 +900,7 @@ def create_batch_lane_analysis_report(
     failed_results = [r for r in lane_results if r[1] is None]
     
     report_lines = [
-        f"# 批量轨迹车道分析报告",
+        f"# 批量轨迹邻近性分析报告",
         f"",
         f"**批量分析ID**: {batch_analysis_id}",
         f"**分析时间**: {datetime.now().isoformat()}",
@@ -1740,17 +916,20 @@ def create_batch_lane_analysis_report(
     
     if successful_results:
         # 成功分析统计
-        total_quality_passed = sum(r[2].get('quality_passed', 0) for r in successful_results)
-        total_quality_failed = sum(r[2].get('quality_failed', 0) for r in successful_results)
-        total_reconstructed = sum(r[2].get('total_reconstructed', 0) for r in successful_results)
+        total_candidate_lanes = sum(r[2].get('candidate_lanes_found', 0) for r in successful_results)
+        total_trajectory_points = sum(r[2].get('trajectory_points_found', 0) for r in successful_results)
+        total_unique_data_names = sum(r[2].get('unique_data_names_found', 0) for r in successful_results)
+        total_complete_trajectories = sum(r[2].get('complete_trajectories_count', 0) for r in successful_results)
         
         report_lines.extend([
             f"## 成功分析汇总",
             f"",
-            f"- **总质量通过数**: {total_quality_passed}",
-            f"- **总质量失败数**: {total_quality_failed}",
-            f"- **总重构轨迹数**: {total_reconstructed}",
-            f"- **平均质量通过率**: {total_quality_passed/(total_quality_passed+total_quality_failed)*100:.1f}%" if (total_quality_passed+total_quality_failed) > 0 else "- **平均质量通过率**: N/A",
+            f"- **总候选Lane数**: {total_candidate_lanes}",
+            f"- **总轨迹点数**: {total_trajectory_points}",
+            f"- **总data_name数**: {total_unique_data_names}",
+            f"- **总符合条件轨迹数**: {total_complete_trajectories}",
+            f"- **平均候选Lane数/输入轨迹**: {total_candidate_lanes/len(successful_results):.1f}",
+            f"- **平均符合条件轨迹数/输入轨迹**: {total_complete_trajectories/len(successful_results):.1f}",
             f"",
         ])
         
@@ -1758,15 +937,15 @@ def create_batch_lane_analysis_report(
         report_lines.extend([
             f"## 成功分析详情",
             f"",
-            f"| 轨迹ID | 分析ID | 质量通过 | 质量失败 | 重构轨迹 |",
-            f"|--------|--------|----------|----------|----------|",
+            f"| 轨迹ID | 分析ID | 候选Lanes | 轨迹点数 | 符合条件轨迹数 |",
+            f"|--------|--------|-----------|----------|---------------|",
         ])
         
         for trajectory_id, lane_analysis_id, summary in successful_results[:10]:  # 只显示前10个
-            quality_passed = summary.get('quality_passed', 0)
-            quality_failed = summary.get('quality_failed', 0)
-            reconstructed = summary.get('total_reconstructed', 0)
-            report_lines.append(f"| {trajectory_id} | {lane_analysis_id} | {quality_passed} | {quality_failed} | {reconstructed} |")
+            candidate_lanes = summary.get('candidate_lanes_found', 0)
+            trajectory_points = summary.get('trajectory_points_found', 0)
+            complete_trajectories = summary.get('complete_trajectories_count', 0)
+            report_lines.append(f"| {trajectory_id} | {lane_analysis_id} | {candidate_lanes} | {trajectory_points} | {complete_trajectories} |")
         
         if len(successful_results) > 10:
             report_lines.append(f"| ... | ... | ... | ... | ... |")
@@ -1790,54 +969,36 @@ def create_batch_lane_analysis_report(
 def main():
     """主函数，CLI入口点"""
     parser = argparse.ArgumentParser(
-        description='轨迹车道分析模块 - 轨迹与车道空间关系分析',
+        description='轨迹邻近性分析模块 - 基于输入轨迹查询相关轨迹',
         epilog="""
 前提条件:
-  必须先运行 trajectory_road_analysis 获得道路分析结果，本模块基于其输出的候选车道进行精细分析
+  必须先运行 trajectory_road_analysis 获得道路分析结果，本模块基于其输出的候选车道进行邻近性查询
   
 支持的输入格式:
-  1. 文本文件 (.txt): 每行一个scene_id
-  2. Dataset文件 (.json/.parquet): 包含scene_id和data_name映射的数据集文件
+  需要提供输入轨迹的几何信息（WKT格式）
   
 分析流程:
-  trajectory_road_analysis结果 → 候选车道 → polyline → 采样 → 滑窗分析 → 车道分段 → buffer分析 → 质量检查 → 轨迹重构 → 结果输出
+  输入轨迹 → 分段 → 找邻近候选lanes → buffer查询轨迹点数据库 → 过滤规则 → 提取符合条件的完整轨迹
   
 示例:
-  # 第一步：运行道路分析（获得road_analysis_id）
+  # 需要先运行道路分析（获得road_analysis_id）
   python -m spdatalab.fusion.trajectory_road_analysis --trajectory-id my_traj --trajectory-geom "LINESTRING(...)"
   
-  # 第二步：基于道路分析结果进行车道分析
-  python -m spdatalab.fusion.trajectory_lane_analysis --input scenes.txt --road-analysis-id trajectory_road_20241201_123456 --output-prefix my_analysis
-  python -m spdatalab.fusion.trajectory_lane_analysis --input dataset.json --road-analysis-id trajectory_road_20241201_123456 --buffer-radius 20
+  # 然后运行邻近性分析
+  python -m spdatalab.fusion.trajectory_lane_analysis --trajectory-id my_traj --trajectory-geom "LINESTRING(...)" --road-analysis-id trajectory_road_20241201_123456
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
     # 输入参数
-    parser.add_argument('--input', required=True, 
-                       help='输入文件：scene_id列表(.txt)或dataset文件(.json/.parquet)')
-    parser.add_argument('--output-prefix', default='trajectory_lane_analysis',
-                       help='输出表名前缀')
-    
-    # 采样参数
-    parser.add_argument('--sampling-strategy', choices=['distance', 'time', 'uniform'], 
-                       default='distance', help='采样策略')
-    parser.add_argument('--distance-interval', type=float, default=10.0,
-                       help='距离采样间隔（米）')
-    parser.add_argument('--time-interval', type=float, default=5.0,
-                       help='时间采样间隔（秒）')
-    parser.add_argument('--uniform-step', type=int, default=50,
-                       help='均匀采样步长')
-    
-    # 滑窗参数
-    parser.add_argument('--window-size', type=int, default=20,
-                       help='滑窗大小（采样点数）')
-    parser.add_argument('--window-overlap', type=float, default=0.5,
-                       help='滑窗重叠率')
-    
-    # 车道分析参数
+    parser.add_argument('--trajectory-id', required=True, 
+                       help='输入轨迹ID')
+    parser.add_argument('--trajectory-geom', required=True,
+                       help='输入轨迹几何（WKT格式）')
     parser.add_argument('--road-analysis-id', required=True,
                        help='trajectory_road_analysis的分析ID（必需，用于获取候选车道）')
+    
+    # 车道分析参数
     parser.add_argument('--road-lanes-table', default='trajectory_road_lanes',
                        help='道路分析结果车道表名')
     parser.add_argument('--buffer-radius', type=float, default=15.0,
@@ -1845,23 +1006,14 @@ def main():
     parser.add_argument('--max-lane-distance', type=float, default=50.0,
                        help='最大车道搜索距离（米）')
     
-    # 质量检查参数
+    # 过滤参数
     parser.add_argument('--min-points-single-lane', type=int, default=5,
-                       help='单车道最少点数')
-    parser.add_argument('--disable-multi-lane-filter', action='store_true',
-                       help='禁用多车道过滤')
+                       help='单车道最少点数阈值')
     
-    # 简化参数
-    parser.add_argument('--simplify-tolerance', type=float, default=2.0,
-                       help='轨迹简化容差（米）')
-    parser.add_argument('--disable-simplification', action='store_true',
-                       help='禁用轨迹简化')
-    
-    # 性能参数
-    parser.add_argument('--batch-size', type=int, default=100,
-                       help='批处理大小')
-    parser.add_argument('--max-workers', type=int, default=4,
-                       help='最大并行工作线程数')
+    # 输出参数
+    parser.add_argument('--output-format', choices=['summary', 'detailed', 'geojson'], 
+                       default='summary', help='输出格式')
+    parser.add_argument('--output-file', help='输出文件路径（可选）')
     
     # 其他参数
     parser.add_argument('--verbose', '-v', action='store_true', help='详细日志')
@@ -1878,63 +1030,114 @@ def main():
     try:
         # 构建配置
         config = {
-            'sampling_strategy': args.sampling_strategy,
-            'distance_interval': args.distance_interval,
-            'time_interval': args.time_interval,
-            'uniform_step': args.uniform_step,
-            'window_size': args.window_size,
-            'window_overlap': args.window_overlap,
             'road_analysis_lanes_table': args.road_lanes_table,
             'buffer_radius': args.buffer_radius,
             'max_lane_distance': args.max_lane_distance,
-            'min_points_single_lane': args.min_points_single_lane,
-            'enable_multi_lane_filter': not args.disable_multi_lane_filter,
-            'simplify_tolerance': args.simplify_tolerance,
-            'enable_simplification': not args.disable_simplification,
-            'batch_size': args.batch_size,
-            'max_workers': args.max_workers,
-            'trajectory_segments_table': f"{args.output_prefix}_segments",
-            'trajectory_buffer_table': f"{args.output_prefix}_buffer",
-            'quality_check_table': f"{args.output_prefix}_quality"
+            'min_points_single_lane': args.min_points_single_lane
         }
         
-        # 加载scene_id和data_name映射
-        logger.info(f"加载输入文件: {args.input}")
-        mappings_df = load_scene_data_mappings(args.input)
-        
-        if mappings_df.empty:
-            logger.error("未加载到任何scene_id映射")
-            return 1
-            
         # 输出配置信息
-        logger.info(f"输出表前缀: {args.output_prefix}")
+        logger.info(f"输入轨迹ID: {args.trajectory_id}")
         logger.info(f"道路分析ID: {args.road_analysis_id}")
-        logger.info(f"采样策略: {config['sampling_strategy']}")
         logger.info(f"候选车道表: {config['road_analysis_lanes_table']}")
         logger.info(f"缓冲区半径: {config['buffer_radius']}米")
+        logger.info(f"最大车道距离: {config['max_lane_distance']}米")
         logger.info(f"单车道最少点数: {config['min_points_single_lane']}")
         
         # 创建分析器并执行分析
         analyzer = TrajectoryLaneAnalyzer(config, road_analysis_id=args.road_analysis_id)
-        stats = analyzer.process_scene_mappings(mappings_df)
+        analysis_result = analyzer.analyze_trajectory_neighbors(args.trajectory_id, args.trajectory_geom)
         
-        # 输出统计信息
-        logger.info("=== 处理完成 ===")
-        logger.info(f"总场景数: {stats['total_scenes']}")
-        logger.info(f"处理场景数: {stats['processed_scenes']}")
-        logger.info(f"成功轨迹数: {stats['successful_trajectories']}")
-        logger.info(f"失败场景数: {stats['failed_scenes']}")
-        logger.info(f"空场景数: {stats['empty_scenes']}")
-        logger.info(f"质量检查通过: {stats['quality_passed']}")
-        logger.info(f"质量检查失败: {stats['quality_failed']}")
-        logger.info(f"重构轨迹数: {stats['total_reconstructed']}")
+        if 'error' in analysis_result:
+            logger.error(f"分析失败: {analysis_result['error']}")
+            return 1
         
-        if stats.get('missing_data_names', 0) > 0:
-            logger.info(f"缺失data_name数: {stats['missing_data_names']}")
+        # 输出结果
+        logger.info("=== 分析完成 ===")
+        stats = analysis_result['stats']
+        logger.info(f"候选lanes: {stats['candidate_lanes_found']} 个")
+        logger.info(f"轨迹点数: {stats['trajectory_points_found']} 个")
+        logger.info(f"data_name数: {stats['unique_data_names_found']} 个")
+        logger.info(f"符合条件的轨迹: {stats['trajectories_passed_filter']} 个")
+        logger.info(f"  - 多车道: {stats['trajectories_multi_lane']} 个")
+        logger.info(f"  - 足够点数: {stats['trajectories_sufficient_points']} 个")
+        logger.info(f"完整轨迹数: {len(analysis_result['complete_trajectories'])} 个")
+        
+        # 输出详细结果
+        if args.output_format == 'detailed' or args.verbose:
+            logger.info("\n=== 符合条件的轨迹详情 ===")
+            for data_name, trajectory in analysis_result['complete_trajectories'].items():
+                logger.info(f"轨迹: {data_name}")
+                logger.info(f"  - 过滤原因: {trajectory['filter_reason']}")
+                logger.info(f"  - 涉及lanes: {len(trajectory['lanes_touched'])} 个")
+                logger.info(f"  - 命中点数: {trajectory['hit_points_count']} 个")
+                logger.info(f"  - 总点数: {trajectory['total_points']} 个")
+                logger.info(f"  - 轨迹长度: {trajectory['trajectory_length']:.6f} 度")
+                logger.info(f"  - 平均速度: {trajectory['avg_speed']} km/h")
+        
+        # 保存输出文件
+        if args.output_file:
+            output_data = {
+                'input_trajectory_id': args.trajectory_id,
+                'road_analysis_id': args.road_analysis_id,
+                'analysis_result': analysis_result,
+                'config': config,
+                'timestamp': datetime.now().isoformat()
+            }
             
-        logger.info(f"处理时间: {stats['duration']}")
+            if args.output_format == 'geojson':
+                # 输出GeoJSON格式
+                geojson_features = []
+                for data_name, trajectory in analysis_result['complete_trajectories'].items():
+                    from shapely.geometry import mapping
+                    feature = {
+                        'type': 'Feature',
+                        'properties': {
+                            'data_name': data_name,
+                            'filter_reason': trajectory['filter_reason'],
+                            'lanes_touched_count': len(trajectory['lanes_touched']),
+                            'lanes_touched': trajectory['lanes_touched'],
+                            'hit_points_count': trajectory['hit_points_count'],
+                            'total_points': trajectory['total_points'],
+                            'avg_speed': trajectory['avg_speed'],
+                            'max_speed': trajectory['max_speed'],
+                            'avp_ratio': trajectory['avp_ratio']
+                        },
+                        'geometry': mapping(trajectory['geometry'])
+                    }
+                    geojson_features.append(feature)
+                
+                geojson_output = {
+                    'type': 'FeatureCollection',
+                    'features': geojson_features,
+                    'metadata': {
+                        'input_trajectory_id': args.trajectory_id,
+                        'road_analysis_id': args.road_analysis_id,
+                        'total_trajectories': len(geojson_features),
+                        'analysis_stats': stats
+                    }
+                }
+                
+                with open(args.output_file, 'w', encoding='utf-8') as f:
+                    json.dump(geojson_output, f, indent=2, ensure_ascii=False)
+                
+                logger.info(f"GeoJSON结果已保存到: {args.output_file}")
+            else:
+                # 输出JSON格式
+                with open(args.output_file, 'w', encoding='utf-8') as f:
+                    # 序列化几何对象
+                    def serialize_geometry(obj):
+                        if hasattr(obj, 'wkt'):
+                            return obj.wkt
+                        elif hasattr(obj, 'isoformat'):
+                            return obj.isoformat()
+                        return str(obj)
+                    
+                    json.dump(output_data, f, indent=2, ensure_ascii=False, default=serialize_geometry)
+                
+                logger.info(f"分析结果已保存到: {args.output_file}")
         
-        return 0 if stats['successful_trajectories'] > 0 else 1
+        return 0 if len(analysis_result['complete_trajectories']) > 0 else 1
         
     except Exception as e:
         logger.error(f"程序执行失败: {str(e)}")

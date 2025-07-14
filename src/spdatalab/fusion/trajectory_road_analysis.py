@@ -1278,6 +1278,8 @@ def batch_analyze_trajectories_from_geojson(
             summary = analyzer.get_analysis_summary(result_analysis_id)
             summary['data_name'] = trajectory.data_name
             summary['properties'] = trajectory.properties
+            # **关键修复**：保存输入轨迹几何信息供后续车道分析使用
+            summary['input_trajectory_geom'] = trajectory.geometry_wkt
             
             results.append((trajectory.scene_id, result_analysis_id, summary))
             
@@ -1288,7 +1290,8 @@ def batch_analyze_trajectories_from_geojson(
             results.append((trajectory.scene_id, None, {
                 'error': str(e),
                 'data_name': trajectory.data_name,
-                'properties': trajectory.properties
+                'properties': trajectory.properties,
+                'input_trajectory_geom': trajectory.geometry_wkt  # 即使失败也保存几何信息
             }))
     
     # 统计结果
@@ -1347,6 +1350,7 @@ def batch_analyze_trajectories_from_records(
             summary = analyzer.get_analysis_summary(result_analysis_id)
             summary['data_name'] = trajectory.data_name
             summary['properties'] = trajectory.properties
+            summary['input_trajectory_geom'] = trajectory.geometry_wkt
             
             results.append((trajectory.scene_id, result_analysis_id, summary))
             
@@ -1357,7 +1361,8 @@ def batch_analyze_trajectories_from_records(
             results.append((trajectory.scene_id, None, {
                 'error': str(e),
                 'data_name': trajectory.data_name,
-                'properties': trajectory.properties
+                'properties': trajectory.properties,
+                'input_trajectory_geom': trajectory.geometry_wkt
             }))
     
     # 统计结果

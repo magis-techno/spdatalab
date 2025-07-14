@@ -1,203 +1,94 @@
 #!/usr/bin/env python3
-"""
-测试车道分析修复效果的脚本
-"""
+"""测试轨迹邻近性分析修复"""
 
-import sys
-import os
 import logging
-from pathlib import Path
+from src.spdatalab.fusion.trajectory_lane_analysis import TrajectoryLaneAnalyzer
 
-# 添加项目路径
-sys.path.insert(0, str(Path(__file__).parent / "src"))
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
-def setup_logging():
-    """设置日志"""
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    return logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
-def test_lane_analysis_config():
-    """测试车道分析配置传递"""
-    logger = setup_logging()
+def test_trajectory_neighbors_analysis():
+    """测试轨迹邻近性分析"""
     
-    logger.info("测试车道分析配置传递...")
+    # 使用road analysis的结果
+    road_analysis_id = "integrated_20250714_031801_road_f8f65ca59e094aa89f3121fa2510c506"
+    
+    # 测试轨迹几何（使用之前的轨迹）
+    input_trajectory_id = "test_trajectory_001"
+    input_trajectory_geom = "LINESTRING(116.397 39.916, 116.398 39.917, 116.399 39.918, 116.400 39.919)"
+    
+    logger.info("=== 测试轨迹邻近性分析 ===")
+    logger.info(f"输入轨迹ID: {input_trajectory_id}")
+    logger.info(f"道路分析ID: {road_analysis_id}")
     
     try:
-        from spdatalab.fusion.trajectory_lane_analysis import TrajectoryLaneAnalyzer
+        # 配置分析器
+        # 根据集成分析的逻辑，lanes表名是 road_analysis_id + "_lanes"
+        lanes_table_name = f"{road_analysis_id}_lanes"
         
-        # 测试1: 创建车道分析器，使用正确的配置
-        test_config = {
-            'road_analysis_lanes_table': 'integrated_20250714_030456_road_lanes',
-            'sampling_strategy': 'distance',
-            'distance_interval': 10.0
+        config = {
+            'road_analysis_lanes_table': lanes_table_name,
+            'buffer_radius': 15.0,
+            'max_lane_distance': 50.0,
+            'min_points_single_lane': 5
         }
         
-        analyzer = TrajectoryLaneAnalyzer(
-            config=test_config,
-            road_analysis_id='integrated_20250714_030456_road_f8f65ca59e094aa89f3121fa2510c506'
-        )
-        
-        # 验证配置是否正确设置
-        assert analyzer.config['road_analysis_lanes_table'] == 'integrated_20250714_030456_road_lanes'
-        assert analyzer.road_analysis_id == 'integrated_20250714_030456_road_f8f65ca59e094aa89f3121fa2510c506'
-        
-        logger.info("✓ 车道分析器配置传递测试通过")
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ 车道分析器配置传递测试失败: {e}")
-        return False
-
-def test_database_connection():
-    """测试数据库连接和表查询"""
-    logger = setup_logging()
-    
-    logger.info("测试数据库连接...")
-    
-    try:
-        from sqlalchemy import create_engine, text
-        
-        # 连接数据库
-        engine = create_engine("postgresql+psycopg://postgres:postgres@local_pg:5432/postgres")
-        
-        # 查询集成分析相关的表
-        with engine.connect() as conn:
-            # 查找所有integrated开头的表
-            tables_sql = text("""
-                SELECT tablename 
-                FROM pg_tables 
-                WHERE schemaname = 'public' 
-                AND tablename LIKE 'integrated_%'
-                ORDER BY tablename;
-            """)
-            
-            result = conn.execute(tables_sql)
-            tables = [row[0] for row in result.fetchall()]
-            
-            logger.info(f"找到 {len(tables)} 个集成分析相关的表:")
-            
-            road_lanes_tables = []
-            for table in tables:
-                logger.info(f"  - {table}")
-                if '_road_lanes' in table:
-                    road_lanes_tables.append(table)
-            
-            if road_lanes_tables:
-                logger.info(f"找到 {len(road_lanes_tables)} 个道路分析lanes表:")
-                for table in road_lanes_tables:
-                    # 检查表中的数据
-                    count_sql = text(f"SELECT COUNT(*) FROM {table}")
-                    count = conn.execute(count_sql).scalar()
-                    logger.info(f"  - {table}: {count} 条记录")
-                    
-                    # 获取不同的analysis_id
-                    if count > 0:
-                        ids_sql = text(f"""
-                            SELECT DISTINCT analysis_id, COUNT(*) as lane_count
-                            FROM {table}
-                            GROUP BY analysis_id
-                            LIMIT 3
-                        """)
-                        ids_result = conn.execute(ids_sql).fetchall()
-                        for row in ids_result:
-                            logger.info(f"    分析ID: {row[0]} ({row[1]} lanes)")
-                
-                return True
-            else:
-                logger.warning("❌ 没有找到道路分析lanes表")
-                return False
-        
-    except Exception as e:
-        logger.error(f"❌ 数据库连接测试失败: {e}")
-        return False
-
-def test_integrated_analysis_run():
-    """测试运行集成分析（只检查输出，不实际执行完整流程）"""
-    logger = setup_logging()
-    
-    logger.info("准备测试集成分析运行...")
-    
-    # 检查sample_trajectories.geojson是否存在
-    geojson_file = "sample_trajectories.geojson"
-    if not os.path.exists(geojson_file):
-        logger.warning(f"测试文件不存在: {geojson_file}")
-        return False
-    
-    try:
-        from spdatalab.fusion.integrated_trajectory_analysis import IntegratedTrajectoryAnalyzer
-        from spdatalab.fusion.integrated_analysis_config import create_default_config
+        logger.info(f"使用候选车道表: {lanes_table_name}")
         
         # 创建分析器
-        config = create_default_config()
-        analyzer = IntegratedTrajectoryAnalyzer(config)
+        analyzer = TrajectoryLaneAnalyzer(config=config, road_analysis_id=road_analysis_id)
         
-        # 验证输入文件
-        analyzer._validate_input_file(geojson_file)
-        logger.info("✓ 输入文件验证通过")
+        # 执行邻近性分析
+        logger.info("开始执行邻近性分析...")
+        analysis_result = analyzer.analyze_trajectory_neighbors(input_trajectory_id, input_trajectory_geom)
         
-        # 加载轨迹数据
-        trajectories = analyzer._load_trajectories(geojson_file)
-        logger.info(f"✓ 加载轨迹数据: {len(trajectories)} 条")
+        # 检查结果
+        if 'error' in analysis_result:
+            logger.error(f"❌ 分析失败: {analysis_result['error']}")
+            return False
         
-        logger.info("✓ 集成分析预备测试通过")
+        # 输出结果统计
+        stats = analysis_result['stats']
+        logger.info("✓ 分析完成！")
+        logger.info(f"候选lanes: {stats['candidate_lanes_found']} 个")
+        logger.info(f"轨迹点数: {stats['trajectory_points_found']} 个")
+        logger.info(f"data_name数: {stats['unique_data_names_found']} 个")
+        logger.info(f"符合条件的轨迹: {stats['trajectories_passed_filter']} 个")
+        logger.info(f"  - 多车道: {stats['trajectories_multi_lane']} 个")
+        logger.info(f"  - 足够点数: {stats['trajectories_sufficient_points']} 个")
+        logger.info(f"完整轨迹数: {len(analysis_result['complete_trajectories'])} 个")
+        
+        # 输出符合条件的轨迹详情
+        if analysis_result['complete_trajectories']:
+            logger.info("\n=== 符合条件的轨迹详情 ===")
+            for data_name, trajectory in analysis_result['complete_trajectories'].items():
+                logger.info(f"轨迹: {data_name}")
+                logger.info(f"  - 过滤原因: {trajectory['filter_reason']}")
+                logger.info(f"  - 涉及lanes: {len(trajectory['lanes_touched'])} 个 {trajectory['lanes_touched']}")
+                logger.info(f"  - 命中点数: {trajectory['hit_points_count']} 个")
+                logger.info(f"  - 总点数: {trajectory['total_points']} 个")
+                logger.info(f"  - 轨迹长度: {trajectory['trajectory_length']:.6f} 度")
+                logger.info(f"  - 平均速度: {trajectory['avg_speed']} km/h")
+        else:
+            logger.warning("没有找到符合条件的轨迹")
+        
         return True
         
     except Exception as e:
-        logger.error(f"❌ 集成分析预备测试失败: {e}")
+        logger.error(f"❌ 测试失败: {e}")
+        import traceback
+        logger.error(f"详细错误: {traceback.format_exc()}")
         return False
 
-def main():
-    """主函数"""
-    logger = setup_logging()
-    
-    logger.info("=" * 60)
-    logger.info("开始车道分析修复效果测试")
-    logger.info("=" * 60)
-    
-    tests = [
-        ("车道分析配置传递", test_lane_analysis_config),
-        ("数据库连接和表查询", test_database_connection),
-        ("集成分析预备", test_integrated_analysis_run),
-    ]
-    
-    results = []
-    
-    for test_name, test_func in tests:
-        logger.info(f"\n{'=' * 20} {test_name} {'=' * 20}")
-        try:
-            result = test_func()
-            results.append((test_name, result))
-            if result:
-                logger.info(f"✓ {test_name} 通过")
-            else:
-                logger.error(f"❌ {test_name} 失败")
-        except Exception as e:
-            logger.error(f"❌ {test_name} 异常: {e}")
-            results.append((test_name, False))
-    
-    # 总结
-    logger.info("\n" + "=" * 60)
-    logger.info("测试结果总结")
-    logger.info("=" * 60)
-    
-    passed = sum(1 for _, result in results if result)
-    total = len(results)
-    
-    for test_name, result in results:
-        status = "✓ 通过" if result else "❌ 失败"
-        logger.info(f"{test_name}: {status}")
-    
-    logger.info(f"\n总计: {passed}/{total} 测试通过")
-    
-    if passed == total:
-        logger.info("🎉 所有测试通过！修复成功！")
-        return 0
-    else:
-        logger.error("❌ 部分测试失败，需要进一步检查")
-        return 1
-
 if __name__ == "__main__":
-    sys.exit(main()) 
+    success = test_trajectory_neighbors_analysis()
+    if success:
+        logger.info("✅ 测试通过")
+    else:
+        logger.error("❌ 测试失败")
+        exit(1) 
