@@ -134,8 +134,7 @@ class TrajectoryLaneAnalyzer:
         if self.road_analysis_id:
             self._validate_road_analysis_connection()
         
-        # 初始化车道分析结果表
-        self._init_lane_analysis_tables()
+        # 不在初始化时创建表，在保存时动态创建
         
         self.stats = {
             'input_trajectories': 0,
@@ -150,6 +149,66 @@ class TrajectoryLaneAnalyzer:
             'start_time': None,
             'end_time': None
         }
+    
+    def _generate_dynamic_table_names(self, analysis_id: str) -> Dict[str, str]:
+        """根据analysis_id生成动态表名
+        
+        Args:
+            analysis_id: 分析ID
+            
+        Returns:
+            包含各种表名的字典
+        """
+        # 从analysis_id中提取基础部分，生成符合期望的表名格式
+        # 用户期望的表名格式：integrated_**_lane
+        
+        # 如果analysis_id包含road_analysis_id，使用它来生成表名
+        if self.road_analysis_id:
+            # 从road_analysis_id中提取基础部分
+            # 例如：integrated_20250714_034207_road_f8f65ca59e094aa89f3121fa2510c506
+            # 应该生成：integrated_20250714_034207_road_f8f65ca59e094aa89f3121fa2510c506_lanes
+            base_name = self.road_analysis_id
+            
+            logger.info(f"生成动态表名，基于road_analysis_id: {self.road_analysis_id}")
+            
+            # 如果road_analysis_id以_road结尾，移除它
+            if base_name.endswith('_road'):
+                base_name = base_name[:-5]  # 移除末尾的 "_road"
+                logger.debug(f"移除_road后缀: {base_name}")
+            
+            # 如果road_analysis_id包含 "_road_"，替换为 "_"
+            if '_road_' in base_name:
+                base_name = base_name.replace('_road_', '_')
+                logger.debug(f"替换_road_为_: {base_name}")
+            
+            table_names = {
+                'lane_analysis_main_table': f"{base_name}_lanes",
+                'lane_hits_table': f"{base_name}_lane_hits", 
+                'lane_trajectories_table': f"{base_name}_lane_trajectories"
+            }
+            
+            logger.info(f"生成的车道分析表名:")
+            logger.info(f"  - 主表: {table_names['lane_analysis_main_table']}")
+            logger.info(f"  - 命中表: {table_names['lane_hits_table']}")
+            logger.info(f"  - 轨迹表: {table_names['lane_trajectories_table']}")
+            
+            return table_names
+        else:
+            # 如果没有road_analysis_id，使用analysis_id
+            logger.info(f"生成动态表名，基于analysis_id: {analysis_id}")
+            
+            table_names = {
+                'lane_analysis_main_table': f"{analysis_id}_lanes",
+                'lane_hits_table': f"{analysis_id}_hits", 
+                'lane_trajectories_table': f"{analysis_id}_trajectories"
+            }
+            
+            logger.info(f"生成的车道分析表名:")
+            logger.info(f"  - 主表: {table_names['lane_analysis_main_table']}")
+            logger.info(f"  - 命中表: {table_names['lane_hits_table']}")
+            logger.info(f"  - 轨迹表: {table_names['lane_trajectories_table']}")
+            
+            return table_names
     
     def _validate_road_analysis_connection(self):
         """验证与道路分析结果的连接"""
@@ -236,110 +295,7 @@ class TrajectoryLaneAnalyzer:
             logger.error(f"❌ 验证道路分析连接失败: {e}")
             return False
     
-    def _init_lane_analysis_tables(self):
-        """初始化车道分析相关的数据库表"""
-        self._init_lane_analysis_main_table()
-        self._init_lane_hits_table()
-        self._init_lane_trajectories_table()
-    
-    def _init_lane_analysis_main_table(self):
-        """初始化车道分析主表"""
-        table_name = self.config.get('lane_analysis_main_table', 'trajectory_lane_analysis')
-        
-        create_table_sql = text(f"""
-            CREATE TABLE IF NOT EXISTS {table_name} (
-                id SERIAL PRIMARY KEY,
-                analysis_id VARCHAR(100) NOT NULL,
-                input_trajectory_id VARCHAR(100) NOT NULL,
-                road_analysis_id VARCHAR(100),
-                candidate_lanes_found INTEGER DEFAULT 0,
-                trajectory_points_found INTEGER DEFAULT 0,
-                unique_data_names_found INTEGER DEFAULT 0,
-                trajectories_passed_filter INTEGER DEFAULT 0,
-                trajectories_multi_lane INTEGER DEFAULT 0,
-                trajectories_sufficient_points INTEGER DEFAULT 0,
-                complete_trajectories_count INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(analysis_id, input_trajectory_id)
-            )
-        """)
-        
-        try:
-            with self.engine.connect() as conn:
-                conn.execute(create_table_sql)
-                conn.commit()
-            logger.debug(f"车道分析主表 {table_name} 初始化完成")
-        except Exception as e:
-            logger.warning(f"车道分析主表初始化失败: {e}")
-    
-    def _init_lane_hits_table(self):
-        """初始化车道轨迹点命中表"""
-        table_name = self.config.get('lane_hits_table', 'trajectory_lane_hits')
-        
-        create_table_sql = text(f"""
-            CREATE TABLE IF NOT EXISTS {table_name} (
-                id SERIAL PRIMARY KEY,
-                analysis_id VARCHAR(100) NOT NULL,
-                data_name VARCHAR(255) NOT NULL,
-                lane_id BIGINT,
-                lane_type VARCHAR(50),
-                total_points INTEGER DEFAULT 0,
-                total_lanes INTEGER DEFAULT 0,
-                filter_reason VARCHAR(100),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(analysis_id, data_name)
-            )
-        """)
-        
-        create_index_sql = text(f"""
-            CREATE INDEX IF NOT EXISTS idx_{table_name}_analysis_data 
-            ON {table_name}(analysis_id, data_name)
-        """)
-        
-        try:
-            with self.engine.connect() as conn:
-                conn.execute(create_table_sql)
-                conn.execute(create_index_sql)
-                conn.commit()
-            logger.debug(f"车道命中表 {table_name} 初始化完成")
-        except Exception as e:
-            logger.warning(f"车道命中表初始化失败: {e}")
-    
-    def _init_lane_trajectories_table(self):
-        """初始化完整轨迹结果表"""
-        table_name = self.config.get('lane_trajectories_table', 'trajectory_lane_complete_trajectories')
-        
-        create_table_sql = text(f"""
-            CREATE TABLE IF NOT EXISTS {table_name} (
-                id SERIAL PRIMARY KEY,
-                analysis_id VARCHAR(100) NOT NULL,
-                data_name VARCHAR(255) NOT NULL,
-                filter_reason VARCHAR(100),
-                lanes_touched_count INTEGER DEFAULT 0,
-                hit_points_count INTEGER DEFAULT 0,
-                total_points INTEGER DEFAULT 0,
-                valid_coordinates INTEGER DEFAULT 0,
-                trajectory_length FLOAT,
-                avg_speed FLOAT,
-                max_speed FLOAT,
-                min_speed FLOAT,
-                avp_ratio FLOAT,
-                start_time BIGINT,
-                end_time BIGINT,
-                duration BIGINT,
-                geometry GEOMETRY,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(analysis_id, data_name)
-            )
-        """)
-        
-        try:
-            with self.engine.connect() as conn:
-                conn.execute(create_table_sql)
-                conn.commit()
-            logger.debug(f"完整轨迹表 {table_name} 初始化完成")
-        except Exception as e:
-            logger.warning(f"完整轨迹表初始化失败: {e}")
+
     
     def analyze_trajectory_neighbors(self, input_trajectory_id: str, input_trajectory_geom: str) -> Dict[str, Any]:
         """分析输入轨迹的邻近轨迹
@@ -398,9 +354,14 @@ class TrajectoryLaneAnalyzer:
             logger.info(f"轨迹邻近性分析完成: {input_trajectory_id}")
             logger.info(f"符合条件的轨迹数: {len(complete_trajectories)}")
             
-            # 保存分析结果到数据库
+            # 生成分析ID
             analysis_id = f"lane_analysis_{input_trajectory_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            self._save_lane_analysis_results(analysis_id, input_trajectory_id, trajectory_hits, complete_trajectories)
+            
+            # 获取动态表名
+            dynamic_table_names = self._generate_dynamic_table_names(analysis_id)
+            
+            # 保存分析结果到数据库
+            self._save_lane_analysis_results(analysis_id, input_trajectory_id, trajectory_hits, complete_trajectories, dynamic_table_names)
             
             return {
                 'input_trajectory_id': input_trajectory_id,
@@ -903,26 +864,45 @@ LIMIT {points_limit};
         return complete_trajectories
 
     def _save_lane_analysis_results(self, analysis_id: str, input_trajectory_id: str, 
-                                   trajectory_hits: Dict, complete_trajectories: Dict):
+                                   trajectory_hits: Dict, complete_trajectories: Dict,
+                                   dynamic_table_names: Dict[str, str]):
         """保存车道分析结果到数据库"""
         try:
             # 1. 保存主分析记录
-            self._save_main_analysis_record(analysis_id, input_trajectory_id, complete_trajectories)
+            self._save_main_analysis_record(analysis_id, input_trajectory_id, complete_trajectories, dynamic_table_names)
             
             # 2. 保存轨迹命中记录
-            self._save_trajectory_hits_records(analysis_id, trajectory_hits)
+            self._save_trajectory_hits_records(analysis_id, trajectory_hits, dynamic_table_names)
             
             # 3. 保存完整轨迹记录
-            self._save_complete_trajectories_records(analysis_id, complete_trajectories)
+            self._save_complete_trajectories_records(analysis_id, complete_trajectories, dynamic_table_names)
             
             logger.info(f"✓ 车道分析结果已保存到数据库: {analysis_id}")
             
         except Exception as e:
             logger.error(f"保存车道分析结果失败: {analysis_id}, 错误: {e}")
 
-    def _save_main_analysis_record(self, analysis_id: str, input_trajectory_id: str, complete_trajectories: Dict):
+    def _save_main_analysis_record(self, analysis_id: str, input_trajectory_id: str, complete_trajectories: Dict, dynamic_table_names: Dict[str, str]):
         """保存主分析记录"""
-        table_name = self.config.get('lane_analysis_main_table', 'trajectory_lane_analysis')
+        table_name = dynamic_table_names['lane_analysis_main_table']
+        
+        # 动态创建表（如果不存在）
+        create_table_sql = text(f"""
+            CREATE TABLE IF NOT EXISTS {table_name} (
+                id SERIAL PRIMARY KEY,
+                analysis_id VARCHAR(100) NOT NULL,
+                input_trajectory_id VARCHAR(100) NOT NULL,
+                road_analysis_id VARCHAR(100),
+                candidate_lanes_found INTEGER DEFAULT 0,
+                trajectory_points_found INTEGER DEFAULT 0,
+                unique_data_names_found INTEGER DEFAULT 0,
+                trajectories_passed_filter INTEGER DEFAULT 0,
+                trajectories_multi_lane INTEGER DEFAULT 0,
+                trajectories_sufficient_points INTEGER DEFAULT 0,
+                complete_trajectories_count INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         
         # 先删除可能存在的记录（避免重复）
         delete_sql = text(f"""
@@ -943,6 +923,9 @@ LIMIT {points_limit};
         """)
         
         with self.engine.connect() as conn:
+            # 创建表
+            conn.execute(create_table_sql)
+            
             # 删除现有记录
             conn.execute(delete_sql, {
                 'analysis_id': analysis_id,
@@ -963,13 +946,30 @@ LIMIT {points_limit};
                 'complete_trajectories_count': len(complete_trajectories)
             })
             conn.commit()
+            
+        logger.info(f"✓ 主分析记录已保存到表: {table_name}")
 
-    def _save_trajectory_hits_records(self, analysis_id: str, trajectory_hits: Dict):
+    def _save_trajectory_hits_records(self, analysis_id: str, trajectory_hits: Dict, dynamic_table_names: Dict[str, str]):
         """保存轨迹命中记录"""
-        table_name = self.config.get('lane_hits_table', 'trajectory_lane_hits')
+        table_name = dynamic_table_names['lane_hits_table']
         
         if not trajectory_hits:
             return
+        
+        # 动态创建表（如果不存在）
+        create_table_sql = text(f"""
+            CREATE TABLE IF NOT EXISTS {table_name} (
+                id SERIAL PRIMARY KEY,
+                analysis_id VARCHAR(100) NOT NULL,
+                data_name VARCHAR(255) NOT NULL,
+                lane_id BIGINT,
+                lane_type VARCHAR(50),
+                total_points INTEGER DEFAULT 0,
+                total_lanes INTEGER DEFAULT 0,
+                filter_reason VARCHAR(100),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         
         # 先删除可能存在的记录（避免重复）
         delete_sql = text(f"""
@@ -984,6 +984,9 @@ LIMIT {points_limit};
         """)
         
         with self.engine.connect() as conn:
+            # 创建表
+            conn.execute(create_table_sql)
+            
             # 删除现有记录
             conn.execute(delete_sql, {'analysis_id': analysis_id})
             
@@ -997,13 +1000,43 @@ LIMIT {points_limit};
                     'filter_reason': hit_info.get('filter_reason', 'hit_found')
                 })
             conn.commit()
+            
+        logger.info(f"✓ 轨迹命中记录已保存到表: {table_name} ({len(trajectory_hits)} 条记录)")
 
-    def _save_complete_trajectories_records(self, analysis_id: str, complete_trajectories: Dict):
+    def _save_complete_trajectories_records(self, analysis_id: str, complete_trajectories: Dict, dynamic_table_names: Dict[str, str]):
         """保存完整轨迹记录"""
-        table_name = self.config.get('lane_trajectories_table', 'trajectory_lane_complete_trajectories')
+        table_name = dynamic_table_names['lane_trajectories_table']
         
         if not complete_trajectories:
             return
+        
+        # 动态创建表（如果不存在）
+        create_table_sql = text(f"""
+            CREATE TABLE IF NOT EXISTS {table_name} (
+                id SERIAL PRIMARY KEY,
+                analysis_id VARCHAR(100) NOT NULL,
+                data_name VARCHAR(255) NOT NULL,
+                filter_reason VARCHAR(100),
+                lanes_touched_count INTEGER DEFAULT 0,
+                hit_points_count INTEGER DEFAULT 0,
+                total_points INTEGER DEFAULT 0,
+                valid_coordinates INTEGER DEFAULT 0,
+                trajectory_length FLOAT,
+                avg_speed FLOAT,
+                max_speed FLOAT,
+                min_speed FLOAT,
+                avp_ratio FLOAT,
+                start_time BIGINT,
+                end_time BIGINT,
+                duration BIGINT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # 添加几何列
+        add_geometry_sql = text(f"""
+            SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRING', 2)
+        """)
         
         # 先删除可能存在的记录（避免重复）
         delete_sql = text(f"""
@@ -1025,6 +1058,16 @@ LIMIT {points_limit};
         """)
         
         with self.engine.connect() as conn:
+            # 创建表
+            conn.execute(create_table_sql)
+            
+            # 尝试添加几何列（如果已存在会被忽略）
+            try:
+                conn.execute(add_geometry_sql)
+            except Exception as e:
+                # 几何列可能已存在，忽略错误
+                logger.debug(f"几何列可能已存在: {e}")
+            
             # 删除现有记录
             conn.execute(delete_sql, {'analysis_id': analysis_id})
             
@@ -1049,6 +1092,8 @@ LIMIT {points_limit};
                     'geometry_wkt': trajectory.get('geometry_wkt', '')
                 })
             conn.commit()
+            
+        logger.info(f"✓ 完整轨迹记录已保存到表: {table_name} ({len(complete_trajectories)} 条记录)")
 
 
 def batch_analyze_lanes_from_road_results(
@@ -1131,6 +1176,9 @@ def batch_analyze_lanes_from_road_results(
             # 生成车道分析ID
             lane_analysis_id = f"{batch_analysis_id}_{trajectory_id}"
             
+            # 获取动态表名
+            dynamic_table_names = analyzer._generate_dynamic_table_names(lane_analysis_id)
+            
             # 构建车道分析汇总
             lane_summary = {
                 'lane_analysis_id': lane_analysis_id,
@@ -1160,7 +1208,7 @@ def batch_analyze_lanes_from_road_results(
             logger.error(f"分析轨迹邻近性失败: {trajectory_id}, 错误: {e}")
             lane_results.append((trajectory_id, None, {
                 'error': str(e),
-                'road_analysis_id': road_analysis_map.get(trajectory_id, (None, {}))[0],
+                'road_analysis_id': road_analysis_id,
                 'properties': road_summary.get('properties', {})
             }))
     
@@ -1259,6 +1307,9 @@ def batch_analyze_lanes_from_trajectory_records(
             
             # 生成车道分析ID
             lane_analysis_id = f"{batch_analysis_id}_{trajectory_id}"
+            
+            # 获取动态表名
+            dynamic_table_names = analyzer._generate_dynamic_table_names(lane_analysis_id)
             
             # 构建车道分析汇总
             lane_summary = {
