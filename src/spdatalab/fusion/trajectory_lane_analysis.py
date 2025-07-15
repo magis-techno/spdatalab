@@ -92,7 +92,8 @@ DEFAULT_CONFIG = {
     # 车道分析结果表名
     'lane_analysis_main_table': 'trajectory_lane_analysis',
     'lane_hits_table': 'trajectory_lane_hits', 
-    'lane_trajectories_table': 'trajectory_lane_complete_trajectories'
+    'lane_trajectories_table': 'trajectory_lane_complete_trajectories',
+    'nearest_lanes_table': 'trajectory_nearest_lanes'  # 新增：最邻近车道表
 }
 
 # 全局变量
@@ -190,7 +191,8 @@ class TrajectoryLaneAnalyzer:
         table_names = {
             'lane_analysis_main_table': f"{base_name}_lanes",
             'lane_hits_table': f"{base_name}_lane_hits", 
-            'lane_trajectories_table': f"{base_name}_lane_trajectories"
+            'lane_trajectories_table': f"{base_name}_lane_trajectories",
+            'nearest_lanes_table': f"{base_name}_nearest_lanes"  # 新增：最邻近车道表
         }
         
         # 检查表名长度，PostgreSQL限制为63字符
@@ -205,6 +207,7 @@ class TrajectoryLaneAnalyzer:
         logger.info(f"  - 主表: {table_names['lane_analysis_main_table']} ({len(table_names['lane_analysis_main_table'])} chars)")
         logger.info(f"  - 命中表: {table_names['lane_hits_table']} ({len(table_names['lane_hits_table'])} chars)")
         logger.info(f"  - 轨迹表: {table_names['lane_trajectories_table']} ({len(table_names['lane_trajectories_table'])} chars)")
+        logger.info(f"  - 最邻近车道表: {table_names['nearest_lanes_table']} ({len(table_names['nearest_lanes_table'])} chars)")
         
         return table_names
     
@@ -1272,6 +1275,79 @@ LIMIT {points_limit};
             conn.commit()
             
         logger.info(f"✓ 完整轨迹记录已保存到表: {table_name} ({len(complete_trajectories)} 条记录)")
+
+    def _find_nearest_lanes_to_trajectory(self, input_trajectory_geom: str) -> List[Dict]:
+        """找到距离输入轨迹最近的车道
+        
+        Args:
+            input_trajectory_geom: 输入轨迹几何WKT字符串
+            
+        Returns:
+            最邻近车道列表，包含车道信息和geometry
+        """
+        if not self.road_analysis_id:
+            logger.error("未指定road_analysis_id，无法查找最邻近车道")
+            return []
+        
+        road_lanes_table = self.config['road_analysis_lanes_table']
+        max_nearest_lanes = 10  # 最多返回10个最近的车道
+        
+        try:
+            with self.engine.connect() as conn:
+                # 查询距离输入轨迹最近的车道
+                sql = text(f"""
+                    SELECT 
+                        lane_id, 
+                        ST_Distance(
+                            geometry, 
+                            ST_SetSRID(ST_GeomFromText(:trajectory_geom), 4326)
+                        ) as distance_to_trajectory,
+                        lane_type,
+                        road_id,
+                        ST_AsText(geometry) as geometry_wkt,
+                        ST_Length(geometry) as lane_length,
+                        chain_depth,
+                        distance_from_trajectory
+                    FROM {road_lanes_table}
+                    WHERE analysis_id = :road_analysis_id
+                    AND geometry IS NOT NULL
+                    ORDER BY distance_to_trajectory ASC
+                    LIMIT :max_lanes
+                """)
+                
+                result = conn.execute(sql, {
+                    'trajectory_geom': input_trajectory_geom,
+                    'road_analysis_id': self.road_analysis_id,
+                    'max_lanes': max_nearest_lanes
+                })
+                
+                nearest_lanes = []
+                for row in result:
+                    lane_info = {
+                        'lane_id': row[0],
+                        'distance_to_trajectory': row[1],
+                        'lane_type': row[2],
+                        'road_id': row[3],
+                        'geometry_wkt': row[4],
+                        'lane_length': row[5],
+                        'chain_depth': row[6] if row[6] is not None else 0,
+                        'distance_from_trajectory': row[7] if row[7] is not None else 0.0
+                    }
+                    nearest_lanes.append(lane_info)
+                
+                logger.info(f"找到 {len(nearest_lanes)} 个最邻近车道")
+                
+                # 输出前几个最近车道的信息
+                if nearest_lanes:
+                    logger.info("前5个最邻近车道:")
+                    for i, lane in enumerate(nearest_lanes[:5]):
+                        logger.info(f"  {i+1}. Lane {lane['lane_id']}: 距离={lane['distance_to_trajectory']:.6f}°, 类型={lane['lane_type']}")
+                
+                return nearest_lanes
+                
+        except Exception as e:
+            logger.error(f"查找最邻近车道失败: {e}")
+            return []
 
 
 def batch_analyze_lanes_from_road_results(
