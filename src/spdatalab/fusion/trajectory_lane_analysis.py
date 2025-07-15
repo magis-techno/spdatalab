@@ -91,9 +91,9 @@ DEFAULT_CONFIG = {
     
     # 车道分析结果表名
     'lane_analysis_main_table': 'trajectory_lane_analysis',
+    'lane_analysis_summary_table': 'trajectory_lane_analysis_summary',
     'lane_hits_table': 'trajectory_lane_hits', 
-    'lane_trajectories_table': 'trajectory_lane_complete_trajectories',
-    'nearest_lanes_table': 'trajectory_nearest_lanes'  # 新增：最邻近车道表
+    'lane_trajectories_table': 'trajectory_lane_complete_trajectories'
 }
 
 # 全局变量
@@ -190,9 +190,9 @@ class TrajectoryLaneAnalyzer:
         # 生成简化的表名
         table_names = {
             'lane_analysis_main_table': f"{base_name}_lanes",
+            'lane_analysis_summary_table': f"{base_name}_lanes_summary",
             'lane_hits_table': f"{base_name}_lane_hits", 
-            'lane_trajectories_table': f"{base_name}_lane_trajectories",
-            'nearest_lanes_table': f"{base_name}_nearest_lanes"  # 新增：最邻近车道表
+            'lane_trajectories_table': f"{base_name}_lane_trajectories"
         }
         
         # 检查表名长度，PostgreSQL限制为63字符
@@ -204,10 +204,10 @@ class TrajectoryLaneAnalyzer:
                 logger.warning(f"截断后: {table_names[table_type]}")
         
         logger.info(f"生成的车道分析表名:")
-        logger.info(f"  - 主表: {table_names['lane_analysis_main_table']} ({len(table_names['lane_analysis_main_table'])} chars)")
+        logger.info(f"  - 主表(车道详情): {table_names['lane_analysis_main_table']} ({len(table_names['lane_analysis_main_table'])} chars)")
+        logger.info(f"  - 汇总表(统计): {table_names['lane_analysis_summary_table']} ({len(table_names['lane_analysis_summary_table'])} chars)")
         logger.info(f"  - 命中表: {table_names['lane_hits_table']} ({len(table_names['lane_hits_table'])} chars)")
         logger.info(f"  - 轨迹表: {table_names['lane_trajectories_table']} ({len(table_names['lane_trajectories_table'])} chars)")
-        logger.info(f"  - 最邻近车道表: {table_names['nearest_lanes_table']} ({len(table_names['nearest_lanes_table'])} chars)")
         
         return table_names
     
@@ -313,6 +313,9 @@ class TrajectoryLaneAnalyzer:
         self.stats['input_trajectories'] += 1
         self.stats['start_time'] = datetime.now()
         
+        # 初始化邻近车道信息存储
+        self.nearby_lanes_found = []
+        
         try:
             # 1. 对输入轨迹进行分段采样
             trajectory_segments = self._segment_input_trajectory(input_trajectory_geom)
@@ -328,8 +331,18 @@ class TrajectoryLaneAnalyzer:
                 logger.warning(f"未找到邻近的候选lanes: {input_trajectory_id}")
                 return {'error': '未找到邻近的候选lanes'}
             
+            # **重要**：保存邻近车道信息到实例变量
+            self.nearby_lanes_found = nearby_lanes.copy()
+            
             self.stats['candidate_lanes_found'] = len(nearby_lanes)
             logger.info(f"找到 {len(nearby_lanes)} 个邻近候选lanes")
+            
+            # 输出邻近车道的详细信息
+            logger.info("邻近候选lanes详情:")
+            for i, lane in enumerate(nearby_lanes[:5]):  # 显示前5个
+                logger.info(f"  {i+1}. Lane {lane['lane_id']} (type: {lane['lane_type']}, road: {lane.get('road_id', 'N/A')}, distance: {lane.get('distance', 0):.6f})")
+            if len(nearby_lanes) > 5:
+                logger.info(f"  ... 还有 {len(nearby_lanes) - 5} 个车道")
             
             # 3. 为lanes创建buffer，查询轨迹点数据库
             trajectory_hits = self._query_trajectory_points_in_buffers(nearby_lanes)
@@ -869,22 +882,29 @@ LIMIT {points_limit};
                                    dynamic_table_names: Dict[str, str]):
         """保存车道分析结果到数据库"""
         try:
-            # 1. 保存主分析记录
+            # 1. 保存具体车道信息（替代原来的主分析记录）
             self._save_main_analysis_record(analysis_id, input_trajectory_id, complete_trajectories, dynamic_table_names)
             
-            # 2. 保存轨迹命中记录
+            # 2. 保存统计汇总信息
+            self._save_analysis_statistics(analysis_id, input_trajectory_id, complete_trajectories, dynamic_table_names)
+            
+            # 3. 保存轨迹命中记录
             self._save_trajectory_hits_records(analysis_id, trajectory_hits, dynamic_table_names)
             
-            # 3. 保存完整轨迹记录
+            # 4. 保存完整轨迹记录
             self._save_complete_trajectories_records(analysis_id, complete_trajectories, dynamic_table_names)
             
             logger.info(f"✓ 车道分析结果已保存到数据库: {analysis_id}")
+            logger.info(f"  - 具体车道表: {dynamic_table_names['lane_analysis_main_table']}")
+            logger.info(f"  - 统计汇总表: {dynamic_table_names['lane_analysis_summary_table']}")
+            logger.info(f"  - 轨迹命中表: {dynamic_table_names['lane_hits_table']}")
+            logger.info(f"  - 完整轨迹表: {dynamic_table_names['lane_trajectories_table']}")
             
         except Exception as e:
             logger.error(f"保存车道分析结果失败: {analysis_id}, 错误: {e}")
 
     def _save_main_analysis_record(self, analysis_id: str, input_trajectory_id: str, complete_trajectories: Dict, dynamic_table_names: Dict[str, str]):
-        """保存主分析记录"""
+        """保存主分析记录 - 修改为保存具体的邻近车道信息"""
         table_name = dynamic_table_names['lane_analysis_main_table']
         
         # 检查表是否存在且结构正确
@@ -896,13 +916,22 @@ LIMIT {points_limit};
             );
         """)
         
-        # 检查关键字段是否存在
+        # 检查关键字段是否存在 - 更新为车道详情字段
         check_columns_sql = text(f"""
             SELECT column_name 
             FROM information_schema.columns 
             WHERE table_schema = 'public' 
             AND table_name = '{table_name}'
-            AND column_name IN ('analysis_id', 'input_trajectory_id', 'road_analysis_id', 'candidate_lanes_found')
+            AND column_name IN ('analysis_id', 'input_trajectory_id', 'lane_id', 'lane_type')
+        """)
+        
+        # 检查几何列是否存在
+        check_geometry_sql = text(f"""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_schema = 'public' 
+            AND table_name = '{table_name}'
+            AND column_name = 'geometry'
         """)
         
         with self.engine.connect() as conn:
@@ -912,10 +941,15 @@ LIMIT {points_limit};
                 # 检查列是否存在
                 existing_columns = conn.execute(check_columns_sql).fetchall()
                 existing_column_names = {row[0] for row in existing_columns}
-                required_columns = {'analysis_id', 'input_trajectory_id', 'road_analysis_id', 'candidate_lanes_found'}
+                required_columns = {'analysis_id', 'input_trajectory_id', 'lane_id', 'lane_type'}
                 
-                if not required_columns.issubset(existing_column_names):
+                # 检查几何列
+                geometry_columns = conn.execute(check_geometry_sql).fetchall()
+                has_geometry = len(geometry_columns) > 0
+                
+                if not required_columns.issubset(existing_column_names) or not has_geometry:
                     logger.warning(f"表 {table_name} 结构不正确，缺少字段: {required_columns - existing_column_names}")
+                    logger.warning(f"几何列存在: {has_geometry}")
                     logger.warning(f"删除并重新创建表: {table_name}")
                     
                     # 删除旧表
@@ -925,36 +959,57 @@ LIMIT {points_limit};
                     table_exists = False
             
             if not table_exists:
-                # 创建新表
+                # 创建新表 - 保存具体车道信息
                 create_table_sql = text(f"""
                     CREATE TABLE {table_name} (
                         id SERIAL PRIMARY KEY,
                         analysis_id VARCHAR(100) NOT NULL,
                         input_trajectory_id VARCHAR(100) NOT NULL,
                         road_analysis_id VARCHAR(100),
-                        candidate_lanes_found INTEGER DEFAULT 0,
-                        trajectory_points_found INTEGER DEFAULT 0,
-                        unique_data_names_found INTEGER DEFAULT 0,
-                        trajectories_passed_filter INTEGER DEFAULT 0,
-                        trajectories_multi_lane INTEGER DEFAULT 0,
-                        trajectories_sufficient_points INTEGER DEFAULT 0,
-                        complete_trajectories_count INTEGER DEFAULT 0,
+                        lane_id BIGINT NOT NULL,
+                        lane_type VARCHAR(50),
+                        road_id BIGINT,
+                        distance_to_trajectory FLOAT,
+                        segment_id INTEGER,
+                        is_candidate_lane BOOLEAN DEFAULT TRUE,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
                 
                 conn.execute(create_table_sql)
                 
+                # 添加几何列
+                add_geometry_sql = text(f"""
+                    SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRING', 2)
+                """)
+                
+                try:
+                    conn.execute(add_geometry_sql)
+                    logger.info(f"✓ 添加几何列到表: {table_name}")
+                except Exception as e:
+                    logger.warning(f"添加几何列失败: {e}")
+                
                 # 创建索引
                 create_indexes_sql = text(f"""
                     CREATE INDEX idx_{table_name.replace('-', '_')}_analysis_id ON {table_name}(analysis_id);
                     CREATE INDEX idx_{table_name.replace('-', '_')}_input_trajectory_id ON {table_name}(input_trajectory_id);
+                    CREATE INDEX idx_{table_name.replace('-', '_')}_lane_id ON {table_name}(lane_id);
+                    CREATE INDEX idx_{table_name.replace('-', '_')}_lane_type ON {table_name}(lane_type);
                 """)
                 
-                conn.execute(create_indexes_sql)
-                conn.commit()
+                try:
+                    conn.execute(create_indexes_sql)
+                    # 创建几何索引
+                    create_geom_index_sql = text(f"""
+                        CREATE INDEX idx_{table_name.replace('-', '_')}_geometry ON {table_name} USING GIST(geometry);
+                    """)
+                    conn.execute(create_geom_index_sql)
+                    logger.info(f"✓ 创建索引: {table_name}")
+                except Exception as e:
+                    logger.warning(f"创建索引失败: {e}")
                 
-                logger.info(f"✓ 创建表: {table_name}")
+                conn.commit()
+                logger.info(f"✓ 创建车道详情表: {table_name}")
         
         # 先删除可能存在的记录（避免重复）
         delete_sql = text(f"""
@@ -964,13 +1019,12 @@ LIMIT {points_limit};
         
         insert_sql = text(f"""
             INSERT INTO {table_name} 
-            (analysis_id, input_trajectory_id, road_analysis_id, candidate_lanes_found,
-             trajectory_points_found, unique_data_names_found, trajectories_passed_filter,
-             trajectories_multi_lane, trajectories_sufficient_points, complete_trajectories_count)
+            (analysis_id, input_trajectory_id, road_analysis_id, lane_id, lane_type, 
+             road_id, distance_to_trajectory, segment_id, is_candidate_lane, geometry)
             VALUES (
-                :analysis_id, :input_trajectory_id, :road_analysis_id, :candidate_lanes_found,
-                :trajectory_points_found, :unique_data_names_found, :trajectories_passed_filter,
-                :trajectories_multi_lane, :trajectories_sufficient_points, :complete_trajectories_count
+                :analysis_id, :input_trajectory_id, :road_analysis_id, :lane_id, :lane_type,
+                :road_id, :distance_to_trajectory, :segment_id, :is_candidate_lane,
+                ST_SetSRID(ST_GeomFromText(:geometry_wkt), 4326)
             )
         """)
         
@@ -981,22 +1035,30 @@ LIMIT {points_limit};
                 'input_trajectory_id': input_trajectory_id
             })
             
-            # 插入新记录
-            conn.execute(insert_sql, {
-                'analysis_id': analysis_id,
-                'input_trajectory_id': input_trajectory_id,
-                'road_analysis_id': self.road_analysis_id,
-                'candidate_lanes_found': self.stats.get('candidate_lanes_found', 0),
-                'trajectory_points_found': self.stats.get('trajectory_points_found', 0),
-                'unique_data_names_found': self.stats.get('unique_data_names_found', 0),
-                'trajectories_passed_filter': self.stats.get('trajectories_passed_filter', 0),
-                'trajectories_multi_lane': self.stats.get('trajectories_multi_lane', 0),
-                'trajectories_sufficient_points': self.stats.get('trajectories_sufficient_points', 0),
-                'complete_trajectories_count': len(complete_trajectories)
-            })
+            # 插入具体的车道记录
+            # 从 self.nearby_lanes_found 中获取邻近车道信息
+            if hasattr(self, 'nearby_lanes_found') and self.nearby_lanes_found:
+                for lane_info in self.nearby_lanes_found:
+                    conn.execute(insert_sql, {
+                        'analysis_id': analysis_id,
+                        'input_trajectory_id': input_trajectory_id,
+                        'road_analysis_id': self.road_analysis_id,
+                        'lane_id': int(lane_info['lane_id']),
+                        'lane_type': lane_info.get('lane_type', ''),
+                        'road_id': int(lane_info['road_id']) if lane_info.get('road_id') else None,
+                        'distance_to_trajectory': float(lane_info.get('distance', 0.0)),
+                        'segment_id': int(lane_info.get('segment_id', 0)),
+                        'is_candidate_lane': True,
+                        'geometry_wkt': lane_info.get('geometry_wkt', '')
+                    })
+                    
+                logger.info(f"✓ 保存 {len(self.nearby_lanes_found)} 个邻近车道到: {table_name}")
+            else:
+                logger.warning(f"没有找到邻近车道信息，无法保存到: {table_name}")
+            
             conn.commit()
             
-        logger.info(f"✓ 主分析记录已保存到表: {table_name}")
+        logger.info(f"✓ 车道详情记录已保存到表: {table_name}")
 
     def _save_trajectory_hits_records(self, analysis_id: str, trajectory_hits: Dict, dynamic_table_names: Dict[str, str]):
         """保存轨迹命中记录"""
@@ -1276,78 +1338,95 @@ LIMIT {points_limit};
             
         logger.info(f"✓ 完整轨迹记录已保存到表: {table_name} ({len(complete_trajectories)} 条记录)")
 
-    def _find_nearest_lanes_to_trajectory(self, input_trajectory_geom: str) -> List[Dict]:
-        """找到距离输入轨迹最近的车道
+    def _save_analysis_statistics(self, analysis_id: str, input_trajectory_id: str, complete_trajectories: Dict, dynamic_table_names: Dict[str, str]):
+        """保存分析统计信息到单独的汇总表"""
+        summary_table_name = dynamic_table_names['lane_analysis_summary_table']
         
-        Args:
-            input_trajectory_geom: 输入轨迹几何WKT字符串
+        # 检查汇总表是否存在
+        check_table_sql = text(f"""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_schema = 'public' 
+                AND table_name = '{summary_table_name}'
+            );
+        """)
+        
+        with self.engine.connect() as conn:
+            table_exists = conn.execute(check_table_sql).scalar()
             
-        Returns:
-            最邻近车道列表，包含车道信息和geometry
-        """
-        if not self.road_analysis_id:
-            logger.error("未指定road_analysis_id，无法查找最邻近车道")
-            return []
-        
-        road_lanes_table = self.config['road_analysis_lanes_table']
-        max_nearest_lanes = 10  # 最多返回10个最近的车道
-        
-        try:
-            with self.engine.connect() as conn:
-                # 查询距离输入轨迹最近的车道
-                sql = text(f"""
-                    SELECT 
-                        lane_id, 
-                        ST_Distance(
-                            geometry, 
-                            ST_SetSRID(ST_GeomFromText(:trajectory_geom), 4326)
-                        ) as distance_to_trajectory,
-                        lane_type,
-                        road_id,
-                        ST_AsText(geometry) as geometry_wkt,
-                        ST_Length(geometry) as lane_length,
-                        chain_depth,
-                        distance_from_trajectory
-                    FROM {road_lanes_table}
-                    WHERE analysis_id = :road_analysis_id
-                    AND geometry IS NOT NULL
-                    ORDER BY distance_to_trajectory ASC
-                    LIMIT :max_lanes
+            if not table_exists:
+                # 创建汇总统计表
+                create_summary_table_sql = text(f"""
+                    CREATE TABLE {summary_table_name} (
+                        id SERIAL PRIMARY KEY,
+                        analysis_id VARCHAR(100) NOT NULL,
+                        input_trajectory_id VARCHAR(100) NOT NULL,
+                        road_analysis_id VARCHAR(100),
+                        candidate_lanes_found INTEGER DEFAULT 0,
+                        trajectory_points_found INTEGER DEFAULT 0,
+                        unique_data_names_found INTEGER DEFAULT 0,
+                        trajectories_passed_filter INTEGER DEFAULT 0,
+                        trajectories_multi_lane INTEGER DEFAULT 0,
+                        trajectories_sufficient_points INTEGER DEFAULT 0,
+                        complete_trajectories_count INTEGER DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(analysis_id, input_trajectory_id)
+                    )
                 """)
                 
-                result = conn.execute(sql, {
-                    'trajectory_geom': input_trajectory_geom,
-                    'road_analysis_id': self.road_analysis_id,
-                    'max_lanes': max_nearest_lanes
-                })
+                conn.execute(create_summary_table_sql)
                 
-                nearest_lanes = []
-                for row in result:
-                    lane_info = {
-                        'lane_id': row[0],
-                        'distance_to_trajectory': row[1],
-                        'lane_type': row[2],
-                        'road_id': row[3],
-                        'geometry_wkt': row[4],
-                        'lane_length': row[5],
-                        'chain_depth': row[6] if row[6] is not None else 0,
-                        'distance_from_trajectory': row[7] if row[7] is not None else 0.0
-                    }
-                    nearest_lanes.append(lane_info)
+                # 创建索引
+                create_summary_indexes_sql = text(f"""
+                    CREATE INDEX idx_{summary_table_name.replace('-', '_')}_analysis_id ON {summary_table_name}(analysis_id);
+                    CREATE INDEX idx_{summary_table_name.replace('-', '_')}_input_trajectory_id ON {summary_table_name}(input_trajectory_id);
+                """)
                 
-                logger.info(f"找到 {len(nearest_lanes)} 个最邻近车道")
-                
-                # 输出前几个最近车道的信息
-                if nearest_lanes:
-                    logger.info("前5个最邻近车道:")
-                    for i, lane in enumerate(nearest_lanes[:5]):
-                        logger.info(f"  {i+1}. Lane {lane['lane_id']}: 距离={lane['distance_to_trajectory']:.6f}°, 类型={lane['lane_type']}")
-                
-                return nearest_lanes
-                
-        except Exception as e:
-            logger.error(f"查找最邻近车道失败: {e}")
-            return []
+                conn.execute(create_summary_indexes_sql)
+                conn.commit()
+                logger.info(f"✓ 创建统计汇总表: {summary_table_name}")
+        
+        # 删除已存在的记录，然后插入新记录
+        delete_summary_sql = text(f"""
+            DELETE FROM {summary_table_name} 
+            WHERE analysis_id = :analysis_id AND input_trajectory_id = :input_trajectory_id
+        """)
+        
+        insert_summary_sql = text(f"""
+            INSERT INTO {summary_table_name} 
+            (analysis_id, input_trajectory_id, road_analysis_id, candidate_lanes_found,
+             trajectory_points_found, unique_data_names_found, trajectories_passed_filter,
+             trajectories_multi_lane, trajectories_sufficient_points, complete_trajectories_count)
+            VALUES (
+                :analysis_id, :input_trajectory_id, :road_analysis_id, :candidate_lanes_found,
+                :trajectory_points_found, :unique_data_names_found, :trajectories_passed_filter,
+                :trajectories_multi_lane, :trajectories_sufficient_points, :complete_trajectories_count
+            )
+        """)
+        
+        with self.engine.connect() as conn:
+            # 删除现有记录
+            conn.execute(delete_summary_sql, {
+                'analysis_id': analysis_id,
+                'input_trajectory_id': input_trajectory_id
+            })
+            
+            # 插入统计汇总
+            conn.execute(insert_summary_sql, {
+                'analysis_id': analysis_id,
+                'input_trajectory_id': input_trajectory_id,
+                'road_analysis_id': self.road_analysis_id,
+                'candidate_lanes_found': self.stats.get('candidate_lanes_found', 0),
+                'trajectory_points_found': self.stats.get('trajectory_points_found', 0),
+                'unique_data_names_found': self.stats.get('unique_data_names_found', 0),
+                'trajectories_passed_filter': self.stats.get('trajectories_passed_filter', 0),
+                'trajectories_multi_lane': self.stats.get('trajectories_multi_lane', 0),
+                'trajectories_sufficient_points': self.stats.get('trajectories_sufficient_points', 0),
+                'complete_trajectories_count': len(complete_trajectories)
+            })
+            conn.commit()
+            
+        logger.info(f"✓ 统计汇总已保存到表: {summary_table_name}")
 
 
 def batch_analyze_lanes_from_road_results(
