@@ -71,6 +71,12 @@ DEFAULT_CONFIG = {
     'enable_time_filter': True,       # 启用时间过滤
     'recent_days': 30,                # 只查询最近N天的数据
     
+    # 方向匹配配置（新增）
+    'enable_direction_matching': True,  # 启用方向匹配
+    'max_heading_difference': 45.0,     # 最大航向角度差（度），超过此值认为是对向车道
+    'min_segment_length': 10.0,         # 最小分段长度（米），用于可靠的航向计算
+    'heading_calculation_method': 'start_end',  # 航向计算方法：'start_end', 'weighted_average'
+    
     # 轨迹质量检查配置
     'min_points_single_lane': 5,      # 单车道最少点数
     'enable_multi_lane_filter': True, # 启用多车道过滤
@@ -106,6 +112,129 @@ def signal_handler(signum, frame):
     print(f"\n接收到中断信号 ({signum})，正在优雅退出...")
     print("等待当前处理完成，请稍候...")
     interrupted = True
+
+def calculate_heading_degrees(start_point: Tuple[float, float], end_point: Tuple[float, float]) -> float:
+    """计算两点之间的航向角度（度）
+    
+    Args:
+        start_point: 起始点 (longitude, latitude)
+        end_point: 结束点 (longitude, latitude)
+        
+    Returns:
+        航向角度（0-360度，北方向为0度，顺时针增加）
+    """
+    lon1, lat1 = start_point
+    lon2, lat2 = end_point
+    
+    # 转换为弧度
+    lat1_rad = np.radians(lat1)
+    lat2_rad = np.radians(lat2)
+    lon_diff_rad = np.radians(lon2 - lon1)
+    
+    # 计算航向角（弧度）
+    x = np.sin(lon_diff_rad) * np.cos(lat2_rad)
+    y = np.cos(lat1_rad) * np.sin(lat2_rad) - np.sin(lat1_rad) * np.cos(lat2_rad) * np.cos(lon_diff_rad)
+    
+    heading_rad = np.arctan2(x, y)
+    
+    # 转换为度数，范围0-360
+    heading_deg = (np.degrees(heading_rad) + 360) % 360
+    
+    return heading_deg
+
+def calculate_linestring_heading(line_geom: LineString, method: str = 'start_end') -> float:
+    """计算LineString的航向角度
+    
+    Args:
+        line_geom: LineString几何对象
+        method: 计算方法 - 'start_end' 或 'weighted_average'
+        
+    Returns:
+        航向角度（0-360度）
+    """
+    coords = list(line_geom.coords)
+    
+    if len(coords) < 2:
+        return 0.0
+    
+    if method == 'start_end':
+        # 使用起点和终点计算航向
+        start_point = coords[0]
+        end_point = coords[-1]
+        return calculate_heading_degrees(start_point, end_point)
+    
+    elif method == 'weighted_average':
+        # 使用加权平均方法（根据分段长度加权）
+        headings = []
+        weights = []
+        
+        for i in range(len(coords) - 1):
+            start_point = coords[i]
+            end_point = coords[i + 1]
+            
+            # 计算分段长度（简化为欧几里得距离）
+            length = ((end_point[0] - start_point[0])**2 + (end_point[1] - start_point[1])**2)**0.5
+            
+            if length > 0:
+                heading = calculate_heading_degrees(start_point, end_point)
+                headings.append(heading)
+                weights.append(length)
+        
+        if not headings:
+            return 0.0
+        
+        # 处理角度的循环性质（例如359度和1度的平均值应该是0度）
+        # 转换为单位向量求平均
+        x_sum = sum(np.cos(np.radians(h)) * w for h, w in zip(headings, weights))
+        y_sum = sum(np.sin(np.radians(h)) * w for h, w in zip(headings, weights))
+        total_weight = sum(weights)
+        
+        if total_weight == 0:
+            return 0.0
+        
+        avg_x = x_sum / total_weight
+        avg_y = y_sum / total_weight
+        
+        avg_heading_rad = np.arctan2(avg_y, avg_x)
+        avg_heading_deg = (np.degrees(avg_heading_rad) + 360) % 360
+        
+        return avg_heading_deg
+    
+    else:
+        # 默认使用起点-终点方法
+        return calculate_linestring_heading(line_geom, 'start_end')
+
+def calculate_heading_difference(heading1: float, heading2: float) -> float:
+    """计算两个航向角度之间的最小差值
+    
+    Args:
+        heading1: 第一个航向角度（0-360度）
+        heading2: 第二个航向角度（0-360度）
+        
+    Returns:
+        最小角度差值（0-180度）
+    """
+    diff = abs(heading1 - heading2)
+    
+    # 处理角度的循环性质
+    if diff > 180:
+        diff = 360 - diff
+    
+    return diff
+
+def is_same_direction(trajectory_heading: float, lane_heading: float, max_difference: float = 45.0) -> bool:
+    """判断轨迹和车道是否同向
+    
+    Args:
+        trajectory_heading: 轨迹航向角度
+        lane_heading: 车道航向角度
+        max_difference: 最大允许的角度差值
+        
+    Returns:
+        是否同向
+    """
+    diff = calculate_heading_difference(trajectory_heading, lane_heading)
+    return diff <= max_difference
 
 class TrajectoryLaneAnalyzer:
     """轨迹车道分析器主类
@@ -418,6 +547,11 @@ class TrajectoryLaneAnalyzer:
             segment_distance = 50.0  # 米
             segment_distance_degrees = segment_distance / 111320.0  # 转换为度
             
+            # 获取方向匹配配置
+            enable_direction_matching = self.config.get('enable_direction_matching', True)
+            min_segment_length = self.config.get('min_segment_length', 10.0)  # 米
+            heading_method = self.config.get('heading_calculation_method', 'start_end')
+            
             segments = []
             current_start = 0
             accumulated_distance = 0.0
@@ -438,19 +572,44 @@ class TrajectoryLaneAnalyzer:
                         # 计算分段中心点
                         center_coord = segment_geom.interpolate(0.5, normalized=True)
                         
-                        segments.append({
+                        # 计算分段的实际长度（米）
+                        segment_length_meters = accumulated_distance * 111320.0
+                        
+                        # 初始化分段信息
+                        segment_info = {
                             'segment_id': len(segments),
                             'start_index': current_start,
                             'end_index': i,
                             'geometry': segment_geom,
                             'center_point': (center_coord.x, center_coord.y),
-                            'length': accumulated_distance
-                        })
+                            'length': accumulated_distance,
+                            'length_meters': segment_length_meters
+                        }
+                        
+                        # 如果启用方向匹配且分段长度足够，计算航向角度
+                        if enable_direction_matching and segment_length_meters >= min_segment_length:
+                            heading = calculate_linestring_heading(segment_geom, heading_method)
+                            segment_info['heading'] = heading
+                            segment_info['has_valid_heading'] = True
+                            logger.debug(f"分段 {len(segments)} 航向: {heading:.1f}° (长度: {segment_length_meters:.1f}m)")
+                        else:
+                            segment_info['heading'] = None
+                            segment_info['has_valid_heading'] = False
+                            if enable_direction_matching:
+                                logger.debug(f"分段 {len(segments)} 长度不足，跳过航向计算 (长度: {segment_length_meters:.1f}m < {min_segment_length}m)")
+                        
+                        segments.append(segment_info)
                     
                     current_start = i
                     accumulated_distance = 0.0
             
+            # 统计有效航向的分段数
+            valid_heading_segments = sum(1 for seg in segments if seg.get('has_valid_heading', False))
+            
             logger.debug(f"轨迹分段完成: {len(coords)} 个坐标点 → {len(segments)} 个分段")
+            if enable_direction_matching:
+                logger.info(f"方向匹配: {valid_heading_segments}/{len(segments)} 个分段有有效航向")
+            
             return segments
             
         except Exception as e:
@@ -458,13 +617,13 @@ class TrajectoryLaneAnalyzer:
             return []
     
     def _find_nearby_candidate_lanes(self, trajectory_segments: List[Dict]) -> List[Dict]:
-        """为轨迹分段找到邻近的候选lanes
+        """为轨迹分段找到邻近的候选lanes（带方向校验）
         
         Args:
             trajectory_segments: 轨迹分段列表
             
         Returns:
-            邻近候选lanes列表
+            邻近候选lanes列表（已过滤对向车道）
         """
         if not self.road_analysis_id:
             logger.error("未指定road_analysis_id，无法查找候选车道")
@@ -474,12 +633,21 @@ class TrajectoryLaneAnalyzer:
         max_distance = self.config['max_lane_distance']
         max_distance_degrees = max_distance / 111320.0
         
+        # 方向匹配配置
+        enable_direction_matching = self.config.get('enable_direction_matching', True)
+        max_heading_difference = self.config.get('max_heading_difference', 45.0)
+        heading_method = self.config.get('heading_calculation_method', 'start_end')
+        
         nearby_lanes = []
+        direction_filtered_count = 0
+        total_candidate_count = 0
         
         try:
             with self.engine.connect() as conn:
                 for segment in trajectory_segments:
                     center_lng, center_lat = segment['center_point']
+                    segment_heading = segment.get('heading')
+                    has_valid_heading = segment.get('has_valid_heading', False)
                     
                     # 查询该分段附近的候选lanes
                     sql = text(f"""
@@ -494,7 +662,7 @@ class TrajectoryLaneAnalyzer:
                         AND geometry IS NOT NULL
                         AND ST_DWithin(geometry, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326), :max_distance)
                         ORDER BY distance
-                        LIMIT 5
+                        LIMIT 10
                     """)
                     
                     result = conn.execute(sql, {
@@ -506,6 +674,8 @@ class TrajectoryLaneAnalyzer:
                     
                     segment_lanes = []
                     for row in result:
+                        total_candidate_count += 1
+                        
                         lane_info = {
                             'lane_id': row[0],
                             'distance': row[1],
@@ -514,7 +684,46 @@ class TrajectoryLaneAnalyzer:
                             'geometry_wkt': row[4],
                             'segment_id': segment['segment_id']
                         }
-                        segment_lanes.append(lane_info)
+                        
+                        # 如果启用方向匹配且轨迹分段有有效航向，进行方向校验
+                        if enable_direction_matching and has_valid_heading:
+                            try:
+                                from shapely import wkt
+                                lane_geom = wkt.loads(row[4])  # geometry_wkt
+                                lane_heading = calculate_linestring_heading(lane_geom, heading_method)
+                                
+                                # 计算航向差值
+                                heading_diff = calculate_heading_difference(segment_heading, lane_heading)
+                                
+                                # 判断是否同向
+                                if is_same_direction(segment_heading, lane_heading, max_heading_difference):
+                                    # 同向车道，保留
+                                    lane_info['trajectory_heading'] = segment_heading
+                                    lane_info['lane_heading'] = lane_heading
+                                    lane_info['heading_difference'] = heading_diff
+                                    lane_info['direction_matched'] = True
+                                    segment_lanes.append(lane_info)
+                                    
+                                    logger.debug(f"✓ Lane {lane_info['lane_id']}: 同向 (轨迹:{segment_heading:.1f}°, 车道:{lane_heading:.1f}°, 差值:{heading_diff:.1f}°)")
+                                else:
+                                    # 对向车道，过滤掉
+                                    direction_filtered_count += 1
+                                    logger.debug(f"✗ Lane {lane_info['lane_id']}: 对向车道被过滤 (轨迹:{segment_heading:.1f}°, 车道:{lane_heading:.1f}°, 差值:{heading_diff:.1f}°)")
+                                    
+                            except Exception as e:
+                                logger.warning(f"车道 {lane_info['lane_id']} 航向计算失败: {e}，保留该车道")
+                                lane_info['trajectory_heading'] = segment_heading
+                                lane_info['lane_heading'] = None
+                                lane_info['heading_difference'] = None
+                                lane_info['direction_matched'] = False
+                                segment_lanes.append(lane_info)
+                        else:
+                            # 未启用方向匹配或分段无有效航向，保留所有车道
+                            lane_info['trajectory_heading'] = segment_heading
+                            lane_info['lane_heading'] = None
+                            lane_info['heading_difference'] = None
+                            lane_info['direction_matched'] = False
+                            segment_lanes.append(lane_info)
                     
                     if segment_lanes:
                         logger.debug(f"分段 {segment['segment_id']} 找到 {len(segment_lanes)} 个邻近lanes")
@@ -528,7 +737,17 @@ class TrajectoryLaneAnalyzer:
                     unique_lanes[lane_id] = lane
             
             result_lanes = list(unique_lanes.values())
+            
+            # 统计方向匹配结果
+            same_direction_count = sum(1 for lane in result_lanes if lane.get('direction_matched', False))
+            
             logger.info(f"去重后的邻近候选lanes: {len(result_lanes)} 个")
+            if enable_direction_matching:
+                logger.info(f"方向匹配统计:")
+                logger.info(f"  - 总候选车道: {total_candidate_count} 个")
+                logger.info(f"  - 对向车道过滤: {direction_filtered_count} 个")
+                logger.info(f"  - 最终同向车道: {same_direction_count} 个")
+                logger.info(f"  - 无航向信息车道: {len(result_lanes) - same_direction_count} 个")
             
             return result_lanes
             
@@ -977,6 +1196,10 @@ LIMIT {points_limit};
                         distance_to_trajectory FLOAT,
                         segment_id INTEGER,
                         is_candidate_lane BOOLEAN DEFAULT TRUE,
+                        trajectory_heading FLOAT,
+                        lane_heading FLOAT,
+                        heading_difference FLOAT,
+                        direction_matched BOOLEAN,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
@@ -1044,11 +1267,13 @@ LIMIT {points_limit};
         insert_sql = text(f"""
             INSERT INTO {table_name} 
             (analysis_id, input_trajectory_id, road_analysis_id, lane_id, lane_type, 
-             road_id, distance_to_trajectory, segment_id, is_candidate_lane, geometry)
+             road_id, distance_to_trajectory, segment_id, is_candidate_lane, geometry,
+             trajectory_heading, lane_heading, heading_difference, direction_matched)
             VALUES (
                 :analysis_id, :input_trajectory_id, :road_analysis_id, :lane_id, :lane_type,
                 :road_id, :distance_to_trajectory, :segment_id, :is_candidate_lane,
-                ST_SetSRID(ST_GeomFromText(:geometry_wkt), 4326)
+                ST_SetSRID(ST_GeomFromText(:geometry_wkt), 4326),
+                :trajectory_heading, :lane_heading, :heading_difference, :direction_matched
             )
         """)
         
@@ -1073,7 +1298,11 @@ LIMIT {points_limit};
                         'distance_to_trajectory': float(lane_info.get('distance', 0.0)),
                         'segment_id': int(lane_info.get('segment_id', 0)),
                         'is_candidate_lane': True,
-                        'geometry_wkt': lane_info.get('geometry_wkt', '')
+                        'geometry_wkt': lane_info.get('geometry_wkt', ''),
+                        'trajectory_heading': lane_info.get('trajectory_heading', None),
+                        'lane_heading': lane_info.get('lane_heading', None),
+                        'heading_difference': lane_info.get('heading_difference', None),
+                        'direction_matched': lane_info.get('direction_matched', False)
                     })
                     
                 logger.info(f"✓ 保存 {len(self.nearby_lanes_found)} 个邻近车道到: {table_name}")
@@ -1867,6 +2096,18 @@ def main():
     parser.add_argument('--min-points-single-lane', type=int, default=5,
                        help='单车道最少点数阈值')
     
+    # 方向匹配参数（新增）
+    parser.add_argument('--enable-direction-matching', action='store_true', default=True,
+                       help='启用方向匹配，过滤对向车道')
+    parser.add_argument('--disable-direction-matching', dest='enable_direction_matching', action='store_false',
+                       help='禁用方向匹配')
+    parser.add_argument('--max-heading-difference', type=float, default=45.0,
+                       help='最大航向角度差（度），超过此值认为是对向车道')
+    parser.add_argument('--min-segment-length', type=float, default=10.0,
+                       help='最小分段长度（米），用于可靠的航向计算')
+    parser.add_argument('--heading-method', choices=['start_end', 'weighted_average'], default='start_end',
+                       help='航向计算方法')
+    
     # 输出参数
     parser.add_argument('--output-format', choices=['summary', 'detailed', 'geojson'], 
                        default='summary', help='输出格式')
@@ -1890,7 +2131,11 @@ def main():
             'road_analysis_lanes_table': args.road_lanes_table,
             'buffer_radius': args.buffer_radius,
             'max_lane_distance': args.max_lane_distance,
-            'min_points_single_lane': args.min_points_single_lane
+            'min_points_single_lane': args.min_points_single_lane,
+            'enable_direction_matching': args.enable_direction_matching,
+            'max_heading_difference': args.max_heading_difference,
+            'min_segment_length': args.min_segment_length,
+            'heading_calculation_method': args.heading_method
         }
         
         # 输出配置信息
@@ -1900,6 +2145,10 @@ def main():
         logger.info(f"缓冲区半径: {config['buffer_radius']}米")
         logger.info(f"最大车道距离: {config['max_lane_distance']}米")
         logger.info(f"单车道最少点数: {config['min_points_single_lane']}")
+        logger.info(f"方向匹配: {'启用' if config['enable_direction_matching'] else '禁用'}")
+        logger.info(f"最大航向角度差: {config['max_heading_difference']}度")
+        logger.info(f"最小分段长度: {config['min_segment_length']}米")
+        logger.info(f"航向计算方法: {config['heading_calculation_method']}")
         
         # 创建分析器并执行分析
         analyzer = TrajectoryLaneAnalyzer(config, road_analysis_id=args.road_analysis_id)
@@ -1920,6 +2169,18 @@ def main():
         logger.info(f"  - 足够点数: {stats['trajectories_sufficient_points']} 个")
         logger.info(f"完整轨迹数: {len(analysis_result['complete_trajectories'])} 个")
         
+        # 方向匹配统计信息
+        if config['enable_direction_matching']:
+            candidate_lanes = analysis_result.get('candidate_lanes', [])
+            same_direction_lanes = [lane for lane in candidate_lanes if lane.get('direction_matched', False)]
+            logger.info(f"方向匹配统计:")
+            logger.info(f"  - 同向车道: {len(same_direction_lanes)} 个")
+            logger.info(f"  - 总候选车道: {len(candidate_lanes)} 个")
+            
+            if same_direction_lanes:
+                avg_heading_diff = sum(lane.get('heading_difference', 0) for lane in same_direction_lanes) / len(same_direction_lanes)
+                logger.info(f"  - 平均航向差: {avg_heading_diff:.1f}度")
+        
         # 输出详细结果
         if args.output_format == 'detailed' or args.verbose:
             logger.info("\n=== 符合条件的轨迹详情 ===")
@@ -1931,6 +2192,20 @@ def main():
                 logger.info(f"  - 总点数: {trajectory['total_points']} 个")
                 logger.info(f"  - 轨迹长度: {trajectory['trajectory_length']:.6f} 度")
                 logger.info(f"  - 平均速度: {trajectory['avg_speed']} km/h")
+            
+            # 输出方向匹配详情
+            if config['enable_direction_matching']:
+                logger.info("\n=== 方向匹配详情 ===")
+                candidate_lanes = analysis_result.get('candidate_lanes', [])
+                for lane in candidate_lanes:
+                    if lane.get('direction_matched', False):
+                        logger.info(f"Lane {lane['lane_id']}: 同向匹配")
+                        logger.info(f"  - 轨迹航向: {lane.get('trajectory_heading', 'N/A'):.1f}°")
+                        logger.info(f"  - 车道航向: {lane.get('lane_heading', 'N/A'):.1f}°")
+                        logger.info(f"  - 航向差值: {lane.get('heading_difference', 'N/A'):.1f}°")
+                        logger.info(f"  - 距离: {lane.get('distance', 0):.6f}")
+                    else:
+                        logger.info(f"Lane {lane['lane_id']}: 无航向信息或未匹配")
         
         # 保存输出文件
         if args.output_file:
