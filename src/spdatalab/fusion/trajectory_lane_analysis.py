@@ -927,11 +927,11 @@ LIMIT {points_limit};
         
         # 检查几何列是否存在
         check_geometry_sql = text(f"""
-            SELECT column_name 
-            FROM information_schema.columns 
-            WHERE table_schema = 'public' 
-            AND table_name = '{table_name}'
-            AND column_name = 'geometry'
+            SELECT column_name, coord_dimension 
+            FROM geometry_columns 
+            WHERE f_table_schema = 'public' 
+            AND f_table_name = '{table_name}'
+            AND f_geometry_column = 'geometry'
         """)
         
         with self.engine.connect() as conn:
@@ -943,13 +943,18 @@ LIMIT {points_limit};
                 existing_column_names = {row[0] for row in existing_columns}
                 required_columns = {'analysis_id', 'input_trajectory_id', 'lane_id', 'lane_type'}
                 
-                # 检查几何列
-                geometry_columns = conn.execute(check_geometry_sql).fetchall()
-                has_geometry = len(geometry_columns) > 0
+                # 检查几何列和维度
+                geometry_info = conn.execute(check_geometry_sql).fetchall()
+                has_geometry = len(geometry_info) > 0
+                correct_dimension = False
+                if has_geometry:
+                    coord_dimension = geometry_info[0][1] if len(geometry_info[0]) > 1 else 2
+                    correct_dimension = coord_dimension >= 3  # 支持3D或更高维度
+                    logger.info(f"几何列维度: {coord_dimension}D, 需要3D: {correct_dimension}")
                 
-                if not required_columns.issubset(existing_column_names) or not has_geometry:
+                if not required_columns.issubset(existing_column_names) or not has_geometry or not correct_dimension:
                     logger.warning(f"表 {table_name} 结构不正确，缺少字段: {required_columns - existing_column_names}")
-                    logger.warning(f"几何列存在: {has_geometry}")
+                    logger.warning(f"几何列存在: {has_geometry}, 3D维度正确: {correct_dimension}")
                     logger.warning(f"删除并重新创建表: {table_name}")
                     
                     # 删除旧表
@@ -980,7 +985,7 @@ LIMIT {points_limit};
                 
                 # 添加几何列
                 add_geometry_sql = text(f"""
-                    SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRING', 2)
+                    SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRINGZ', 3)
                 """)
                 
                 try:
@@ -988,6 +993,25 @@ LIMIT {points_limit};
                     logger.info(f"✓ 添加几何列到表: {table_name}")
                 except Exception as e:
                     logger.warning(f"添加几何列失败: {e}")
+                    # 尝试使用通用LINESTRING类型和3D维度
+                    try:
+                        add_geometry_fallback_sql = text(f"""
+                            SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRING', 3)
+                        """)
+                        conn.execute(add_geometry_fallback_sql)
+                        logger.info(f"✓ 使用LINESTRING 3D几何列: {table_name}")
+                    except Exception as e2:
+                        logger.error(f"添加3D几何列失败: {e2}")
+                        # 最后尝试使用ALTER TABLE方式
+                        try:
+                            alter_geometry_sql = text(f"""
+                                ALTER TABLE {table_name} 
+                                ADD COLUMN geometry GEOMETRY(LINESTRINGZ, 4326)
+                            """)
+                            conn.execute(alter_geometry_sql)
+                            logger.info(f"✓ 使用ALTER TABLE添加LINESTRINGZ几何列: {table_name}")
+                        except Exception as e3:
+                            logger.error(f"所有几何列添加方法都失败: {e3}")
                 
                 # 创建索引
                 create_indexes_sql = text(f"""
@@ -1202,11 +1226,11 @@ LIMIT {points_limit};
         
         # 检查几何列是否存在
         check_geometry_sql = text(f"""
-            SELECT column_name 
-            FROM information_schema.columns 
-            WHERE table_schema = 'public' 
-            AND table_name = '{table_name}'
-            AND column_name = 'geometry'
+            SELECT column_name, coord_dimension 
+            FROM geometry_columns 
+            WHERE f_table_schema = 'public' 
+            AND f_table_name = '{table_name}'
+            AND f_geometry_column = 'geometry'
         """)
         
         with self.engine.connect() as conn:
@@ -1218,14 +1242,19 @@ LIMIT {points_limit};
                 existing_column_names = {row[0] for row in existing_columns}
                 required_columns = {'analysis_id', 'data_name', 'filter_reason', 'lanes_touched_count'}
                 
-                # 检查几何列
-                geometry_columns = conn.execute(check_geometry_sql).fetchall()
-                has_geometry = len(geometry_columns) > 0
+                # 检查几何列和维度
+                geometry_info = conn.execute(check_geometry_sql).fetchall()
+                has_geometry = len(geometry_info) > 0
+                correct_dimension = False
+                if has_geometry:
+                    coord_dimension = geometry_info[0][1] if len(geometry_info[0]) > 1 else 2
+                    correct_dimension = coord_dimension >= 3  # 支持3D或更高维度
+                    logger.info(f"轨迹表几何列维度: {coord_dimension}D, 需要3D: {correct_dimension}")
                 
-                if not required_columns.issubset(existing_column_names) or not has_geometry:
+                if not required_columns.issubset(existing_column_names) or not has_geometry or not correct_dimension:
                     logger.warning(f"表 {table_name} 结构不正确")
                     logger.warning(f"缺少字段: {required_columns - existing_column_names}")
-                    logger.warning(f"几何列存在: {has_geometry}")
+                    logger.warning(f"几何列存在: {has_geometry}, 3D维度正确: {correct_dimension}")
                     logger.warning(f"删除并重新创建表: {table_name}")
                     
                     # 删除旧表
@@ -1262,7 +1291,7 @@ LIMIT {points_limit};
                 
                 # 添加几何列
                 add_geometry_sql = text(f"""
-                    SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRING', 2)
+                    SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRINGZ', 3)
                 """)
                 
                 try:
@@ -1270,6 +1299,25 @@ LIMIT {points_limit};
                     logger.info(f"✓ 添加几何列到表: {table_name}")
                 except Exception as e:
                     logger.warning(f"添加几何列失败: {e}")
+                    # 尝试使用通用LINESTRING类型和3D维度
+                    try:
+                        add_geometry_fallback_sql = text(f"""
+                            SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRING', 3)
+                        """)
+                        conn.execute(add_geometry_fallback_sql)
+                        logger.info(f"✓ 使用LINESTRING 3D几何列: {table_name}")
+                    except Exception as e2:
+                        logger.error(f"添加3D几何列失败: {e2}")
+                        # 最后尝试使用ALTER TABLE方式
+                        try:
+                            alter_geometry_sql = text(f"""
+                                ALTER TABLE {table_name} 
+                                ADD COLUMN geometry GEOMETRY(LINESTRINGZ, 4326)
+                            """)
+                            conn.execute(alter_geometry_sql)
+                            logger.info(f"✓ 使用ALTER TABLE添加LINESTRINGZ几何列: {table_name}")
+                        except Exception as e3:
+                            logger.error(f"所有几何列添加方法都失败: {e3}")
                 
                 # 创建索引
                 create_indexes_sql = text(f"""
