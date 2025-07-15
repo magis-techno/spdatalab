@@ -117,14 +117,15 @@ def calculate_heading_degrees(start_point: Tuple[float, float], end_point: Tuple
     """计算两点之间的航向角度（度）
     
     Args:
-        start_point: 起始点 (longitude, latitude)
-        end_point: 结束点 (longitude, latitude)
+        start_point: 起始点 (longitude, latitude) 或 (longitude, latitude, z)
+        end_point: 结束点 (longitude, latitude) 或 (longitude, latitude, z)
         
     Returns:
         航向角度（0-360度，北方向为0度，顺时针增加）
     """
-    lon1, lat1 = start_point
-    lon2, lat2 = end_point
+    # 兼容处理2D和3D坐标，只取前两个值
+    lon1, lat1 = start_point[:2]
+    lon2, lat2 = end_point[:2]
     
     # 转换为弧度
     lat1_rad = np.radians(lat1)
@@ -158,9 +159,9 @@ def calculate_linestring_heading(line_geom: LineString, method: str = 'start_end
         return 0.0
     
     if method == 'start_end':
-        # 使用起点和终点计算航向
-        start_point = coords[0]
-        end_point = coords[-1]
+        # 使用起点和终点计算航向，兼容2D/3D坐标
+        start_point = coords[0][:2]  # 只取前两个坐标 (x, y)
+        end_point = coords[-1][:2]   # 只取前两个坐标 (x, y)
         return calculate_heading_degrees(start_point, end_point)
     
     elif method == 'weighted_average':
@@ -169,8 +170,9 @@ def calculate_linestring_heading(line_geom: LineString, method: str = 'start_end
         weights = []
         
         for i in range(len(coords) - 1):
-            start_point = coords[i]
-            end_point = coords[i + 1]
+            # 兼容2D/3D坐标，只取前两个值
+            start_point = coords[i][:2]
+            end_point = coords[i + 1][:2]
             
             # 计算分段长度（简化为欧几里得距离）
             length = ((end_point[0] - start_point[0])**2 + (end_point[1] - start_point[1])**2)**0.5
@@ -690,6 +692,32 @@ class TrajectoryLaneAnalyzer:
                             try:
                                 from shapely import wkt
                                 lane_geom = wkt.loads(row[4])  # geometry_wkt
+                                
+                                # 检查几何类型和坐标数量
+                                if lane_geom.geom_type != 'LineString':
+                                    logger.warning(f"Lane {lane_info['lane_id']}: 几何类型不是LineString ({lane_geom.geom_type})，跳过航向计算")
+                                    lane_info['trajectory_heading'] = segment_heading
+                                    lane_info['lane_heading'] = None
+                                    lane_info['heading_difference'] = None
+                                    lane_info['direction_matched'] = False
+                                    segment_lanes.append(lane_info)
+                                    continue
+                                
+                                # 检查坐标数量
+                                coords = list(lane_geom.coords)
+                                if len(coords) < 2:
+                                    logger.warning(f"Lane {lane_info['lane_id']}: 坐标点不足 ({len(coords)} < 2)，跳过航向计算")
+                                    lane_info['trajectory_heading'] = segment_heading
+                                    lane_info['lane_heading'] = None
+                                    lane_info['heading_difference'] = None
+                                    lane_info['direction_matched'] = False
+                                    segment_lanes.append(lane_info)
+                                    continue
+                                
+                                # 检查坐标维度
+                                coord_dims = len(coords[0]) if coords else 0
+                                logger.debug(f"Lane {lane_info['lane_id']}: 坐标维度 {coord_dims}D, 坐标数量 {len(coords)}")
+                                
                                 lane_heading = calculate_linestring_heading(lane_geom, heading_method)
                                 
                                 # 计算航向差值
@@ -711,7 +739,11 @@ class TrajectoryLaneAnalyzer:
                                     logger.debug(f"✗ Lane {lane_info['lane_id']}: 对向车道被过滤 (轨迹:{segment_heading:.1f}°, 车道:{lane_heading:.1f}°, 差值:{heading_diff:.1f}°)")
                                     
                             except Exception as e:
-                                logger.warning(f"车道 {lane_info['lane_id']} 航向计算失败: {e}，保留该车道")
+                                logger.warning(f"车道 {lane_info['lane_id']} 航向计算失败: {type(e).__name__}: {e}")
+                                logger.debug(f"  - 几何WKT长度: {len(row[4])} 字符")
+                                logger.debug(f"  - WKT前100字符: {row[4][:100]}...")
+                                
+                                # 保留该车道但标记为未匹配
                                 lane_info['trajectory_heading'] = segment_heading
                                 lane_info['lane_heading'] = None
                                 lane_info['heading_difference'] = None
