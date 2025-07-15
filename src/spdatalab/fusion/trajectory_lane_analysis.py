@@ -318,12 +318,32 @@ class TrajectoryLaneAnalyzer:
             base_name = f"integrated_{timestamp}"
             logger.info(f"基于当前时间生成表名，基础名: {base_name}")
         
-        # 生成简化的表名
+        # **重要修复**: 从analysis_id中提取trajectory_id确保表名唯一性
+        # analysis_id格式通常为: lane_analysis_trajectory_id_timestamp 或 batch_lane_timestamp_trajectory_id
+        trajectory_suffix = ""
+        if '_' in analysis_id:
+            parts = analysis_id.split('_')
+            # 尝试找到trajectory_id部分（通常是最后一个或倒数第二个部分）
+            for i, part in enumerate(parts):
+                if i > 0 and not part.isdigit() and len(part) > 8:  # 可能是trajectory_id
+                    # 使用trajectory_id的前8位作为后缀，避免表名过长
+                    trajectory_suffix = f"_{part[:8]}"
+                    break
+        
+        # 如果没有找到合适的trajectory_id，使用analysis_id的哈希值
+        if not trajectory_suffix:
+            import hashlib
+            hash_suffix = hashlib.md5(analysis_id.encode()).hexdigest()[:8]
+            trajectory_suffix = f"_{hash_suffix}"
+        
+        logger.info(f"轨迹后缀: {trajectory_suffix}")
+        
+        # 生成简化的表名（包含轨迹唯一标识）
         table_names = {
-            'lane_analysis_main_table': f"{base_name}_lanes",
-            'lane_analysis_summary_table': f"{base_name}_lanes_summary",
-            'lane_hits_table': f"{base_name}_lane_hits", 
-            'lane_trajectories_table': f"{base_name}_lane_trajectories"
+            'lane_analysis_main_table': f"{base_name}_lanes{trajectory_suffix}",
+            'lane_analysis_summary_table': f"{base_name}_lanes_summary{trajectory_suffix}",
+            'lane_hits_table': f"{base_name}_lane_hits{trajectory_suffix}", 
+            'lane_trajectories_table': f"{base_name}_lane_trajectories{trajectory_suffix}"
         }
         
         # 检查表名长度，PostgreSQL限制为63字符
@@ -1258,7 +1278,7 @@ LIMIT {points_limit};
         
         # 检查几何列是否存在
         check_geometry_sql = text(f"""
-            SELECT column_name, coord_dimension 
+            SELECT f_geometry_column, coord_dimension 
             FROM geometry_columns 
             WHERE f_table_schema = 'public' 
             AND f_table_name = '{table_name}'
@@ -1567,7 +1587,7 @@ LIMIT {points_limit};
         
         # 检查几何列是否存在
         check_geometry_sql = text(f"""
-            SELECT column_name, coord_dimension 
+            SELECT f_geometry_column, coord_dimension 
             FROM geometry_columns 
             WHERE f_table_schema = 'public' 
             AND f_table_name = '{table_name}'
