@@ -1056,15 +1056,25 @@ LIMIT {points_limit};
             return pd.DataFrame()
     
     def _extract_complete_trajectories(self, filtered_trajectories: Dict[str, Dict]) -> Dict[str, Dict]:
-        """提取符合条件的完整轨迹
+        """提取符合条件的完整轨迹（包含航向过滤）
         
         Args:
             filtered_trajectories: 符合条件的轨迹信息
             
         Returns:
-            完整轨迹数据
+            完整轨迹数据（已过滤对向轨迹）
         """
         complete_trajectories = {}
+        
+        # 方向匹配配置
+        enable_direction_matching = self.config.get('enable_direction_matching', True)
+        max_heading_difference = self.config.get('max_heading_difference', 45.0)
+        heading_method = self.config.get('heading_calculation_method', 'start_end')
+        min_trajectory_length = self.config.get('min_segment_length', 10.0)  # 最小轨迹长度（米）
+        
+        # 统计航向过滤结果
+        total_trajectories = len(filtered_trajectories)
+        direction_filtered_count = 0
         
         for data_name, trajectory_info in filtered_trajectories.items():
             try:
@@ -1088,6 +1098,63 @@ LIMIT {points_limit};
                 
                 trajectory_geom = LineString(coordinates)
                 
+                # 计算轨迹长度（米，近似）
+                trajectory_length_meters = trajectory_geom.length * 111320.0
+                
+                # 如果启用方向匹配，检查轨迹航向
+                if enable_direction_matching and trajectory_length_meters >= min_trajectory_length:
+                    try:
+                        # 计算轨迹航向
+                        trajectory_heading = calculate_linestring_heading(trajectory_geom, heading_method)
+                        
+                        # 获取轨迹涉及的车道信息
+                        lanes_touched = trajectory_info.get('lanes_touched', [])
+                        
+                        # 检查是否有至少一个车道与轨迹同向
+                        is_same_direction_found = False
+                        lane_heading_info = []
+                        
+                        if hasattr(self, 'nearby_lanes_found') and self.nearby_lanes_found:
+                            for lane_info in self.nearby_lanes_found:
+                                lane_id = lane_info['lane_id']
+                                if lane_id in lanes_touched:
+                                    lane_heading = lane_info.get('lane_heading')
+                                    if lane_heading is not None:
+                                        heading_diff = calculate_heading_difference(trajectory_heading, lane_heading)
+                                        
+                                        if is_same_direction(trajectory_heading, lane_heading, max_heading_difference):
+                                            is_same_direction_found = True
+                                            lane_heading_info.append({
+                                                'lane_id': lane_id,
+                                                'lane_heading': lane_heading,
+                                                'heading_difference': heading_diff,
+                                                'same_direction': True
+                                            })
+                                            logger.debug(f"✓ 轨迹 {data_name} 与 Lane {lane_id} 同向 (轨迹:{trajectory_heading:.1f}°, 车道:{lane_heading:.1f}°, 差值:{heading_diff:.1f}°)")
+                                        else:
+                                            lane_heading_info.append({
+                                                'lane_id': lane_id,
+                                                'lane_heading': lane_heading,
+                                                'heading_difference': heading_diff,
+                                                'same_direction': False
+                                            })
+                                            logger.debug(f"✗ 轨迹 {data_name} 与 Lane {lane_id} 对向 (轨迹:{trajectory_heading:.1f}°, 车道:{lane_heading:.1f}°, 差值:{heading_diff:.1f}°)")
+                        
+                        # 如果没有找到同向车道，过滤掉该轨迹
+                        if not is_same_direction_found:
+                            direction_filtered_count += 1
+                            logger.debug(f"✗ 轨迹 {data_name}: 对向轨迹被过滤 (轨迹航向:{trajectory_heading:.1f}°)")
+                            continue
+                            
+                    except Exception as e:
+                        logger.warning(f"轨迹 {data_name} 航向计算失败: {e}，保留该轨迹")
+                        trajectory_heading = None
+                        lane_heading_info = []
+                else:
+                    # 未启用方向匹配或轨迹太短，不进行过滤
+                    trajectory_heading = None
+                    lane_heading_info = []
+                
                 # 计算统计信息
                 speed_data = points_df['twist_linear'].dropna()
                 avp_data = points_df['avp_flag'].dropna()
@@ -1102,12 +1169,18 @@ LIMIT {points_limit};
                     'total_points': len(points_df),
                     'valid_coordinates': len(coordinates),
                     'trajectory_length': trajectory_geom.length,
+                    'trajectory_length_meters': trajectory_length_meters,
                     
                     # 从过滤信息继承
                     'lanes_touched': trajectory_info['lanes_touched'],
                     'total_lanes': trajectory_info['total_lanes'],
                     'hit_points_count': trajectory_info['total_points'],
                     'filter_reason': trajectory_info['filter_reason'],
+                    
+                    # 航向信息
+                    'trajectory_heading': trajectory_heading,
+                    'lane_heading_info': lane_heading_info,
+                    'direction_matched': trajectory_heading is not None,
                     
                     # 速度统计
                     'avg_speed': round(float(speed_data.mean()), 2) if len(speed_data) > 0 else 0.0,
@@ -1119,11 +1192,18 @@ LIMIT {points_limit};
                 }
                 
                 complete_trajectories[data_name] = complete_trajectory
-                logger.debug(f"提取完整轨迹: {data_name}, 点数: {len(coordinates)}")
+                logger.debug(f"提取完整轨迹: {data_name}, 点数: {len(coordinates)}, 航向: {trajectory_heading}")
                 
             except Exception as e:
                 logger.error(f"提取完整轨迹失败: {data_name}, 错误: {e}")
                 continue
+        
+        # 输出航向过滤统计
+        if enable_direction_matching:
+            logger.info(f"轨迹航向过滤统计:")
+            logger.info(f"  - 输入轨迹: {total_trajectories} 个")
+            logger.info(f"  - 对向轨迹过滤: {direction_filtered_count} 个")
+            logger.info(f"  - 最终同向轨迹: {len(complete_trajectories)} 个")
         
         logger.info(f"提取完整轨迹完成: {len(complete_trajectories)} 个")
         return complete_trajectories
@@ -1304,7 +1384,7 @@ LIMIT {points_limit};
             VALUES (
                 :analysis_id, :input_trajectory_id, :road_analysis_id, :lane_id, :lane_type,
                 :road_id, :distance_to_trajectory, :segment_id, :is_candidate_lane,
-                ST_SetSRID(ST_GeomFromText(:geometry_wkt), 4326),
+                ST_Force3D(ST_SetSRID(ST_GeomFromText(:geometry_wkt), 4326)),
                 :trajectory_heading, :lane_heading, :heading_difference, :direction_matched
             )
         """)
@@ -1482,7 +1562,7 @@ LIMIT {points_limit};
             FROM information_schema.columns 
             WHERE table_schema = 'public' 
             AND table_name = '{table_name}'
-            AND column_name IN ('analysis_id', 'data_name', 'filter_reason', 'lanes_touched_count')
+            AND column_name IN ('analysis_id', 'data_name', 'filter_reason', 'lanes_touched_count', 'trajectory_heading', 'direction_matched')
         """)
         
         # 检查几何列是否存在
@@ -1501,7 +1581,7 @@ LIMIT {points_limit};
                 # 检查列是否存在
                 existing_columns = conn.execute(check_columns_sql).fetchall()
                 existing_column_names = {row[0] for row in existing_columns}
-                required_columns = {'analysis_id', 'data_name', 'filter_reason', 'lanes_touched_count'}
+                required_columns = {'analysis_id', 'data_name', 'filter_reason', 'lanes_touched_count', 'trajectory_heading', 'direction_matched'}
                 
                 # 检查几何列和维度
                 geometry_info = conn.execute(check_geometry_sql).fetchall()
@@ -1537,6 +1617,9 @@ LIMIT {points_limit};
                         total_points INTEGER DEFAULT 0,
                         valid_coordinates INTEGER DEFAULT 0,
                         trajectory_length FLOAT,
+                        trajectory_length_meters FLOAT,
+                        trajectory_heading FLOAT,
+                        direction_matched BOOLEAN,
                         avg_speed FLOAT,
                         max_speed FLOAT,
                         min_speed FLOAT,
@@ -1609,13 +1692,15 @@ LIMIT {points_limit};
         insert_sql = text(f"""
             INSERT INTO {table_name} 
             (analysis_id, data_name, filter_reason, lanes_touched_count, hit_points_count,
-             total_points, valid_coordinates, trajectory_length, avg_speed, max_speed,
-             min_speed, avp_ratio, start_time, end_time, duration, geometry)
+             total_points, valid_coordinates, trajectory_length, trajectory_length_meters,
+             trajectory_heading, direction_matched, avg_speed, max_speed, min_speed, avp_ratio,
+             start_time, end_time, duration, geometry)
             VALUES (
                 :analysis_id, :data_name, :filter_reason, :lanes_touched_count, :hit_points_count,
-                :total_points, :valid_coordinates, :trajectory_length, :avg_speed, :max_speed,
-                :min_speed, :avp_ratio, :start_time, :end_time, :duration,
-                ST_SetSRID(ST_GeomFromText(:geometry_wkt), 4326)
+                :total_points, :valid_coordinates, :trajectory_length, :trajectory_length_meters,
+                :trajectory_heading, :direction_matched, :avg_speed, :max_speed, :min_speed,
+                :avp_ratio, :start_time, :end_time, :duration,
+                ST_Force3D(ST_SetSRID(ST_GeomFromText(:geometry_wkt), 4326))
             )
         """)
         
@@ -1634,6 +1719,9 @@ LIMIT {points_limit};
                     'total_points': trajectory.get('total_points', 0),
                     'valid_coordinates': trajectory.get('valid_coordinates', 0),
                     'trajectory_length': trajectory.get('trajectory_length', 0.0),
+                    'trajectory_length_meters': trajectory.get('trajectory_length_meters', 0.0),
+                    'trajectory_heading': trajectory.get('trajectory_heading', 0.0),
+                    'direction_matched': trajectory.get('direction_matched', False),
                     'avg_speed': trajectory.get('avg_speed', 0.0),
                     'max_speed': trajectory.get('max_speed', 0.0),
                     'min_speed': trajectory.get('min_speed', 0.0),
@@ -2223,11 +2311,14 @@ def main():
                 logger.info(f"  - 命中点数: {trajectory['hit_points_count']} 个")
                 logger.info(f"  - 总点数: {trajectory['total_points']} 个")
                 logger.info(f"  - 轨迹长度: {trajectory['trajectory_length']:.6f} 度")
+                logger.info(f"  - 轨迹长度(米): {trajectory.get('trajectory_length_meters', 0):.1f} 米")
                 logger.info(f"  - 平均速度: {trajectory['avg_speed']} km/h")
+                logger.info(f"  - 轨迹航向: {trajectory.get('trajectory_heading', 'N/A')}")
+                logger.info(f"  - 方向匹配: {'是' if trajectory.get('direction_matched', False) else '否'}")
             
             # 输出方向匹配详情
             if config['enable_direction_matching']:
-                logger.info("\n=== 方向匹配详情 ===")
+                logger.info("\n=== 车道方向匹配详情 ===")
                 candidate_lanes = analysis_result.get('candidate_lanes', [])
                 for lane in candidate_lanes:
                     if lane.get('direction_matched', False):
@@ -2238,6 +2329,18 @@ def main():
                         logger.info(f"  - 距离: {lane.get('distance', 0):.6f}")
                     else:
                         logger.info(f"Lane {lane['lane_id']}: 无航向信息或未匹配")
+                
+                logger.info("\n=== 轨迹方向匹配详情 ===")
+                for data_name, trajectory in analysis_result['complete_trajectories'].items():
+                    if trajectory.get('direction_matched', False):
+                        logger.info(f"轨迹 {data_name}: 方向匹配成功")
+                        logger.info(f"  - 轨迹航向: {trajectory.get('trajectory_heading', 'N/A'):.1f}°")
+                        lane_heading_info = trajectory.get('lane_heading_info', [])
+                        for info in lane_heading_info:
+                            if info.get('same_direction', False):
+                                logger.info(f"  - 与Lane {info['lane_id']}同向: 差值{info['heading_difference']:.1f}°")
+                    else:
+                        logger.info(f"轨迹 {data_name}: 无方向匹配信息")
         
         # 保存输出文件
         if args.output_file:
