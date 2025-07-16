@@ -178,15 +178,34 @@ class HighPerformancePolygonTrajectoryQuery:
         return result_df, stats
     
     def _batch_query_strategy(self, polygons: List[Dict]) -> pd.DataFrame:
-        """批量查询策略 - 适合≤50个polygon"""
-        logger.info(f"使用批量查询策略处理 {len(polygons)} 个polygon")
+        """批量查询策略 - 适合≤50个polygon（性能优化版）"""
+        logger.info(f"🔍 使用批量查询策略处理 {len(polygons)} 个polygon")
+        logger.info(f"⚡ 每polygon点数限制: {self.config.limit_per_polygon:,}")
+        logger.info(f"⏱️ 查询超时设置: {self.config.query_timeout}秒")
         
-        # 构建UNION ALL查询
+        # 性能优化：检查polygon数量
+        if len(polygons) > 10:
+            logger.info(f"⚠️ polygon数量较多({len(polygons)})，切换到分块策略以提升稳定性")
+            return self._chunked_query_strategy(polygons)
+        
+        # 构建优化的查询
         subqueries = []
-        for polygon in polygons:
+        total_estimated_points = len(polygons) * self.config.limit_per_polygon
+        
+        logger.info(f"📈 预估最大数据量: {total_estimated_points:,} 个点")
+        
+        # 检查数据量是否过大
+        if total_estimated_points > 50000:  # 5万个点阈值
+            logger.warning(f"⚠️ 预估数据量较大({total_estimated_points:,}个点)")
+            logger.warning("建议：降低 limit_per_polygon 或使用更小的polygon")
+        
+        for i, polygon in enumerate(polygons, 1):
             polygon_id = polygon['id']
             polygon_wkt = polygon['geometry'].wkt
             
+            logger.info(f"🔸 构建查询 {i}/{len(polygons)}: {polygon_id}")
+            
+            # 优化查询：添加更多WHERE条件
             subquery = f"""
                 (SELECT 
                     dataset_name,
@@ -200,15 +219,18 @@ class HighPerformancePolygonTrajectoryQuery:
                     '{polygon_id}' as polygon_id
                 FROM {self.config.point_table}
                 WHERE point_lla IS NOT NULL
+                AND timestamp IS NOT NULL
+                AND dataset_name IS NOT NULL
                 AND ST_Intersects(
                     point_lla,
                     ST_SetSRID(ST_GeomFromText('{polygon_wkt}'), 4326)
                 )
+                ORDER BY timestamp
                 LIMIT {self.config.limit_per_polygon})
             """
             subqueries.append(subquery)
         
-        # 执行批量查询 - 在最外层添加ORDER BY
+        # 执行批量查询
         union_query = " UNION ALL ".join(subqueries)
         batch_sql = text(f"""
             SELECT * FROM (
@@ -217,14 +239,32 @@ class HighPerformancePolygonTrajectoryQuery:
             ORDER BY dataset_name, timestamp
         """)
         
-        logger.debug(f"🔍 执行批量SQL查询（前300字符）: {str(batch_sql)[:300]}...")
+        logger.info("🚀 开始执行批量SQL查询...")
+        logger.debug(f"🔍 SQL查询（前300字符）: {str(batch_sql)[:300]}...")
+        
+        start_time = time.time()
         
         try:
             with self.engine.connect() as conn:
+                # 设置查询超时
+                conn.execute(text(f"SET statement_timeout = '{self.config.query_timeout}s'"))
+                
+                logger.info("📊 正在执行查询，请耐心等待...")
                 result_df = pd.read_sql(batch_sql, conn)
+                
+                query_time = time.time() - start_time
+                logger.info(f"✅ 查询完成！用时: {query_time:.2f}s, 获得 {len(result_df):,} 个数据点")
+                
         except Exception as sql_error:
-            logger.error(f"❌ SQL执行失败: {sql_error}")
-            logger.debug(f"🔍 完整SQL查询: {str(batch_sql)}")
+            query_time = time.time() - start_time
+            logger.error(f"❌ SQL执行失败 (用时: {query_time:.2f}s): {sql_error}")
+            
+            if "timeout" in str(sql_error).lower() or "cancelled" in str(sql_error).lower():
+                logger.error(f"⏰ 查询超时或被取消！建议：")
+                logger.error(f"   1. 减少 limit_per_polygon (当前: {self.config.limit_per_polygon})")
+                logger.error(f"   2. 增加 query_timeout (当前: {self.config.query_timeout}s)")
+                logger.error(f"   3. 缩小polygon范围或减少polygon数量")
+            
             raise
         
         return result_df
@@ -740,6 +780,8 @@ def main():
                        help='每个polygon的轨迹点限制数量 (默认: 10000)')
     parser.add_argument('--batch-insert', type=int, default=1000,
                        help='批量插入数据库的批次大小 (默认: 1000)')
+    parser.add_argument('--timeout', type=int, default=300,
+                       help='查询超时时间（秒）(默认: 300)')
     
     # 功能选项
     parser.add_argument('--min-points', type=int, default=2,
