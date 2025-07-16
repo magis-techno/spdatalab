@@ -178,14 +178,28 @@ class HighPerformancePolygonTrajectoryQuery:
         return result_df, stats
     
     def _batch_query_strategy(self, polygons: List[Dict]) -> pd.DataFrame:
-        """批量查询策略 - 适合≤50个polygon（性能优化版）"""
+        """批量查询策略 - 使用hive_cursor连接（性能优化版）"""
         logger.info(f"🔍 使用批量查询策略处理 {len(polygons)} 个polygon")
         logger.info(f"⚡ 每polygon点数限制: {self.config.limit_per_polygon:,}")
-        logger.info(f"⏱️ 查询超时设置: {self.config.query_timeout}秒")
+        
+        # 先测试数据库连接
+        logger.info("🔗 测试数据库连接...")
+        try:
+            with hive_cursor("dataset_gy1") as cur:
+                cur.execute("SELECT 1 as test_connection")
+                result = cur.fetchone()
+                if result and result[0] == 1:
+                    logger.info("✅ 数据库连接正常")
+                else:
+                    logger.error("❌ 数据库连接测试失败")
+                    return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"❌ 数据库连接失败: {e}")
+            return pd.DataFrame()
         
         # 性能优化：检查polygon数量
         if len(polygons) > 10:
-            logger.info(f"⚠️ polygon数量较多({len(polygons)})，切换到分块策略以提升稳定性")
+            logger.info(f"⚠️ polygon数量较多({len(polygons)})，切换到分块策略")
             return self._chunked_query_strategy(polygons)
         
         # 构建优化的查询
@@ -194,18 +208,13 @@ class HighPerformancePolygonTrajectoryQuery:
         
         logger.info(f"📈 预估最大数据量: {total_estimated_points:,} 个点")
         
-        # 检查数据量是否过大
-        if total_estimated_points > 50000:  # 5万个点阈值
-            logger.warning(f"⚠️ 预估数据量较大({total_estimated_points:,}个点)")
-            logger.warning("建议：降低 limit_per_polygon 或使用更小的polygon")
-        
         for i, polygon in enumerate(polygons, 1):
             polygon_id = polygon['id']
             polygon_wkt = polygon['geometry'].wkt
             
             logger.info(f"🔸 构建查询 {i}/{len(polygons)}: {polygon_id}")
             
-            # 优化查询：添加更多WHERE条件
+            # 去掉ORDER BY，简化子查询
             subquery = f"""
                 (SELECT 
                     dataset_name,
@@ -225,35 +234,50 @@ class HighPerformancePolygonTrajectoryQuery:
                     point_lla,
                     ST_SetSRID(ST_GeomFromText('{polygon_wkt}'), 4326)
                 )
-                ORDER BY timestamp
                 LIMIT {self.config.limit_per_polygon})
             """
             subqueries.append(subquery)
         
-        # 执行批量查询
+        # 构建完整的UNION查询
         union_query = " UNION ALL ".join(subqueries)
-        batch_sql = text(f"""
+        batch_sql = f"""
             SELECT * FROM (
                 {union_query}
             ) AS combined_results
             ORDER BY dataset_name, timestamp
-        """)
+        """
         
-        logger.info("🚀 开始执行批量SQL查询...")
-        logger.debug(f"🔍 SQL查询（前300字符）: {str(batch_sql)[:300]}...")
+        logger.info("🚀 开始执行批量SQL查询（使用hive_cursor）...")
+        logger.debug(f"🔍 SQL查询（前300字符）: {batch_sql[:300]}...")
         
         start_time = time.time()
         
         try:
-            with self.engine.connect() as conn:
-                # 设置查询超时
-                conn.execute(text(f"SET statement_timeout = '{self.config.query_timeout}s'"))
-                
+            with hive_cursor("dataset_gy1") as cur:
                 logger.info("📊 正在执行查询，请耐心等待...")
-                result_df = pd.read_sql(batch_sql, conn)
+                
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug("=== 执行批量查询SQL (dataset_gy1) ===")
+                    logger.debug(batch_sql)
+                
+                # 执行查询
+                cur.execute(batch_sql)
+                rows = cur.fetchall()
                 
                 query_time = time.time() - start_time
-                logger.info(f"✅ 查询完成！用时: {query_time:.2f}s, 获得 {len(result_df):,} 个数据点")
+                logger.info(f"✅ 查询完成！用时: {query_time:.2f}s, 获得 {len(rows):,} 个数据点")
+                
+                if not rows:
+                    logger.warning("⚠️ 未找到相交的轨迹点")
+                    return pd.DataFrame()
+                
+                # 构建DataFrame
+                columns = ['dataset_name', 'timestamp', 'point_lla', 'twist_linear', 
+                          'avp_flag', 'workstage', 'longitude', 'latitude', 'polygon_id']
+                result_df = pd.DataFrame(rows, columns=columns)
+                
+                logger.info(f"📊 构建DataFrame完成: {len(result_df)} 行数据")
+                return result_df
                 
         except Exception as sql_error:
             query_time = time.time() - start_time
@@ -262,12 +286,12 @@ class HighPerformancePolygonTrajectoryQuery:
             if "timeout" in str(sql_error).lower() or "cancelled" in str(sql_error).lower():
                 logger.error(f"⏰ 查询超时或被取消！建议：")
                 logger.error(f"   1. 减少 limit_per_polygon (当前: {self.config.limit_per_polygon})")
-                logger.error(f"   2. 增加 query_timeout (当前: {self.config.query_timeout}s)")
-                logger.error(f"   3. 缩小polygon范围或减少polygon数量")
+                logger.error(f"   2. 缩小polygon范围或减少polygon数量")
+                logger.error(f"   3. 使用分块查询策略")
             
             raise
         
-        return result_df
+        return pd.DataFrame()
     
     def _chunked_query_strategy(self, polygons: List[Dict]) -> pd.DataFrame:
         """分块查询策略 - 适合大规模polygon"""
