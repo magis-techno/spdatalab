@@ -19,7 +19,7 @@ import sys
 import time
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Optional, Tuple, Union
+from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 import warnings
 
@@ -28,9 +28,6 @@ import pandas as pd
 from shapely.geometry import shape, LineString, Point
 from sqlalchemy import text, create_engine
 from spdatalab.common.io_hive import hive_cursor
-
-# 导入必要的模块
-from spdatalab.dataset.dataset_manager import DatasetManager
 
 # 抑制警告
 warnings.filterwarnings('ignore', category=UserWarning)
@@ -198,40 +195,6 @@ class HighPerformancePolygonTrajectoryQuery:
         
         return result_df, stats
     
-    def _batch_query_scene_ids(self, data_names: List[str]) -> Dict[str, str]:
-        """批量查询data_name到scene_id的映射
-        
-        Args:
-            data_names: data_name列表
-            
-        Returns:
-            data_name到scene_id的映射字典
-        """
-        logger.info(f"🔍 开始批量查询 {len(data_names)} 个data_name的scene_id...")
-        
-        dataset_manager = DatasetManager()
-        data_name_to_scene_id = {}
-        
-        successful_queries = 0
-        failed_queries = 0
-        
-        for i, data_name in enumerate(data_names, 1):
-            try:
-                scene_id = dataset_manager.query_defect_data(data_name)
-                if scene_id:
-                    data_name_to_scene_id[data_name] = scene_id
-                    successful_queries += 1
-                    logger.debug(f"✅ 查询成功 [{i}/{len(data_names)}]: {data_name} -> {scene_id}")
-                else:
-                    failed_queries += 1
-                    logger.debug(f"❌ 查询失败 [{i}/{len(data_names)}]: {data_name} -> None")
-            except Exception as e:
-                failed_queries += 1
-                logger.warning(f"⚠️ 查询异常 [{i}/{len(data_names)}]: {data_name} -> {str(e)}")
-        
-        logger.info(f"📊 scene_id查询完成: 成功 {successful_queries} 个, 失败 {failed_queries} 个")
-        return data_name_to_scene_id
-
     def _fetch_complete_trajectories(self, intersection_result_df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict]:
         """获取完整轨迹数据（基于相交结果中的data_name）
         
@@ -329,6 +292,51 @@ class HighPerformancePolygonTrajectoryQuery:
         except Exception as e:
             logger.error(f"获取完整轨迹失败: {str(e)}")
             return pd.DataFrame(), complete_stats
+
+    def _fetch_scene_ids_from_data_names(self, data_names: List[str]) -> Dict[str, Dict]:
+        """从data_name批量查询对应的scene_id、event_id和event_name
+        
+        Args:
+            data_names: 数据名称列表
+            
+        Returns:
+            data_name到详细信息的映射字典，包含scene_id、event_id、event_name
+        """
+        if not data_names:
+            return {}
+        
+        try:
+            # 构建批量查询SQL，包含event_id和event_name
+            data_names_tuple = tuple(data_names)
+            scene_info_sql = """
+                SELECT origin_name AS data_name, id AS scene_id, event_id, event_name
+                FROM transform.ods_t_data_fragment_datalake 
+                WHERE origin_name IN %(data_names)s
+            """
+            
+            logger.debug(f"🔍 查询 {len(data_names)} 个data_name对应的scene_id、event_id、event_name...")
+            
+            with hive_cursor("dataset_gy1") as cur:
+                cur.execute(scene_info_sql, {"data_names": data_names_tuple})
+                rows = cur.fetchall()
+                
+                # 构建映射字典
+                data_name_to_info = {}
+                for row in rows:
+                    data_name, scene_id, event_id, event_name = row
+                    if data_name:
+                        data_name_to_info[data_name] = {
+                            'scene_id': scene_id or '',
+                            'event_id': event_id if event_id is not None else None,
+                            'event_name': event_name or ''
+                        }
+                
+                logger.debug(f"✅ 获取到 {len(data_name_to_info)} 个data_name的详细信息映射")
+                return data_name_to_info
+                
+        except Exception as e:
+            logger.error(f"查询scene信息失败: {str(e)}")
+            return {}
 
     def _batch_query_strategy(self, polygons: List[Dict]) -> pd.DataFrame:
         """批量查询策略 - 使用hive_cursor连接（性能优化版）"""
@@ -480,7 +488,8 @@ class HighPerformancePolygonTrajectoryQuery:
             'total_datasets': 0,
             'valid_trajectories': 0,
             'skipped_trajectories': 0,
-            'build_time': 0
+            'build_time': 0,
+            'scene_id_lookup_time': 0
         }
         
         if points_df.empty:
@@ -490,9 +499,16 @@ class HighPerformancePolygonTrajectoryQuery:
         trajectories = []
         
         try:
-            # 获取所有唯一的dataset_name进行scene_id查询
+            # 获取所有data_name对应的scene_id、event_id、event_name
             unique_data_names = points_df['dataset_name'].unique().tolist()
-            data_name_to_scene_id = self._batch_query_scene_ids(unique_data_names)
+            logger.info(f"🔍 查询 {len(unique_data_names)} 个data_name对应的scene_id、event_id、event_name...")
+            
+            scene_id_lookup_start = time.time()
+            data_name_to_info = self._fetch_scene_ids_from_data_names(unique_data_names)
+            build_stats['scene_id_lookup_time'] = time.time() - scene_id_lookup_start
+            
+            logger.info(f"✅ 获取到 {len(data_name_to_info)} 个scene信息映射, "
+                       f"用时: {build_stats['scene_id_lookup_time']:.2f}s")
             
             # 按dataset_name分组处理
             grouped = points_df.groupby('dataset_name')
@@ -516,13 +532,18 @@ class HighPerformancePolygonTrajectoryQuery:
                 # 构建LineString几何
                 trajectory_geom = LineString(coordinates)
                 
-                # 获取scene_id（如果查询到的话）
-                scene_id = data_name_to_scene_id.get(dataset_name, None)
+                # 获取scene信息（如果找不到就留空）
+                scene_info = data_name_to_info.get(dataset_name, {})
+                scene_id = scene_info.get('scene_id', '')
+                event_id = scene_info.get('event_id', None)
+                event_name = scene_info.get('event_name', '')
                 
                 # 基础统计信息
                 stats = {
                     'dataset_name': dataset_name,
                     'scene_id': scene_id,  # 添加scene_id字段
+                    'event_id': event_id,  # 添加event_id字段
+                    'event_name': event_name,  # 添加event_name字段
                     'start_time': int(group['timestamp'].min()),
                     'end_time': int(group['timestamp'].max()),
                     'duration': int(group['timestamp'].max() - group['timestamp'].min()),
@@ -553,8 +574,10 @@ class HighPerformancePolygonTrajectoryQuery:
                 trajectories.append(stats)
                 build_stats['valid_trajectories'] += 1
                 
-                logger.debug(f"构建轨迹: {dataset_name}, 点数: {stats['point_count']}, "
-                           f"时长: {stats['duration']}s, polygon数: {len(stats['polygon_ids'])}")
+                logger.debug(f"构建轨迹: {dataset_name} (scene_id: {scene_id or 'N/A'}, "
+                           f"event_id: {event_id or 'N/A'}, event_name: {event_name or 'N/A'}), "
+                           f"点数: {stats['point_count']}, 时长: {stats['duration']}s, "
+                           f"polygon数: {len(stats['polygon_ids'])}")
             
             build_stats['build_time'] = time.time() - start_time
             
@@ -685,6 +708,8 @@ class HighPerformancePolygonTrajectoryQuery:
                     id serial PRIMARY KEY,
                     dataset_name text NOT NULL,
                     scene_id text,
+                    event_id integer,
+                    event_name text,
                     start_time bigint,
                     end_time bigint,
                     duration bigint,
@@ -709,6 +734,8 @@ class HighPerformancePolygonTrajectoryQuery:
                 CREATE INDEX idx_{table_name}_geometry ON {table_name} USING GIST(geometry);
                 CREATE INDEX idx_{table_name}_dataset_name ON {table_name}(dataset_name);
                 CREATE INDEX idx_{table_name}_scene_id ON {table_name}(scene_id);
+                CREATE INDEX idx_{table_name}_event_id ON {table_name}(event_id);
+                CREATE INDEX idx_{table_name}_event_name ON {table_name}(event_name);
                 CREATE INDEX idx_{table_name}_start_time ON {table_name}(start_time);
                 CREATE INDEX idx_{table_name}_point_count ON {table_name}(point_count);
                 CREATE INDEX idx_{table_name}_polygon_ids ON {table_name} USING GIN(polygon_ids);

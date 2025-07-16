@@ -254,11 +254,6 @@ def show_usage_examples():
     
     print("\n5. 启用详细日志:")
     print("   python -m spdatalab.dataset.polygon_trajectory_query --input polygons.geojson --table my_trajectories --verbose")
-    
-    print("\n6. 查看轨迹数据中的scene_id字段:")
-    print("   # 新功能：自动为每条轨迹查询并添加scene_id字段")
-    print("   # 轨迹数据现在包含: dataset_name, scene_id, start_time, end_time, geometry等")
-    print("   # scene_id通过dataset_manager.query_defect_data()方法获取")
 
 if __name__ == "__main__":
     # 显示使用示例
