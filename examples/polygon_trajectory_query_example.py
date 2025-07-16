@@ -254,68 +254,6 @@ def show_usage_examples():
     
     print("\n5. 启用详细日志:")
     print("   python -m spdatalab.dataset.polygon_trajectory_query --input polygons.geojson --table my_trajectories --verbose")
-    
-    print("\n6. 启用完整轨迹获取（包含scene_id）:")
-    print("   # 完整轨迹功能默认启用，会自动获取data_name对应的完整轨迹和scene_id")
-    print("   python -m spdatalab.dataset.polygon_trajectory_query --input polygons.geojson --table my_trajectories")
-
-def run_scene_id_example():
-    """展示scene_id功能的示例"""
-    logger.info("=== scene_id功能示例 ===")
-    
-    try:
-        # 创建示例polygon
-        sample_geojson = create_sample_geojson()
-        
-        # 配置（启用完整轨迹获取以获得scene_id）
-        config = PolygonTrajectoryConfig(
-            limit_per_polygon=100,
-            fetch_complete_trajectories=True,  # 启用完整轨迹获取
-            batch_insert_size=500
-        )
-        
-        query_processor = HighPerformancePolygonTrajectoryQuery(config)
-        
-        logger.info("🚀 执行包含scene_id的轨迹查询...")
-        
-        # 执行完整工作流
-        trajectories, stats = query_processor.process_complete_workflow(
-            polygon_geojson=sample_geojson,
-            output_table=None,  # 不保存到数据库，仅演示
-            output_geojson="scene_id_trajectories_example.geojson"
-        )
-        
-        logger.info(f"📊 scene_id功能查询结果:")
-        logger.info(f"   - 轨迹数量: {len(trajectories)}")
-        logger.info(f"   - 总点数: {stats.get('total_points', 0)}")
-        logger.info(f"   - 查询策略: {stats.get('strategy', 'unknown')}")
-        
-        # 检查scene_id映射情况
-        if stats.get('complete_trajectories_fetched'):
-            scene_mapped = stats.get('scene_id_mapped_points', 0)
-            logger.info(f"✅ scene_id映射: {scene_mapped} 个点")
-        
-        # 检查轨迹中的scene_id
-        if trajectories:
-            first_traj = trajectories[0]
-            if 'scene_id' in first_traj:
-                logger.info(f"✅ 轨迹包含scene_id: {first_traj['scene_id']}")
-            else:
-                logger.info("ℹ️ 轨迹中未包含scene_id（可能data_name无对应scene_id）")
-            
-            # 显示轨迹字段
-            logger.info(f"📋 轨迹字段: {list(first_traj.keys())}")
-        
-        # 清理文件
-        Path(sample_geojson).unlink(missing_ok=True)
-        Path("scene_id_trajectories_example.geojson").unlink(missing_ok=True)
-        
-        logger.info("✅ scene_id功能示例完成")
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ scene_id示例失败: {str(e)}")
-        return False
 
 if __name__ == "__main__":
     # 显示使用示例
@@ -326,12 +264,11 @@ if __name__ == "__main__":
     print("1. 基础示例 - 使用默认配置")
     print("2. 高性能示例 - 展示优化配置")
     print("3. 直接API示例 - 分步调用API")
-    print("4. scene_id功能示例 - 展示scene_id和完整轨迹功能")
-    print("5. 运行所有示例")
+    print("4. 运行所有示例")
     print("0. 跳过示例运行")
     
     try:
-        choice = input("\n请输入选择 (0-5): ").strip()
+        choice = input("\n请输入选择 (0-4): ").strip()
         
         if choice == '0':
             print("跳过示例运行")
@@ -348,10 +285,6 @@ if __name__ == "__main__":
             success = run_direct_api_example()
             print("✅ 直接API示例运行成功！" if success else "❌ 直接API示例运行失败！")
         elif choice == '4':
-            logger.info("运行scene_id功能示例...")
-            success = run_scene_id_example()
-            print("✅ scene_id功能示例运行成功！" if success else "❌ scene_id功能示例运行失败！")
-        elif choice == '5':
             logger.info("运行所有示例...")
             results = []
             
@@ -363,9 +296,6 @@ if __name__ == "__main__":
             
             logger.info("\n" + "="*50)
             results.append(("直接API示例", run_direct_api_example()))
-            
-            logger.info("\n" + "="*50)
-            results.append(("scene_id功能示例", run_scene_id_example()))
             
             logger.info("\n" + "="*50)
             logger.info("🎯 所有示例运行完成！")
