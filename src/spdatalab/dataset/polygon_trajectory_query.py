@@ -491,7 +491,7 @@ class HighPerformancePolygonTrajectoryQuery:
             return 0, save_stats
     
     def _create_trajectory_table(self, table_name: str) -> bool:
-        """创建轨迹结果表（优化版）"""
+        """创建轨迹结果表（事务修复版）"""
         try:
             # 检查表是否已存在
             check_table_sql = text(f"""
@@ -509,56 +509,77 @@ class HighPerformancePolygonTrajectoryQuery:
                 if table_exists:
                     logger.info(f"表 {table_name} 已存在，跳过创建")
                     return True
-                
-                logger.info(f"创建高性能轨迹表: {table_name}")
-                
-                # 创建表结构（优化列类型）
-                create_sql = text(f"""
-                    CREATE TABLE {table_name} (
-                        id serial PRIMARY KEY,
-                        dataset_name text NOT NULL,
-                        start_time bigint,
-                        end_time bigint,
-                        duration bigint,
-                        point_count integer,
-                        avg_speed numeric(8,2),
-                        max_speed numeric(8,2),
-                        min_speed numeric(8,2),
-                        std_speed numeric(8,2),
-                        avp_ratio numeric(5,3),
-                        polygon_ids text[],
-                        created_at timestamp DEFAULT CURRENT_TIMESTAMP
-                    );
-                """)
-                
-                # 添加几何列
-                add_geom_sql = text(f"""
-                    SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRING', 2);
-                """)
-                
-                # 创建优化索引
-                index_sql = text(f"""
-                    CREATE INDEX idx_{table_name}_geometry ON {table_name} USING GIST(geometry);
-                    CREATE INDEX idx_{table_name}_dataset_name ON {table_name}(dataset_name);
-                    CREATE INDEX idx_{table_name}_start_time ON {table_name}(start_time);
-                    CREATE INDEX idx_{table_name}_point_count ON {table_name}(point_count);
-                    CREATE INDEX idx_{table_name}_polygon_ids ON {table_name} USING GIN(polygon_ids);
-                    CREATE INDEX idx_{table_name}_created_at ON {table_name}(created_at);
-                """)
-                
-                # 执行SQL（事务包装）
-                trans = conn.begin()
-                try:
+            
+            logger.info(f"创建高性能轨迹表: {table_name}")
+            
+            # 创建表结构（分步执行避免事务冲突）
+            create_sql = text(f"""
+                CREATE TABLE {table_name} (
+                    id serial PRIMARY KEY,
+                    dataset_name text NOT NULL,
+                    start_time bigint,
+                    end_time bigint,
+                    duration bigint,
+                    point_count integer,
+                    avg_speed numeric(8,2),
+                    max_speed numeric(8,2),
+                    min_speed numeric(8,2),
+                    std_speed numeric(8,2),
+                    avp_ratio numeric(5,3),
+                    polygon_ids text[],
+                    created_at timestamp DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            
+            # 添加几何列
+            add_geom_sql = text(f"""
+                SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRING', 2);
+            """)
+            
+            # 创建优化索引
+            index_sql = text(f"""
+                CREATE INDEX idx_{table_name}_geometry ON {table_name} USING GIST(geometry);
+                CREATE INDEX idx_{table_name}_dataset_name ON {table_name}(dataset_name);
+                CREATE INDEX idx_{table_name}_start_time ON {table_name}(start_time);
+                CREATE INDEX idx_{table_name}_point_count ON {table_name}(point_count);
+                CREATE INDEX idx_{table_name}_polygon_ids ON {table_name} USING GIN(polygon_ids);
+                CREATE INDEX idx_{table_name}_created_at ON {table_name}(created_at);
+            """)
+            
+            # 分步执行SQL（避免事务冲突）
+            try:
+                # 步骤1：创建表
+                with self.engine.connect() as conn:
                     conn.execute(create_sql)
+                    conn.commit()
+                logger.debug("✅ 表结构创建完成")
+                
+                # 步骤2：添加几何列
+                with self.engine.connect() as conn:
                     conn.execute(add_geom_sql)
+                    conn.commit()
+                logger.debug("✅ 几何列添加完成")
+                
+                # 步骤3：创建索引
+                with self.engine.connect() as conn:
                     conn.execute(index_sql)
-                    trans.commit()
-                    
-                    logger.info(f"✅ 轨迹表创建成功: {table_name}")
-                    return True
-                except Exception as e:
-                    trans.rollback()
-                    raise e
+                    conn.commit()
+                logger.debug("✅ 索引创建完成")
+                
+                logger.info(f"✅ 轨迹表创建成功: {table_name}")
+                return True
+                
+            except Exception as e:
+                logger.error(f"SQL执行失败: {str(e)}")
+                # 尝试清理部分创建的表
+                try:
+                    with self.engine.connect() as conn:
+                        conn.execute(text(f"DROP TABLE IF EXISTS {table_name}"))
+                        conn.commit()
+                    logger.info(f"已清理部分创建的表: {table_name}")
+                except:
+                    pass
+                raise e
                 
         except Exception as e:
             logger.error(f"创建轨迹表失败: {table_name}, 错误: {str(e)}")
