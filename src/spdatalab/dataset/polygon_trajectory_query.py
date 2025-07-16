@@ -609,85 +609,67 @@ def create_trajectory_table(eng, table_name: str) -> bool:
             
             logger.info(f"✅ 成功加载 {len(polygons)} 个polygon")
             
-            # 阶段2: 批量查询轨迹点
-            logger.info(f"🔍 阶段2: 批量查询轨迹点")
+            # 阶段2: 高效查询轨迹点
+            logger.info(f"🔍 阶段2: 执行高性能轨迹点查询")
             points_df, query_stats = self.query_intersecting_trajectory_points(polygons)
             complete_stats['query_stats'] = query_stats
             
             if points_df.empty:
-                logger.warning("⚠️ 未找到相交的轨迹点")
-                complete_stats['warning'] = "No intersecting points found"
+                logger.warning("⚠️ 未查询到任何轨迹点")
+                complete_stats['warning'] = "No trajectory points found"
                 return complete_stats
             
-            # 阶段3: 智能构建轨迹
-            logger.info(f"🔧 阶段3: 智能构建轨迹线")
+            logger.info(f"✅ 查询到 {len(points_df)} 个轨迹点")
+            
+            # 阶段3: 构建轨迹
+            logger.info(f"🔧 阶段3: 构建轨迹线和统计信息")
             trajectories, build_stats = self.build_trajectories_from_points(points_df)
             complete_stats['build_stats'] = build_stats
             
             if not trajectories:
-                logger.warning("⚠️ 未构建到任何有效轨迹")
-                complete_stats['warning'] = "No valid trajectories built"
+                logger.warning("⚠️ 未构建到任何轨迹")
+                complete_stats['warning'] = "No trajectories built"
                 return complete_stats
             
-            # 阶段4: 保存到数据库（如果指定）
+            logger.info(f"✅ 构建了 {len(trajectories)} 条轨迹")
+            
+            # 阶段4: 保存到数据库（可选）
             if output_table:
-                logger.info(f"💾 阶段4: 批量保存到数据库表: {output_table}")
-                saved_count, save_stats = self.save_trajectories_to_table(trajectories, output_table)
+                logger.info(f"💾 阶段4: 保存到数据库表: {output_table}")
+                inserted_count, save_stats = self.save_trajectories_to_table(trajectories, output_table)
                 complete_stats['save_stats'] = save_stats
-            else:
-                logger.info("⏭️ 阶段4: 跳过数据库保存")
-                complete_stats['save_stats'] = {'saved_records': 0, 'skipped': True}
+                logger.info(f"✅ 成功保存 {inserted_count} 条轨迹到数据库")
             
-            # 阶段5: 导出到GeoJSON（如果指定）
+            # 阶段5: 导出到GeoJSON（可选）
             if output_geojson:
-                logger.info(f"📤 阶段5: 导出到GeoJSON文件: {output_geojson}")
-                exported = export_trajectories_to_geojson(trajectories, output_geojson)
-                complete_stats['exported_to_geojson'] = exported
-            else:
-                logger.info("⏭️ 阶段5: 跳过GeoJSON导出")
-                complete_stats['exported_to_geojson'] = False
+                logger.info(f"📄 阶段5: 导出到GeoJSON文件: {output_geojson}")
+                if export_trajectories_to_geojson(trajectories, output_geojson):
+                    complete_stats['geojson_exported'] = True
+                    logger.info(f"✅ 成功导出轨迹到GeoJSON文件")
+                else:
+                    complete_stats['geojson_export_failed'] = True
+                    logger.warning("⚠️ GeoJSON导出失败")
             
-            # 计算总体统计
+            # 最终统计
+            complete_stats['total_trajectories'] = len(trajectories)
+            complete_stats['workflow_duration'] = time.time() - workflow_start
             complete_stats['end_time'] = datetime.now()
-            complete_stats['total_duration'] = time.time() - workflow_start
             complete_stats['success'] = True
             
-            # 输出最终统计
             logger.info("=" * 60)
-            logger.info("🎉 高性能Polygon轨迹查询工作流完成！")
-            logger.info("=" * 60)
-            logger.info(f"📊 处理统计:")
-            logger.info(f"   • Polygon数量: {complete_stats['polygon_count']}")
-            logger.info(f"   • 查询策略: {query_stats['strategy']}")
-            logger.info(f"   • 轨迹点总数: {query_stats['total_points']:,}")
-            logger.info(f"   • 数据集数量: {query_stats['unique_datasets']}")
-            logger.info(f"   • 有效轨迹数: {build_stats['valid_trajectories']}")
-            logger.info(f"   • 跳过轨迹数: {build_stats['skipped_trajectories']}")
-            
-            if output_table:
-                logger.info(f"   • 数据库保存: {complete_stats['save_stats']['saved_records']} 条记录")
-            
-            if output_geojson:
-                status = "成功" if complete_stats['exported_to_geojson'] else "失败"
-                logger.info(f"   • GeoJSON导出: {status}")
-            
-            logger.info(f"⏱️ 性能数据:")
-            logger.info(f"   • 查询用时: {query_stats['query_time']:.2f}s")
-            logger.info(f"   • 构建用时: {build_stats['build_time']:.2f}s")
-            
-            if output_table:
-                logger.info(f"   • 保存用时: {complete_stats['save_stats']['save_time']:.2f}s")
-            
-            logger.info(f"   • 总用时: {complete_stats['total_duration']:.2f}s")
-            logger.info(f"   • 处理速度: {query_stats['total_points']/complete_stats['total_duration']:.1f} 点/秒")
+            logger.info("🎉 高性能Polygon轨迹查询工作流完成!")
+            logger.info(f"⏱️ 总耗时: {complete_stats['workflow_duration']:.2f}s")
+            logger.info(f"📊 输出轨迹: {complete_stats['total_trajectories']} 条")
             logger.info("=" * 60)
             
             return complete_stats
             
         except Exception as e:
-            logger.error(f"❌ 工作流执行失败: {str(e)}")
             complete_stats['error'] = str(e)
+            complete_stats['workflow_duration'] = time.time() - workflow_start
+            complete_stats['end_time'] = datetime.now()
             complete_stats['success'] = False
+            logger.error(f"❌ 工作流执行失败: {str(e)}")
             return complete_stats
 
 def export_trajectories_to_geojson(trajectories: List[Dict], output_file: str) -> bool:
