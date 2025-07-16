@@ -227,9 +227,33 @@ class HighPerformancePolygonTrajectoryQuery:
         logger.info(f"📋 需要获取完整轨迹的数据集: {len(unique_data_names)} 个")
         
         try:
-            # 构建查询所有完整轨迹的SQL
-            data_names_tuple = tuple(unique_data_names)
+            # 步骤1: 查询data_name到scene_id的映射（参考bbox.py方法）
+            logger.info("🔍 查询data_name到scene_id的映射...")
             
+            data_names_tuple = tuple(unique_data_names)
+            scene_mapping_sql = """
+                SELECT id AS scene_id, origin_name AS data_name
+                FROM transform.ods_t_data_fragment_datalake 
+                WHERE origin_name IN %(data_names)s
+            """
+            
+            scene_id_mapping = {}
+            with hive_cursor("dataset_gy1") as cur:
+                cur.execute(scene_mapping_sql, {"data_names": data_names_tuple})
+                cols = [d[0] for d in cur.description]
+                mapping_rows = cur.fetchall()
+                
+                if mapping_rows:
+                    mapping_df = pd.DataFrame(mapping_rows, columns=cols)
+                    # 创建data_name到scene_id的映射字典
+                    for _, row in mapping_df.iterrows():
+                        scene_id_mapping[row['data_name']] = row['scene_id']
+                    
+                    logger.info(f"✅ 获取到 {len(scene_id_mapping)} 个data_name到scene_id的映射")
+                else:
+                    logger.warning("⚠️ 未找到data_name到scene_id的映射")
+            
+            # 步骤2: 构建查询所有完整轨迹的SQL（包含scene_id信息）
             complete_trajectory_sql = f"""
                 SELECT 
                     dataset_name,
@@ -276,9 +300,20 @@ class HighPerformancePolygonTrajectoryQuery:
                         lambda x: dataset_polygon_mapping.get(x, ['unknown'])[0]
                     )
                     
+                    # 为完整轨迹添加scene_id信息（基于data_name映射）
+                    complete_df['scene_id'] = complete_df['dataset_name'].map(
+                        lambda x: scene_id_mapping.get(x, 'unknown')
+                    )
+                    
+                    # 统计scene_id映射情况
+                    mapped_scene_ids = complete_df['scene_id'].ne('unknown').sum()
+                    total_points = len(complete_df)
+                    logger.info(f"🔗 scene_id映射完成: {mapped_scene_ids}/{total_points} 个点匹配到scene_id")
+                    
                     complete_stats['complete_datasets'] = complete_df['dataset_name'].nunique()
                     complete_stats['complete_points'] = len(complete_df)
                     complete_stats['complete_query_time'] = time.time() - start_time
+                    complete_stats['scene_id_mapped_points'] = mapped_scene_ids
                     
                     logger.info(f"✅ 完整轨迹查询成功: {len(complete_df)} 个点, "
                                f"{complete_df['dataset_name'].nunique()} 个数据集, "
@@ -638,6 +673,7 @@ class HighPerformancePolygonTrajectoryQuery:
             create_sql = text(f"""
                 CREATE TABLE {table_name} (
                     id serial PRIMARY KEY,
+                    scene_id text,
                     dataset_name text NOT NULL,
                     start_time bigint,
                     end_time bigint,
@@ -661,6 +697,7 @@ class HighPerformancePolygonTrajectoryQuery:
             # 创建优化索引
             index_sql = text(f"""
                 CREATE INDEX idx_{table_name}_geometry ON {table_name} USING GIST(geometry);
+                CREATE INDEX idx_{table_name}_scene_id ON {table_name}(scene_id);
                 CREATE INDEX idx_{table_name}_dataset_name ON {table_name}(dataset_name);
                 CREATE INDEX idx_{table_name}_start_time ON {table_name}(start_time);
                 CREATE INDEX idx_{table_name}_point_count ON {table_name}(point_count);
