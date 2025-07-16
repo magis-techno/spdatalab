@@ -293,50 +293,33 @@ class HighPerformancePolygonTrajectoryQuery:
             logger.error(f"获取完整轨迹失败: {str(e)}")
             return pd.DataFrame(), complete_stats
 
-    def _fetch_scene_ids_from_data_names(self, data_names: List[str]) -> Dict[str, Dict]:
-        """从data_name批量查询对应的scene_id、event_id和event_name
+    def _fetch_scene_ids_from_data_names(self, data_names: List[str]) -> pd.DataFrame:
+        """根据data_name批量查询对应的scene_id（反向查询）
         
         Args:
             data_names: 数据名称列表
             
         Returns:
-            data_name到详细信息的映射字典，包含scene_id、event_id、event_name
+            包含data_name和scene_id映射的DataFrame
         """
         if not data_names:
-            return {}
+            return pd.DataFrame()
         
         try:
-            # 构建批量查询SQL，包含event_id和event_name
-            data_names_tuple = tuple(data_names)
-            scene_info_sql = """
-                SELECT origin_name AS data_name, id AS scene_id, event_id, event_name
-                FROM transform.ods_t_data_fragment_datalake 
-                WHERE origin_name IN %(data_names)s
-            """
-            
-            logger.debug(f"🔍 查询 {len(data_names)} 个data_name对应的scene_id、event_id、event_name...")
+            sql = ("SELECT origin_name AS data_name, id AS scene_id "
+                   "FROM transform.ods_t_data_fragment_datalake WHERE origin_name IN %(tok)s")
             
             with hive_cursor("dataset_gy1") as cur:
-                cur.execute(scene_info_sql, {"data_names": data_names_tuple})
-                rows = cur.fetchall()
+                cur.execute(sql, {"tok": tuple(data_names)})
+                cols = [d[0] for d in cur.description]
+                result_df = pd.DataFrame(cur.fetchall(), columns=cols)
                 
-                # 构建映射字典
-                data_name_to_info = {}
-                for row in rows:
-                    data_name, scene_id, event_id, event_name = row
-                    if data_name:
-                        data_name_to_info[data_name] = {
-                            'scene_id': scene_id or '',
-                            'event_id': event_id if event_id is not None else None,
-                            'event_name': event_name or ''
-                        }
-                
-                logger.debug(f"✅ 获取到 {len(data_name_to_info)} 个data_name的详细信息映射")
-                return data_name_to_info
-                
+            logger.debug(f"查询到 {len(result_df)} 个data_name对应的scene_id")
+            return result_df
+            
         except Exception as e:
-            logger.error(f"查询scene信息失败: {str(e)}")
-            return {}
+            logger.error(f"查询data_name到scene_id映射失败: {str(e)}")
+            return pd.DataFrame()
 
     def _batch_query_strategy(self, polygons: List[Dict]) -> pd.DataFrame:
         """批量查询策略 - 使用hive_cursor连接（性能优化版）"""
@@ -488,8 +471,7 @@ class HighPerformancePolygonTrajectoryQuery:
             'total_datasets': 0,
             'valid_trajectories': 0,
             'skipped_trajectories': 0,
-            'build_time': 0,
-            'scene_id_lookup_time': 0
+            'build_time': 0
         }
         
         if points_df.empty:
@@ -499,22 +481,28 @@ class HighPerformancePolygonTrajectoryQuery:
         trajectories = []
         
         try:
-            # 获取所有data_name对应的scene_id、event_id、event_name
-            unique_data_names = points_df['dataset_name'].unique().tolist()
-            logger.info(f"🔍 查询 {len(unique_data_names)} 个data_name对应的scene_id、event_id、event_name...")
+            # 获取所有涉及的data_name，并查询对应的scene_id
+            unique_data_names = points_df['dataset_name'].unique()
+            logger.info(f"查询 {len(unique_data_names)} 个data_name对应的scene_id...")
             
-            scene_id_lookup_start = time.time()
-            data_name_to_info = self._fetch_scene_ids_from_data_names(unique_data_names)
-            build_stats['scene_id_lookup_time'] = time.time() - scene_id_lookup_start
+            # 查询scene_id映射
+            scene_id_mappings = self._fetch_scene_ids_from_data_names(unique_data_names.tolist())
             
-            logger.info(f"✅ 获取到 {len(data_name_to_info)} 个scene信息映射, "
-                       f"用时: {build_stats['scene_id_lookup_time']:.2f}s")
+            # 创建data_name到scene_id的映射字典
+            data_name_to_scene_id = {}
+            if not scene_id_mappings.empty:
+                data_name_to_scene_id = dict(zip(scene_id_mappings['data_name'], scene_id_mappings['scene_id']))
+                logger.info(f"成功查询到 {len(data_name_to_scene_id)} 个scene_id映射")
+            else:
+                logger.warning("未查询到任何scene_id映射，scene_id字段将为空")
             
             # 按dataset_name分组处理
             grouped = points_df.groupby('dataset_name')
             build_stats['total_datasets'] = len(grouped)
             
             logger.info(f"开始构建轨迹: {build_stats['total_datasets']} 个数据集, {build_stats['total_points']} 个点")
+            
+            event_id_counter = 1  # 自动递增的event_id
             
             for dataset_name, group in grouped:
                 # 按时间排序
@@ -532,18 +520,12 @@ class HighPerformancePolygonTrajectoryQuery:
                 # 构建LineString几何
                 trajectory_geom = LineString(coordinates)
                 
-                # 获取scene信息（如果找不到就留空）
-                scene_info = data_name_to_info.get(dataset_name, {})
-                scene_id = scene_info.get('scene_id', '')
-                event_id = scene_info.get('event_id', None)
-                event_name = scene_info.get('event_name', '')
-                
                 # 基础统计信息
                 stats = {
                     'dataset_name': dataset_name,
-                    'scene_id': scene_id,  # 添加scene_id字段
-                    'event_id': event_id,  # 添加event_id字段
-                    'event_name': event_name,  # 添加event_name字段
+                    'scene_id': data_name_to_scene_id.get(dataset_name, ''),  # 从映射中获取scene_id，找不到就留空
+                    'event_id': event_id_counter,  # 自动递增的event_id
+                    'event_name': f"trajectory_{event_id_counter}_{dataset_name}",  # 基于event_id和dataset_name的事件名
                     'start_time': int(group['timestamp'].min()),
                     'end_time': int(group['timestamp'].max()),
                     'duration': int(group['timestamp'].max() - group['timestamp'].min()),
@@ -551,6 +533,8 @@ class HighPerformancePolygonTrajectoryQuery:
                     'geometry': trajectory_geom,
                     'polygon_ids': list(group['polygon_id'].unique())
                 }
+                
+                event_id_counter += 1  # 递增event_id计数器
                 
                 # 速度统计（可配置）
                 if self.config.enable_speed_stats and 'twist_linear' in group.columns:
@@ -574,10 +558,8 @@ class HighPerformancePolygonTrajectoryQuery:
                 trajectories.append(stats)
                 build_stats['valid_trajectories'] += 1
                 
-                logger.debug(f"构建轨迹: {dataset_name} (scene_id: {scene_id or 'N/A'}, "
-                           f"event_id: {event_id or 'N/A'}, event_name: {event_name or 'N/A'}), "
-                           f"点数: {stats['point_count']}, 时长: {stats['duration']}s, "
-                           f"polygon数: {len(stats['polygon_ids'])}")
+                logger.debug(f"构建轨迹: {dataset_name}, 点数: {stats['point_count']}, "
+                           f"时长: {stats['duration']}s, polygon数: {len(stats['polygon_ids'])}")
             
             build_stats['build_time'] = time.time() - start_time
             
@@ -709,7 +691,7 @@ class HighPerformancePolygonTrajectoryQuery:
                     dataset_name text NOT NULL,
                     scene_id text,
                     event_id integer,
-                    event_name text,
+                    event_name varchar(765),
                     start_time bigint,
                     end_time bigint,
                     duration bigint,
