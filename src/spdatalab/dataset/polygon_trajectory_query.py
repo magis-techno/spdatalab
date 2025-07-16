@@ -188,7 +188,7 @@ class HighPerformancePolygonTrajectoryQuery:
             polygon_wkt = polygon['geometry'].wkt
             
             subquery = f"""
-                SELECT 
+                (SELECT 
                     dataset_name,
                     timestamp,
                     point_lla,
@@ -204,16 +204,28 @@ class HighPerformancePolygonTrajectoryQuery:
                     point_lla,
                     ST_SetSRID(ST_GeomFromText('{polygon_wkt}'), 4326)
                 )
-                ORDER BY dataset_name, timestamp
-                LIMIT {self.config.limit_per_polygon}
+                LIMIT {self.config.limit_per_polygon})
             """
             subqueries.append(subquery)
         
-        # 执行批量查询
-        batch_sql = text(" UNION ALL ".join(subqueries))
+        # 执行批量查询 - 在最外层添加ORDER BY
+        union_query = " UNION ALL ".join(subqueries)
+        batch_sql = text(f"""
+            SELECT * FROM (
+                {union_query}
+            ) AS combined_results
+            ORDER BY dataset_name, timestamp
+        """)
         
-        with self.engine.connect() as conn:
-            result_df = pd.read_sql(batch_sql, conn)
+        logger.debug(f"🔍 执行批量SQL查询（前300字符）: {str(batch_sql)[:300]}...")
+        
+        try:
+            with self.engine.connect() as conn:
+                result_df = pd.read_sql(batch_sql, conn)
+        except Exception as sql_error:
+            logger.error(f"❌ SQL执行失败: {sql_error}")
+            logger.debug(f"🔍 完整SQL查询: {str(batch_sql)}")
+            raise
         
         return result_df
     
