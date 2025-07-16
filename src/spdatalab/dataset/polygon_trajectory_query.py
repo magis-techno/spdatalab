@@ -560,47 +560,6 @@ def create_trajectory_table(eng, table_name: str) -> bool:
             logger.error(f"创建轨迹表失败: {table_name}, 错误: {str(e)}")
             return False
 
-def export_trajectories_to_geojson(trajectories: List[Dict], output_file: str) -> bool:
-    """导出轨迹数据到GeoJSON文件
-    
-    Args:
-        trajectories: 轨迹数据列表
-        output_file: 输出文件路径
-        
-    Returns:
-        导出是否成功
-    """
-    if not trajectories:
-        logger.warning("没有轨迹数据需要导出")
-        return False
-    
-    try:
-        # 准备GeoDataFrame数据
-        gdf_data = []
-        geometries = []
-        
-        for traj in trajectories:
-            # 分离几何和属性数据
-            row = {k: v for k, v in traj.items() if k != 'geometry'}
-            # 转换polygon_ids为字符串
-            if 'polygon_ids' in row:
-                row['polygon_ids'] = ','.join(row['polygon_ids'])
-            gdf_data.append(row)
-            geometries.append(traj['geometry'])
-        
-        # 创建GeoDataFrame
-        gdf = gpd.GeoDataFrame(gdf_data, geometry=geometries, crs=4326)
-        
-        # 导出到GeoJSON
-        gdf.to_file(output_file, driver='GeoJSON', encoding='utf-8')
-        
-        logger.info(f"成功导出 {len(gdf)} 条轨迹到文件: {output_file}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"导出轨迹数据失败: {str(e)}")
-        return False
-
     def process_complete_workflow(
         self,
         geojson_file: str,
@@ -730,6 +689,47 @@ def export_trajectories_to_geojson(trajectories: List[Dict], output_file: str) -
             complete_stats['error'] = str(e)
             complete_stats['success'] = False
             return complete_stats
+
+def export_trajectories_to_geojson(trajectories: List[Dict], output_file: str) -> bool:
+    """导出轨迹数据到GeoJSON文件
+    
+    Args:
+        trajectories: 轨迹数据列表
+        output_file: 输出文件路径
+        
+    Returns:
+        导出是否成功
+    """
+    if not trajectories:
+        logger.warning("没有轨迹数据需要导出")
+        return False
+    
+    try:
+        # 准备GeoDataFrame数据
+        gdf_data = []
+        geometries = []
+        
+        for traj in trajectories:
+            # 分离几何和属性数据
+            row = {k: v for k, v in traj.items() if k != 'geometry'}
+            # 转换polygon_ids为字符串
+            if 'polygon_ids' in row:
+                row['polygon_ids'] = ','.join(row['polygon_ids'])
+            gdf_data.append(row)
+            geometries.append(traj['geometry'])
+        
+        # 创建GeoDataFrame
+        gdf = gpd.GeoDataFrame(gdf_data, geometry=geometries, crs=4326)
+        
+        # 导出到GeoJSON
+        gdf.to_file(output_file, driver='GeoJSON', encoding='utf-8')
+        
+        logger.info(f"成功导出 {len(gdf)} 条轨迹到文件: {output_file}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"导出轨迹数据失败: {str(e)}")
+        return False
 
 # 便捷函数（保持向后兼容）
 def process_polygon_trajectory_query(
