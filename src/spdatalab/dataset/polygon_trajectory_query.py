@@ -1,0 +1,894 @@
+"""高性能Polygon轨迹查询模块
+
+基于spatial_join_production.py的优化策略：
+- 小规模（≤50个polygon）：批量查询（UNION ALL）- 最快
+- 大规模（>50个polygon）：分块批量查询 - 最稳定
+- 高效数据库写入和轨迹构建
+
+功能：
+1. 读取GeoJSON文件中的polygon（支持多个）
+2. 高效批量查询与polygon相交的轨迹点
+3. 智能分组构建轨迹线和统计信息
+4. 批量写入数据库，优化性能
+"""
+
+import argparse
+import json
+import logging
+import sys
+import time
+from pathlib import Path
+from datetime import datetime
+from typing import List, Dict, Optional, Tuple
+from dataclasses import dataclass
+import warnings
+
+import geopandas as gpd
+import pandas as pd
+from shapely.geometry import shape, LineString, Point
+from sqlalchemy import text, create_engine
+from spdatalab.common.io_hive import hive_cursor
+
+# 抑制警告
+warnings.filterwarnings('ignore', category=UserWarning)
+
+# 数据库配置
+LOCAL_DSN = "postgresql+psycopg://postgres:postgres@local_pg:5432/postgres"
+POINT_TABLE = "public.ddi_data_points"
+
+# 日志配置
+logger = logging.getLogger(__name__)
+
+@dataclass
+class PolygonTrajectoryConfig:
+    """Polygon轨迹查询配置"""
+    local_dsn: str = LOCAL_DSN
+    point_table: str = POINT_TABLE
+    
+    # 批量查询优化配置
+    batch_threshold: int = 50          # 批量查询vs分块查询的阈值
+    chunk_size: int = 20               # 分块大小
+    limit_per_polygon: int = 10000     # 每个polygon的轨迹点限制
+    batch_insert_size: int = 1000      # 批量插入大小
+    
+    # 查询优化配置
+    enable_spatial_index: bool = True  # 启用空间索引优化
+    query_timeout: int = 300           # 查询超时时间（秒）
+    
+    # 轨迹构建配置
+    min_points_per_trajectory: int = 2 # 构建轨迹的最小点数
+    enable_speed_stats: bool = True    # 启用速度统计
+    enable_avp_stats: bool = True      # 启用AVP统计
+
+def load_polygons_from_geojson(file_path: str) -> List[Dict]:
+    """从GeoJSON文件加载polygon
+    
+    Args:
+        file_path: GeoJSON文件路径
+        
+    Returns:
+        polygon列表，每个包含geometry和properties
+    """
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            geojson_data = json.load(f)
+        
+        polygons = []
+        
+        if geojson_data.get('type') == 'FeatureCollection':
+            # FeatureCollection格式
+            for i, feature in enumerate(geojson_data.get('features', [])):
+                if feature.get('geometry', {}).get('type') in ['Polygon', 'MultiPolygon']:
+                    polygon_info = {
+                        'id': feature.get('properties', {}).get('id', f'polygon_{i}'),
+                        'geometry': shape(feature['geometry']),
+                        'properties': feature.get('properties', {})
+                    }
+                    polygons.append(polygon_info)
+        elif geojson_data.get('type') in ['Polygon', 'MultiPolygon']:
+            # 单个几何对象
+            polygon_info = {
+                'id': 'polygon_0',
+                'geometry': shape(geojson_data),
+                'properties': {}
+            }
+            polygons.append(polygon_info)
+        else:
+            logger.error(f"不支持的GeoJSON格式: {geojson_data.get('type')}")
+            return []
+        
+        logger.info(f"成功加载 {len(polygons)} 个polygon")
+        for polygon in polygons:
+            logger.debug(f"Polygon {polygon['id']}: {polygon['geometry'].geom_type}")
+        
+        return polygons
+        
+    except Exception as e:
+        logger.error(f"加载GeoJSON文件失败: {file_path}, 错误: {str(e)}")
+        raise
+
+class HighPerformancePolygonTrajectoryQuery:
+    """高性能Polygon轨迹查询器"""
+    
+    def __init__(self, config: Optional[PolygonTrajectoryConfig] = None):
+        self.config = config or PolygonTrajectoryConfig()
+        self.engine = create_engine(
+            self.config.local_dsn, 
+            future=True,
+            connect_args={"client_encoding": "utf8"}
+        )
+    
+    def query_intersecting_trajectory_points(self, polygons: List[Dict]) -> Tuple[pd.DataFrame, Dict]:
+        """高效批量查询与polygon相交的轨迹点
+        
+        Args:
+            polygons: polygon列表
+            
+        Returns:
+            (轨迹点DataFrame, 性能统计)
+        """
+        start_time = time.time()
+        
+        # 性能统计
+        stats = {
+            'polygon_count': len(polygons),
+            'strategy': None,
+            'chunk_size': None,
+            'query_time': 0,
+            'total_points': 0,
+            'unique_datasets': 0,
+            'points_per_polygon': 0
+        }
+        
+        if not polygons:
+            logger.warning("没有polygon数据")
+            return pd.DataFrame(), stats
+        
+        logger.info(f"开始批量查询 {len(polygons)} 个polygon的轨迹点")
+        
+        # 选择最优查询策略
+        if len(polygons) <= self.config.batch_threshold:
+            stats['strategy'] = 'batch_query'
+            result_df = self._batch_query_strategy(polygons)
+        else:
+            stats['strategy'] = 'chunked_query'
+            stats['chunk_size'] = self.config.chunk_size
+            result_df = self._chunked_query_strategy(polygons)
+        
+        # 计算统计信息
+        stats['query_time'] = time.time() - start_time
+        stats['total_points'] = len(result_df)
+        
+        if not result_df.empty:
+            stats['unique_datasets'] = result_df['dataset_name'].nunique()
+            stats['points_per_polygon'] = stats['total_points'] / stats['polygon_count']
+            
+            logger.info(f"✅ 查询完成: {stats['total_points']} 个轨迹点, "
+                       f"{stats['unique_datasets']} 个数据集, "
+                       f"策略: {stats['strategy']}, "
+                       f"用时: {stats['query_time']:.2f}s")
+        else:
+            logger.warning("未找到任何相交的轨迹点")
+        
+        return result_df, stats
+    
+    def _batch_query_strategy(self, polygons: List[Dict]) -> pd.DataFrame:
+        """批量查询策略 - 适合≤50个polygon"""
+        logger.info(f"使用批量查询策略处理 {len(polygons)} 个polygon")
+        
+        # 构建UNION ALL查询
+        subqueries = []
+        for polygon in polygons:
+            polygon_id = polygon['id']
+            polygon_wkt = polygon['geometry'].wkt
+            
+            subquery = f"""
+                SELECT 
+                    dataset_name,
+                    timestamp,
+                    point_lla,
+                    twist_linear,
+                    avp_flag,
+                    workstage,
+                    ST_X(point_lla) as longitude,
+                    ST_Y(point_lla) as latitude,
+                    '{polygon_id}' as polygon_id
+                FROM {self.config.point_table}
+                WHERE point_lla IS NOT NULL
+                AND ST_Intersects(
+                    point_lla,
+                    ST_SetSRID(ST_GeomFromText('{polygon_wkt}'), 4326)
+                )
+                ORDER BY dataset_name, timestamp
+                LIMIT {self.config.limit_per_polygon}
+            """
+            subqueries.append(subquery)
+        
+        # 执行批量查询
+        batch_sql = text(" UNION ALL ".join(subqueries))
+        
+        with self.engine.connect() as conn:
+            result_df = pd.read_sql(batch_sql, conn)
+        
+        return result_df
+    
+    def _chunked_query_strategy(self, polygons: List[Dict]) -> pd.DataFrame:
+        """分块查询策略 - 适合大规模polygon"""
+        logger.info(f"使用分块查询策略，{len(polygons)} 个polygon分为 {len(polygons)//self.config.chunk_size + 1} 块")
+        
+        all_results = []
+        
+        for i in range(0, len(polygons), self.config.chunk_size):
+            chunk = polygons[i:i+self.config.chunk_size]
+            chunk_num = i // self.config.chunk_size + 1
+            logger.info(f"处理第 {chunk_num} 块: {len(chunk)} 个polygon")
+            
+            # 使用批量策略处理当前块
+            chunk_result = self._batch_query_strategy(chunk)
+            if not chunk_result.empty:
+                all_results.append(chunk_result)
+        
+        return pd.concat(all_results, ignore_index=True) if all_results else pd.DataFrame()
+
+    def build_trajectories_from_points(self, points_df: pd.DataFrame) -> Tuple[List[Dict], Dict]:
+        """智能构建轨迹线和统计信息
+        
+        Args:
+            points_df: 轨迹点DataFrame
+            
+        Returns:
+            (轨迹列表, 构建统计)
+        """
+        start_time = time.time()
+        
+        build_stats = {
+            'total_points': len(points_df),
+            'total_datasets': 0,
+            'valid_trajectories': 0,
+            'skipped_trajectories': 0,
+            'build_time': 0
+        }
+        
+        if points_df.empty:
+            logger.warning("没有轨迹点数据")
+            return [], build_stats
+        
+        trajectories = []
+        
+        try:
+            # 按dataset_name分组处理
+            grouped = points_df.groupby('dataset_name')
+            build_stats['total_datasets'] = len(grouped)
+            
+            logger.info(f"开始构建轨迹: {build_stats['total_datasets']} 个数据集, {build_stats['total_points']} 个点")
+            
+            for dataset_name, group in grouped:
+                # 按时间排序
+                group = group.sort_values('timestamp')
+                
+                # 检查点数量
+                if len(group) < self.config.min_points_per_trajectory:
+                    build_stats['skipped_trajectories'] += 1
+                    logger.debug(f"数据集 {dataset_name} 点数量不足({len(group)})，跳过")
+                    continue
+                
+                # 提取坐标
+                coordinates = list(zip(group['longitude'], group['latitude']))
+                
+                # 构建LineString几何
+                trajectory_geom = LineString(coordinates)
+                
+                # 基础统计信息
+                stats = {
+                    'dataset_name': dataset_name,
+                    'start_time': int(group['timestamp'].min()),
+                    'end_time': int(group['timestamp'].max()),
+                    'duration': int(group['timestamp'].max() - group['timestamp'].min()),
+                    'point_count': len(group),
+                    'geometry': trajectory_geom,
+                    'polygon_ids': list(group['polygon_id'].unique())
+                }
+                
+                # 速度统计（可配置）
+                if self.config.enable_speed_stats and 'twist_linear' in group.columns:
+                    speed_data = group['twist_linear'].dropna()
+                    if len(speed_data) > 0:
+                        stats.update({
+                            'avg_speed': round(float(speed_data.mean()), 2),
+                            'max_speed': round(float(speed_data.max()), 2),
+                            'min_speed': round(float(speed_data.min()), 2),
+                            'std_speed': round(float(speed_data.std()) if len(speed_data) > 1 else 0.0, 2)
+                        })
+                
+                # AVP统计（可配置）
+                if self.config.enable_avp_stats and 'avp_flag' in group.columns:
+                    avp_data = group['avp_flag'].dropna()
+                    if len(avp_data) > 0:
+                        stats.update({
+                            'avp_ratio': round(float((avp_data == 1).mean()), 3)
+                        })
+                
+                trajectories.append(stats)
+                build_stats['valid_trajectories'] += 1
+                
+                logger.debug(f"构建轨迹: {dataset_name}, 点数: {stats['point_count']}, "
+                           f"时长: {stats['duration']}s, polygon数: {len(stats['polygon_ids'])}")
+            
+            build_stats['build_time'] = time.time() - start_time
+            
+            logger.info(f"✅ 轨迹构建完成: {build_stats['valid_trajectories']} 条有效轨迹, "
+                       f"{build_stats['skipped_trajectories']} 条跳过, "
+                       f"用时: {build_stats['build_time']:.2f}s")
+            
+            return trajectories, build_stats
+            
+        except Exception as e:
+            logger.error(f"构建轨迹失败: {str(e)}")
+            return [], build_stats
+
+def create_trajectory_table(eng, table_name: str) -> bool:
+    """创建轨迹结果表
+    
+    Args:
+        eng: 数据库引擎
+        table_name: 表名
+        
+    Returns:
+        创建是否成功
+    """
+    try:
+        # 检查表是否已存在
+        check_table_sql = text(f"""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_schema = 'public' 
+                AND table_name = '{table_name}'
+            );
+        """)
+        
+        with eng.connect() as conn:
+            result = conn.execute(check_table_sql)
+            table_exists = result.scalar()
+            
+            if table_exists:
+                logger.info(f"表 {table_name} 已存在，跳过创建")
+                return True
+            
+            logger.info(f"创建轨迹表: {table_name}")
+            
+            # 创建表结构
+            create_sql = text(f"""
+                CREATE TABLE {table_name} (
+                    id serial PRIMARY KEY,
+                    dataset_name text NOT NULL,
+                    start_time bigint,
+                    end_time bigint,
+                    duration bigint,
+                    point_count integer,
+                    avg_speed numeric(8,2),
+                    max_speed numeric(8,2),
+                    min_speed numeric(8,2),
+                    std_speed numeric(8,2),
+                    avp_ratio numeric(5,3),
+                    polygon_ids text[],
+                    created_at timestamp DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            
+            # 添加几何列
+            add_geom_sql = text(f"""
+                SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRING', 2);
+            """)
+            
+            # 创建索引
+            index_sql = text(f"""
+                CREATE INDEX idx_{table_name}_geometry ON {table_name} USING GIST(geometry);
+                CREATE INDEX idx_{table_name}_dataset_name ON {table_name}(dataset_name);
+                CREATE INDEX idx_{table_name}_start_time ON {table_name}(start_time);
+                CREATE INDEX idx_{table_name}_polygon_ids ON {table_name} USING GIN(polygon_ids);
+            """)
+            
+            # 执行SQL
+            conn.execute(create_sql)
+            conn.commit()
+            
+            conn.execute(add_geom_sql)
+            conn.commit()
+            
+            conn.execute(index_sql)
+            conn.commit()
+            
+            logger.info(f"成功创建轨迹表 {table_name}")
+            return True
+            
+    except Exception as e:
+        logger.error(f"创建轨迹表失败: {table_name}, 错误: {str(e)}")
+        return False
+
+    def save_trajectories_to_table(self, trajectories: List[Dict], table_name: str) -> Tuple[int, Dict]:
+        """高效批量保存轨迹数据到数据库表
+        
+        Args:
+            trajectories: 轨迹数据列表
+            table_name: 目标表名
+            
+        Returns:
+            (保存成功的记录数, 保存统计)
+        """
+        start_time = time.time()
+        
+        save_stats = {
+            'total_trajectories': len(trajectories),
+            'saved_records': 0,
+            'save_time': 0,
+            'table_created': False,
+            'batch_count': 0
+        }
+        
+        if not trajectories:
+            logger.warning("没有轨迹数据需要保存")
+            return 0, save_stats
+        
+        try:
+            # 创建表
+            if not self._create_trajectory_table(table_name):
+                logger.error("创建表失败")
+                return 0, save_stats
+            
+            save_stats['table_created'] = True
+            
+            # 批量插入
+            total_saved = 0
+            for i in range(0, len(trajectories), self.config.batch_insert_size):
+                batch = trajectories[i:i+self.config.batch_insert_size]
+                batch_num = i // self.config.batch_insert_size + 1
+                
+                logger.info(f"保存第 {batch_num} 批: {len(batch)} 条轨迹")
+                
+                # 准备GeoDataFrame数据
+                gdf_data = []
+                geometries = []
+                
+                for traj in batch:
+                    # 分离几何和属性数据
+                    row = {k: v for k, v in traj.items() if k != 'geometry'}
+                    gdf_data.append(row)
+                    geometries.append(traj['geometry'])
+                
+                # 创建GeoDataFrame
+                gdf = gpd.GeoDataFrame(gdf_data, geometry=geometries, crs=4326)
+                
+                # 批量插入到数据库
+                gdf.to_postgis(
+                    table_name, 
+                    self.engine, 
+                    if_exists='append', 
+                    index=False,
+                    method='multi'  # 使用批量插入优化
+                )
+                
+                total_saved += len(gdf)
+                save_stats['batch_count'] += 1
+                
+                logger.debug(f"批次 {batch_num} 保存完成: {len(gdf)} 条记录")
+            
+            save_stats['saved_records'] = total_saved
+            save_stats['save_time'] = time.time() - start_time
+            
+            logger.info(f"✅ 数据库保存完成: {save_stats['saved_records']} 条轨迹记录, "
+                       f"{save_stats['batch_count']} 个批次, "
+                       f"表: {table_name}, "
+                       f"用时: {save_stats['save_time']:.2f}s")
+            
+            return total_saved, save_stats
+            
+        except Exception as e:
+            logger.error(f"保存轨迹数据失败: {str(e)}")
+            return 0, save_stats
+    
+    def _create_trajectory_table(self, table_name: str) -> bool:
+        """创建轨迹结果表（优化版）"""
+        try:
+            # 检查表是否已存在
+            check_table_sql = text(f"""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_schema = 'public' 
+                    AND table_name = '{table_name}'
+                );
+            """)
+            
+            with self.engine.connect() as conn:
+                result = conn.execute(check_table_sql)
+                table_exists = result.scalar()
+                
+                if table_exists:
+                    logger.info(f"表 {table_name} 已存在，跳过创建")
+                    return True
+                
+                logger.info(f"创建高性能轨迹表: {table_name}")
+                
+                # 创建表结构（优化列类型）
+                create_sql = text(f"""
+                    CREATE TABLE {table_name} (
+                        id serial PRIMARY KEY,
+                        dataset_name text NOT NULL,
+                        start_time bigint,
+                        end_time bigint,
+                        duration bigint,
+                        point_count integer,
+                        avg_speed numeric(8,2),
+                        max_speed numeric(8,2),
+                        min_speed numeric(8,2),
+                        std_speed numeric(8,2),
+                        avp_ratio numeric(5,3),
+                        polygon_ids text[],
+                        created_at timestamp DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
+                
+                # 添加几何列
+                add_geom_sql = text(f"""
+                    SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRING', 2);
+                """)
+                
+                # 创建优化索引
+                index_sql = text(f"""
+                    CREATE INDEX idx_{table_name}_geometry ON {table_name} USING GIST(geometry);
+                    CREATE INDEX idx_{table_name}_dataset_name ON {table_name}(dataset_name);
+                    CREATE INDEX idx_{table_name}_start_time ON {table_name}(start_time);
+                    CREATE INDEX idx_{table_name}_point_count ON {table_name}(point_count);
+                    CREATE INDEX idx_{table_name}_polygon_ids ON {table_name} USING GIN(polygon_ids);
+                    CREATE INDEX idx_{table_name}_created_at ON {table_name}(created_at);
+                """)
+                
+                # 执行SQL（事务包装）
+                trans = conn.begin()
+                try:
+                    conn.execute(create_sql)
+                    conn.execute(add_geom_sql)
+                    conn.execute(index_sql)
+                    trans.commit()
+                    
+                    logger.info(f"✅ 轨迹表创建成功: {table_name}")
+                    return True
+                except Exception as e:
+                    trans.rollback()
+                    raise e
+                
+        except Exception as e:
+            logger.error(f"创建轨迹表失败: {table_name}, 错误: {str(e)}")
+            return False
+
+def export_trajectories_to_geojson(trajectories: List[Dict], output_file: str) -> bool:
+    """导出轨迹数据到GeoJSON文件
+    
+    Args:
+        trajectories: 轨迹数据列表
+        output_file: 输出文件路径
+        
+    Returns:
+        导出是否成功
+    """
+    if not trajectories:
+        logger.warning("没有轨迹数据需要导出")
+        return False
+    
+    try:
+        # 准备GeoDataFrame数据
+        gdf_data = []
+        geometries = []
+        
+        for traj in trajectories:
+            # 分离几何和属性数据
+            row = {k: v for k, v in traj.items() if k != 'geometry'}
+            # 转换polygon_ids为字符串
+            if 'polygon_ids' in row:
+                row['polygon_ids'] = ','.join(row['polygon_ids'])
+            gdf_data.append(row)
+            geometries.append(traj['geometry'])
+        
+        # 创建GeoDataFrame
+        gdf = gpd.GeoDataFrame(gdf_data, geometry=geometries, crs=4326)
+        
+        # 导出到GeoJSON
+        gdf.to_file(output_file, driver='GeoJSON', encoding='utf-8')
+        
+        logger.info(f"成功导出 {len(gdf)} 条轨迹到文件: {output_file}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"导出轨迹数据失败: {str(e)}")
+        return False
+
+# 便捷函数（保持向后兼容）
+def process_polygon_trajectory_query(
+    geojson_file: str,
+    output_table: Optional[str] = None,
+    output_geojson: Optional[str] = None,
+    config: Optional[PolygonTrajectoryConfig] = None
+) -> Dict:
+    """高性能polygon轨迹查询完整流程
+    
+    Args:
+        geojson_file: 输入的GeoJSON文件路径
+        output_table: 输出数据库表名（可选）
+        output_geojson: 输出GeoJSON文件路径（可选）
+        config: 自定义配置（可选）
+        
+    Returns:
+        详细的处理统计信息
+    """
+    # 使用高性能查询器
+    query_config = config or PolygonTrajectoryConfig()
+    processor = HighPerformancePolygonTrajectoryQuery(query_config)
+    
+    return processor.process_complete_workflow(
+        geojson_file=geojson_file,
+        output_table=output_table,
+        output_geojson=output_geojson
+    )
+
+
+    def process_complete_workflow(
+        self,
+        geojson_file: str,
+        output_table: Optional[str] = None,
+        output_geojson: Optional[str] = None
+    ) -> Dict:
+        """执行完整的高性能polygon轨迹查询工作流
+        
+        Args:
+            geojson_file: 输入的GeoJSON文件路径
+            output_table: 输出数据库表名（可选）
+            output_geojson: 输出GeoJSON文件路径（可选）
+            
+        Returns:
+            详细的处理统计信息
+        """
+        workflow_start = time.time()
+        
+        # 综合统计信息
+        complete_stats = {
+            'start_time': datetime.now(),
+            'geojson_file': geojson_file,
+            'output_table': output_table,
+            'output_geojson': output_geojson,
+            'config': {
+                'batch_threshold': self.config.batch_threshold,
+                'chunk_size': self.config.chunk_size,
+                'limit_per_polygon': self.config.limit_per_polygon,
+                'batch_insert_size': self.config.batch_insert_size
+            }
+        }
+        
+        try:
+            # 阶段1: 加载polygon
+            logger.info("=" * 60)
+            logger.info("🚀 开始高性能Polygon轨迹查询工作流")
+            logger.info("=" * 60)
+            
+            logger.info(f"📁 阶段1: 加载GeoJSON文件: {geojson_file}")
+            polygons = load_polygons_from_geojson(geojson_file)
+            complete_stats['polygon_count'] = len(polygons)
+            
+            if not polygons:
+                logger.error("❌ 未加载到任何polygon")
+                complete_stats['error'] = "No polygons loaded"
+                return complete_stats
+            
+            logger.info(f"✅ 成功加载 {len(polygons)} 个polygon")
+            
+            # 阶段2: 批量查询轨迹点
+            logger.info(f"🔍 阶段2: 批量查询轨迹点")
+            points_df, query_stats = self.query_intersecting_trajectory_points(polygons)
+            complete_stats['query_stats'] = query_stats
+            
+            if points_df.empty:
+                logger.warning("⚠️ 未找到相交的轨迹点")
+                complete_stats['warning'] = "No intersecting points found"
+                return complete_stats
+            
+            # 阶段3: 智能构建轨迹
+            logger.info(f"🔧 阶段3: 智能构建轨迹线")
+            trajectories, build_stats = self.build_trajectories_from_points(points_df)
+            complete_stats['build_stats'] = build_stats
+            
+            if not trajectories:
+                logger.warning("⚠️ 未构建到任何有效轨迹")
+                complete_stats['warning'] = "No valid trajectories built"
+                return complete_stats
+            
+            # 阶段4: 保存到数据库（如果指定）
+            if output_table:
+                logger.info(f"💾 阶段4: 批量保存到数据库表: {output_table}")
+                saved_count, save_stats = self.save_trajectories_to_table(trajectories, output_table)
+                complete_stats['save_stats'] = save_stats
+            else:
+                logger.info("⏭️ 阶段4: 跳过数据库保存")
+                complete_stats['save_stats'] = {'saved_records': 0, 'skipped': True}
+            
+            # 阶段5: 导出到GeoJSON（如果指定）
+            if output_geojson:
+                logger.info(f"📤 阶段5: 导出到GeoJSON文件: {output_geojson}")
+                exported = export_trajectories_to_geojson(trajectories, output_geojson)
+                complete_stats['exported_to_geojson'] = exported
+            else:
+                logger.info("⏭️ 阶段5: 跳过GeoJSON导出")
+                complete_stats['exported_to_geojson'] = False
+            
+            # 计算总体统计
+            complete_stats['end_time'] = datetime.now()
+            complete_stats['total_duration'] = time.time() - workflow_start
+            complete_stats['success'] = True
+            
+            # 输出最终统计
+            logger.info("=" * 60)
+            logger.info("🎉 高性能Polygon轨迹查询工作流完成！")
+            logger.info("=" * 60)
+            logger.info(f"📊 处理统计:")
+            logger.info(f"   • Polygon数量: {complete_stats['polygon_count']}")
+            logger.info(f"   • 查询策略: {query_stats['strategy']}")
+            logger.info(f"   • 轨迹点总数: {query_stats['total_points']:,}")
+            logger.info(f"   • 数据集数量: {query_stats['unique_datasets']}")
+            logger.info(f"   • 有效轨迹数: {build_stats['valid_trajectories']}")
+            logger.info(f"   • 跳过轨迹数: {build_stats['skipped_trajectories']}")
+            
+            if output_table:
+                logger.info(f"   • 数据库保存: {complete_stats['save_stats']['saved_records']} 条记录")
+            
+            if output_geojson:
+                status = "成功" if complete_stats['exported_to_geojson'] else "失败"
+                logger.info(f"   • GeoJSON导出: {status}")
+            
+            logger.info(f"⏱️ 性能数据:")
+            logger.info(f"   • 查询用时: {query_stats['query_time']:.2f}s")
+            logger.info(f"   • 构建用时: {build_stats['build_time']:.2f}s")
+            
+            if output_table:
+                logger.info(f"   • 保存用时: {complete_stats['save_stats']['save_time']:.2f}s")
+            
+            logger.info(f"   • 总用时: {complete_stats['total_duration']:.2f}s")
+            logger.info(f"   • 处理速度: {query_stats['total_points']/complete_stats['total_duration']:.1f} 点/秒")
+            logger.info("=" * 60)
+            
+            return complete_stats
+            
+        except Exception as e:
+            logger.error(f"❌ 工作流执行失败: {str(e)}")
+            complete_stats['error'] = str(e)
+            complete_stats['success'] = False
+            return complete_stats
+
+def main():
+    """主函数，CLI入口点"""
+    parser = argparse.ArgumentParser(
+        description='高性能Polygon轨迹查询模块 - 批量查找与polygon相交的轨迹数据',
+        epilog="""
+高性能特性:
+  • 智能批量查询策略：≤50个polygon使用UNION ALL，>50个polygon使用分块查询
+  • 优化的数据库写入：批量插入，事务保护，多重索引
+  • 详细的性能统计：查询时间、构建时间、处理速度等
+
+示例:
+  # 基础用法：查询轨迹并保存到数据库表
+  python -m spdatalab.dataset.polygon_trajectory_query --input polygons.geojson --table my_trajectories
+  
+  # 高性能模式：自定义批量查询参数
+  python -m spdatalab.dataset.polygon_trajectory_query --input polygons.geojson --table my_trajectories \\
+    --batch-threshold 30 --chunk-size 15 --batch-insert 500
+  
+  # 同时保存到数据库和文件
+  python -m spdatalab.dataset.polygon_trajectory_query --input polygons.geojson \\
+    --table my_trajectories --output trajectories.geojson
+  
+  # 调整轨迹点限制和统计选项
+  python -m spdatalab.dataset.polygon_trajectory_query --input polygons.geojson \\
+    --table my_trajectories --limit 20000 --no-speed-stats --verbose
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    # 基本参数
+    parser.add_argument('--input', required=True, help='输入GeoJSON文件路径')
+    parser.add_argument('--table', help='输出数据库表名（可选）')
+    parser.add_argument('--output', help='输出GeoJSON文件路径（可选）')
+    
+    # 性能优化参数
+    parser.add_argument('--batch-threshold', type=int, default=50, 
+                       help='批量查询vs分块查询的阈值 (默认: 50)')
+    parser.add_argument('--chunk-size', type=int, default=20,
+                       help='分块查询的块大小 (默认: 20)')
+    parser.add_argument('--limit', type=int, default=10000, 
+                       help='每个polygon的轨迹点限制数量 (默认: 10000)')
+    parser.add_argument('--batch-insert', type=int, default=1000,
+                       help='批量插入数据库的批次大小 (默认: 1000)')
+    
+    # 功能选项
+    parser.add_argument('--min-points', type=int, default=2,
+                       help='构建轨迹的最小点数 (默认: 2)')
+    parser.add_argument('--no-speed-stats', action='store_true',
+                       help='禁用速度统计计算')
+    parser.add_argument('--no-avp-stats', action='store_true',
+                       help='禁用AVP统计计算')
+    
+    # 其他参数
+    parser.add_argument('--verbose', '-v', action='store_true', help='详细日志')
+    
+    args = parser.parse_args()
+    
+    # 验证参数
+    if not args.table and not args.output:
+        parser.error("必须指定 --table 或 --output 中的至少一个")
+    
+    # 配置日志
+    level = logging.DEBUG if args.verbose else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    try:
+        # 检查输入文件
+        if not Path(args.input).exists():
+            logger.error(f"输入文件不存在: {args.input}")
+            return 1
+        
+        # 构建配置
+        config = PolygonTrajectoryConfig(
+            batch_threshold=args.batch_threshold,
+            chunk_size=args.chunk_size,
+            limit_per_polygon=args.limit,
+            batch_insert_size=args.batch_insert,
+            min_points_per_trajectory=args.min_points,
+            enable_speed_stats=not args.no_speed_stats,
+            enable_avp_stats=not args.no_avp_stats
+        )
+        
+        # 输出配置信息
+        logger.info("🔧 配置参数:")
+        logger.info(f"   • 批量查询阈值: {config.batch_threshold}")
+        logger.info(f"   • 分块大小: {config.chunk_size}")
+        logger.info(f"   • 每polygon轨迹点限制: {config.limit_per_polygon:,}")
+        logger.info(f"   • 批量插入大小: {config.batch_insert_size}")
+        logger.info(f"   • 最小轨迹点数: {config.min_points_per_trajectory}")
+        logger.info(f"   • 速度统计: {'启用' if config.enable_speed_stats else '禁用'}")
+        logger.info(f"   • AVP统计: {'启用' if config.enable_avp_stats else '禁用'}")
+        
+        # 执行处理
+        stats = process_polygon_trajectory_query(
+            geojson_file=args.input,
+            output_table=args.table,
+            output_geojson=args.output,
+            config=config
+        )
+        
+        # 检查处理结果
+        if 'error' in stats:
+            logger.error(f"❌ 处理错误: {stats['error']}")
+            return 1
+        
+        if not stats.get('success', False):
+            logger.error("❌ 处理未成功完成")
+            return 1
+        
+        # 成功完成
+        logger.info("🎉 所有处理成功完成！")
+        
+        # 确定返回代码
+        query_stats = stats.get('query_stats', {})
+        build_stats = stats.get('build_stats', {})
+        
+        has_results = (
+            query_stats.get('total_points', 0) > 0 and 
+            build_stats.get('valid_trajectories', 0) > 0
+        )
+        
+        return 0 if has_results else 1
+        
+    except Exception as e:
+        logger.error(f"❌ 程序执行失败: {str(e)}")
+        return 1
+
+if __name__ == '__main__':
+    sys.exit(main()) 
