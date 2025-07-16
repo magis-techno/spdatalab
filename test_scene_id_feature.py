@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-测试scene_id功能
+测试scene_id字段功能
 
-验证新增的scene_id功能是否正常工作
+验证轨迹数据中scene_id字段的添加功能是否正常工作
 """
 
 import logging
@@ -21,8 +21,8 @@ def create_test_polygon():
             {
                 "type": "Feature",
                 "properties": {
-                    "id": "scene_id_test",
-                    "name": "scene_id测试区域"
+                    "id": "test_scene_id_feature",
+                    "name": "scene_id字段测试区域"
                 },
                 "geometry": {
                     "type": "Polygon", 
@@ -46,7 +46,7 @@ def create_test_polygon():
     return test_file
 
 def test_scene_id_feature():
-    """测试scene_id功能"""
+    """测试scene_id字段功能"""
     
     # 设置日志
     logging.basicConfig(
@@ -55,26 +55,26 @@ def test_scene_id_feature():
     )
     logger = logging.getLogger(__name__)
     
-    logger.info("=== scene_id功能测试 ===")
+    logger.info("=== scene_id字段功能测试 ===")
     
     try:
         # 创建测试polygon
         polygon_file = create_test_polygon()
         logger.info(f"✅ 创建测试polygon文件: {polygon_file}")
         
-        # 配置：启用完整轨迹获取以确保scene_id功能被触发
+        # 配置查询处理器
         config = PolygonTrajectoryConfig(
-            limit_per_polygon=100,
-            fetch_complete_trajectories=True  # 启用完整轨迹获取以测试scene_id功能
+            limit_per_polygon=50,  # 限制数量以便快速测试
+            fetch_complete_trajectories=False  # 先测试基本功能
         )
         
         query_processor = HighPerformancePolygonTrajectoryQuery(config)
         
-        # 执行查询（不保存到数据库，仅测试功能）
-        logger.info("🚀 执行查询，测试scene_id功能...")
+        # 执行查询
+        logger.info("🚀 执行轨迹查询...")
         trajectories, stats = query_processor.process_complete_workflow(
             polygon_geojson=polygon_file,
-            output_table=None  # 不保存到数据库，仅测试功能
+            output_table=None  # 不保存到数据库，仅测试数据结构
         )
         
         logger.info(f"📊 查询结果:")
@@ -82,51 +82,62 @@ def test_scene_id_feature():
         logger.info(f"   - 查询策略: {stats.get('strategy', 'unknown')}")
         logger.info(f"   - 总点数: {stats.get('total_points', 0)}")
         logger.info(f"   - 数据集数: {stats.get('unique_datasets', 0)}")
+        logger.info(f"   - 查询时间: {stats.get('query_time', 0):.2f}s")
         
-        # 检查轨迹中是否包含scene_id信息
+        # 检查轨迹数据结构
         if trajectories:
-            logger.info("🔍 检查轨迹中的scene_id信息...")
+            logger.info("\n🔍 检查轨迹数据结构:")
+            first_trajectory = trajectories[0]
             
-            scene_id_found = False
-            scene_ids = set()
+            # 检查必要字段
+            required_fields = ['dataset_name', 'scene_id', 'start_time', 'end_time', 'geometry']
+            missing_fields = []
+            present_fields = []
             
-            for i, traj in enumerate(trajectories[:3]):  # 检查前3个轨迹
-                if 'scene_id' in traj:
-                    scene_id_found = True
-                    scene_ids.add(traj['scene_id'])
-                    logger.info(f"   轨迹 {i+1}: dataset_name={traj.get('dataset_name', 'unknown')}, "
-                               f"scene_id={traj.get('scene_id', 'unknown')}")
+            for field in required_fields:
+                if field in first_trajectory:
+                    present_fields.append(field)
                 else:
-                    logger.warning(f"   轨迹 {i+1}: 缺少scene_id字段")
+                    missing_fields.append(field)
             
-            if scene_id_found:
-                logger.info(f"✅ scene_id功能正常: 发现 {len(scene_ids)} 个不同的scene_id")
-                logger.info(f"   scene_id值: {list(scene_ids)}")
+            logger.info(f"   ✅ 存在字段: {present_fields}")
+            if missing_fields:
+                logger.warning(f"   ❌ 缺失字段: {missing_fields}")
+            
+            # 详细检查前几条轨迹的scene_id
+            logger.info("\n📋 前几条轨迹的scene_id信息:")
+            for i, traj in enumerate(trajectories[:5], 1):
+                dataset_name = traj.get('dataset_name', 'unknown')
+                scene_id = traj.get('scene_id', None)
+                point_count = traj.get('point_count', 0)
+                
+                if scene_id:
+                    logger.info(f"   {i}. {dataset_name} -> scene_id: {scene_id} ({point_count} 点)")
+                else:
+                    logger.warning(f"   {i}. {dataset_name} -> scene_id: None ({point_count} 点)")
+            
+            # 统计scene_id情况
+            total_trajectories = len(trajectories)
+            trajectories_with_scene_id = sum(1 for traj in trajectories if traj.get('scene_id'))
+            trajectories_without_scene_id = total_trajectories - trajectories_with_scene_id
+            
+            logger.info(f"\n📊 scene_id统计:")
+            logger.info(f"   - 总轨迹数: {total_trajectories}")
+            logger.info(f"   - 有scene_id: {trajectories_with_scene_id} ({trajectories_with_scene_id/total_trajectories*100:.1f}%)")
+            logger.info(f"   - 无scene_id: {trajectories_without_scene_id} ({trajectories_without_scene_id/total_trajectories*100:.1f}%)")
+            
+            if trajectories_with_scene_id > 0:
+                logger.info("✅ scene_id字段功能正常工作！")
             else:
-                logger.warning("⚠️ 所有轨迹都缺少scene_id字段")
+                logger.warning("⚠️ 所有轨迹都没有scene_id，可能是查询失败或数据问题")
         else:
-            logger.warning("⚠️ 没有找到轨迹数据")
-        
-        # 测试数据库表结构（如果保存到数据库）
-        if False:  # 设置为True来测试数据库表结构
-            test_table = "test_scene_id_trajectories"
-            logger.info(f"\n🗄️ 测试数据库表结构: {test_table}")
-            
-            saved_count, save_stats = query_processor.save_trajectories_to_table(
-                trajectories, test_table
-            )
-            
-            if saved_count > 0:
-                logger.info(f"✅ 成功保存到数据库: {saved_count} 条记录")
-                logger.info("   表结构应包含scene_id列")
-            else:
-                logger.warning("⚠️ 数据库保存失败")
+            logger.warning("⚠️ 未找到任何轨迹数据")
         
         # 清理临时文件
         Path(polygon_file).unlink(missing_ok=True)
         logger.info(f"🧹 清理临时文件: {polygon_file}")
         
-        logger.info("\n✅ scene_id功能测试完成!")
+        logger.info("\n✅ scene_id字段功能测试完成!")
         return True
         
     except Exception as e:

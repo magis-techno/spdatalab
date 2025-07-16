@@ -19,7 +19,7 @@ import sys
 import time
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Union
 from dataclasses import dataclass
 import warnings
 
@@ -28,6 +28,9 @@ import pandas as pd
 from shapely.geometry import shape, LineString, Point
 from sqlalchemy import text, create_engine
 from spdatalab.common.io_hive import hive_cursor
+
+# 导入必要的模块
+from spdatalab.dataset.dataset_manager import DatasetManager
 
 # 抑制警告
 warnings.filterwarnings('ignore', category=UserWarning)
@@ -195,6 +198,40 @@ class HighPerformancePolygonTrajectoryQuery:
         
         return result_df, stats
     
+    def _batch_query_scene_ids(self, data_names: List[str]) -> Dict[str, str]:
+        """批量查询data_name到scene_id的映射
+        
+        Args:
+            data_names: data_name列表
+            
+        Returns:
+            data_name到scene_id的映射字典
+        """
+        logger.info(f"🔍 开始批量查询 {len(data_names)} 个data_name的scene_id...")
+        
+        dataset_manager = DatasetManager()
+        data_name_to_scene_id = {}
+        
+        successful_queries = 0
+        failed_queries = 0
+        
+        for i, data_name in enumerate(data_names, 1):
+            try:
+                scene_id = dataset_manager.query_defect_data(data_name)
+                if scene_id:
+                    data_name_to_scene_id[data_name] = scene_id
+                    successful_queries += 1
+                    logger.debug(f"✅ 查询成功 [{i}/{len(data_names)}]: {data_name} -> {scene_id}")
+                else:
+                    failed_queries += 1
+                    logger.debug(f"❌ 查询失败 [{i}/{len(data_names)}]: {data_name} -> None")
+            except Exception as e:
+                failed_queries += 1
+                logger.warning(f"⚠️ 查询异常 [{i}/{len(data_names)}]: {data_name} -> {str(e)}")
+        
+        logger.info(f"📊 scene_id查询完成: 成功 {successful_queries} 个, 失败 {failed_queries} 个")
+        return data_name_to_scene_id
+
     def _fetch_complete_trajectories(self, intersection_result_df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict]:
         """获取完整轨迹数据（基于相交结果中的data_name）
         
@@ -276,26 +313,6 @@ class HighPerformancePolygonTrajectoryQuery:
                         lambda x: dataset_polygon_mapping.get(x, ['unknown'])[0]
                     )
                     
-                    # 添加scene_id信息（参考bbox模块逻辑）
-                    logger.info(f"🔍 获取scene_id元数据...")
-                    unique_data_names_list = complete_df['dataset_name'].unique().tolist()
-                    scene_meta_df = self._fetch_scene_meta(unique_data_names_list)
-                    
-                    if not scene_meta_df.empty:
-                        # 创建data_name到scene_id的映射
-                        data_name_to_scene_id = dict(zip(scene_meta_df['data_name'], scene_meta_df['scene_id']))
-                        
-                        # 为完整轨迹添加scene_id信息
-                        complete_df['scene_id'] = complete_df['dataset_name'].map(
-                            lambda x: data_name_to_scene_id.get(x, 'unknown')
-                        )
-                        
-                        logger.info(f"✅ 成功添加scene_id信息: {len(scene_meta_df)} 个映射")
-                    else:
-                        # 如果无法获取scene_id元数据，则使用默认值
-                        complete_df['scene_id'] = 'unknown'
-                        logger.warning("⚠️ 无法获取scene_id元数据，使用默认值")
-                    
                     complete_stats['complete_datasets'] = complete_df['dataset_name'].nunique()
                     complete_stats['complete_points'] = len(complete_df)
                     complete_stats['complete_query_time'] = time.time() - start_time
@@ -313,34 +330,139 @@ class HighPerformancePolygonTrajectoryQuery:
             logger.error(f"获取完整轨迹失败: {str(e)}")
             return pd.DataFrame(), complete_stats
 
-    def _fetch_scene_meta(self, data_names: List[str]) -> pd.DataFrame:
-        """获取data_name对应的scene_id元数据（参考bbox模块逻辑）
+    def _batch_query_strategy(self, polygons: List[Dict]) -> pd.DataFrame:
+        """批量查询策略 - 使用hive_cursor连接（性能优化版）"""
+        logger.info(f"🔍 使用批量查询策略处理 {len(polygons)} 个polygon")
+        logger.info(f"⚡ 每polygon点数限制: {self.config.limit_per_polygon:,}")
         
-        Args:
-            data_names: data_name列表
-            
-        Returns:
-            包含scene_id和data_name映射的DataFrame
-        """
-        if not data_names:
+        # 先测试数据库连接
+        logger.info("🔗 测试数据库连接...")
+        try:
+            with hive_cursor("dataset_gy1") as cur:
+                cur.execute("SELECT 1 as test_connection")
+                result = cur.fetchone()
+                if result and result[0] == 1:
+                    logger.info("✅ 数据库连接正常")
+                else:
+                    logger.error("❌ 数据库连接测试失败")
+                    return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"❌ 数据库连接失败: {e}")
             return pd.DataFrame()
+        
+        # 性能优化：检查polygon数量
+        if len(polygons) > 10:
+            logger.info(f"⚠️ polygon数量较多({len(polygons)})，切换到分块策略")
+            return self._chunked_query_strategy(polygons)
+        
+        # 构建优化的查询
+        subqueries = []
+        total_estimated_points = len(polygons) * self.config.limit_per_polygon
+        
+        logger.info(f"📈 预估最大数据量: {total_estimated_points:,} 个点")
+        
+        for i, polygon in enumerate(polygons, 1):
+            polygon_id = polygon['id']
+            polygon_wkt = polygon['geometry'].wkt
+            
+            logger.info(f"🔸 构建查询 {i}/{len(polygons)}: {polygon_id}")
+            
+            # 去掉ORDER BY，简化子查询
+            subquery = f"""
+                (SELECT 
+                    dataset_name,
+                    timestamp,
+                    point_lla,
+                    twist_linear,
+                    avp_flag,
+                    workstage,
+                    ST_X(point_lla) as longitude,
+                    ST_Y(point_lla) as latitude,
+                    '{polygon_id}' as polygon_id
+                FROM {self.config.point_table}
+                WHERE point_lla IS NOT NULL
+                AND timestamp IS NOT NULL
+                AND dataset_name IS NOT NULL
+                AND ST_Intersects(
+                    point_lla,
+                    ST_SetSRID(ST_GeomFromText('{polygon_wkt}'), 4326)
+                )
+                LIMIT {self.config.limit_per_polygon})
+            """
+            subqueries.append(subquery)
+        
+        # 构建完整的UNION查询
+        union_query = " UNION ALL ".join(subqueries)
+        batch_sql = f"""
+            SELECT * FROM (
+                {union_query}
+            ) AS combined_results
+            ORDER BY dataset_name, timestamp
+        """
+        
+        logger.info("🚀 开始执行批量SQL查询（使用hive_cursor）...")
+        logger.debug(f"🔍 SQL查询（前300字符）: {batch_sql[:300]}...")
+        
+        start_time = time.time()
         
         try:
-            # 参考bbox模块的fetch_meta逻辑，通过data_name反向查询scene_id
-            sql = ("SELECT id AS scene_id, origin_name AS data_name, event_id, city_id, timestamp "
-                   "FROM transform.ods_t_data_fragment_datalake WHERE origin_name IN %(data_names)s")
-            
-            with hive_cursor() as cur:
-                cur.execute(sql, {"data_names": tuple(data_names)})
-                cols = [d[0] for d in cur.description]
-                meta_df = pd.DataFrame(cur.fetchall(), columns=cols)
+            with hive_cursor("dataset_gy1") as cur:
+                logger.info("📊 正在执行查询，请耐心等待...")
                 
-            logger.debug(f"获取到 {len(meta_df)} 个data_name的scene_id映射")
-            return meta_df
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug("=== 执行批量查询SQL (dataset_gy1) ===")
+                    logger.debug(batch_sql)
+                
+                # 执行查询
+                cur.execute(batch_sql)
+                rows = cur.fetchall()
+                
+                query_time = time.time() - start_time
+                logger.info(f"✅ 查询完成！用时: {query_time:.2f}s, 获得 {len(rows):,} 个数据点")
+                
+                if not rows:
+                    logger.warning("⚠️ 未找到相交的轨迹点")
+                    return pd.DataFrame()
+                
+                # 构建DataFrame
+                columns = ['dataset_name', 'timestamp', 'point_lla', 'twist_linear', 
+                          'avp_flag', 'workstage', 'longitude', 'latitude', 'polygon_id']
+                result_df = pd.DataFrame(rows, columns=columns)
+                
+                logger.info(f"📊 构建DataFrame完成: {len(result_df)} 行数据")
+                return result_df
+                
+        except Exception as sql_error:
+            query_time = time.time() - start_time
+            logger.error(f"❌ SQL执行失败 (用时: {query_time:.2f}s): {sql_error}")
             
-        except Exception as e:
-            logger.error(f"获取scene_id元数据失败: {str(e)}")
-            return pd.DataFrame()
+            if "timeout" in str(sql_error).lower() or "cancelled" in str(sql_error).lower():
+                logger.error(f"⏰ 查询超时或被取消！建议：")
+                logger.error(f"   1. 减少 limit_per_polygon (当前: {self.config.limit_per_polygon})")
+                logger.error(f"   2. 缩小polygon范围或减少polygon数量")
+                logger.error(f"   3. 使用分块查询策略")
+            
+            raise
+        
+        return pd.DataFrame()
+    
+    def _chunked_query_strategy(self, polygons: List[Dict]) -> pd.DataFrame:
+        """分块查询策略 - 适合大规模polygon"""
+        logger.info(f"使用分块查询策略，{len(polygons)} 个polygon分为 {len(polygons)//self.config.chunk_size + 1} 块")
+        
+        all_results = []
+        
+        for i in range(0, len(polygons), self.config.chunk_size):
+            chunk = polygons[i:i+self.config.chunk_size]
+            chunk_num = i // self.config.chunk_size + 1
+            logger.info(f"处理第 {chunk_num} 块: {len(chunk)} 个polygon")
+            
+            # 使用批量策略处理当前块
+            chunk_result = self._batch_query_strategy(chunk)
+            if not chunk_result.empty:
+                all_results.append(chunk_result)
+        
+        return pd.concat(all_results, ignore_index=True) if all_results else pd.DataFrame()
 
     def build_trajectories_from_points(self, points_df: pd.DataFrame) -> Tuple[List[Dict], Dict]:
         """智能构建轨迹线和统计信息
@@ -368,6 +490,10 @@ class HighPerformancePolygonTrajectoryQuery:
         trajectories = []
         
         try:
+            # 获取所有唯一的dataset_name进行scene_id查询
+            unique_data_names = points_df['dataset_name'].unique().tolist()
+            data_name_to_scene_id = self._batch_query_scene_ids(unique_data_names)
+            
             # 按dataset_name分组处理
             grouped = points_df.groupby('dataset_name')
             build_stats['total_datasets'] = len(grouped)
@@ -390,9 +516,13 @@ class HighPerformancePolygonTrajectoryQuery:
                 # 构建LineString几何
                 trajectory_geom = LineString(coordinates)
                 
+                # 获取scene_id（如果查询到的话）
+                scene_id = data_name_to_scene_id.get(dataset_name, None)
+                
                 # 基础统计信息
                 stats = {
                     'dataset_name': dataset_name,
+                    'scene_id': scene_id,  # 添加scene_id字段
                     'start_time': int(group['timestamp'].min()),
                     'end_time': int(group['timestamp'].max()),
                     'duration': int(group['timestamp'].max() - group['timestamp'].min()),
@@ -400,14 +530,6 @@ class HighPerformancePolygonTrajectoryQuery:
                     'geometry': trajectory_geom,
                     'polygon_ids': list(group['polygon_id'].unique())
                 }
-                
-                # 添加scene_id信息（如果可用）
-                if 'scene_id' in group.columns:
-                    unique_scene_ids = group['scene_id'].unique()
-                    # 如果一个轨迹有多个scene_id，取第一个（通常应该只有一个）
-                    stats['scene_id'] = unique_scene_ids[0] if len(unique_scene_ids) > 0 else 'unknown'
-                else:
-                    stats['scene_id'] = 'unknown'
                 
                 # 速度统计（可配置）
                 if self.config.enable_speed_stats and 'twist_linear' in group.columns:
