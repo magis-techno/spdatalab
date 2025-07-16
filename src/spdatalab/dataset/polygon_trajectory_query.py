@@ -462,6 +462,13 @@ class HighPerformancePolygonTrajectoryQuery:
                 # 创建GeoDataFrame
                 gdf = gpd.GeoDataFrame(gdf_data, geometry=geometries, crs=4326)
                 
+                # 转换PostgreSQL数组格式
+                if 'polygon_ids' in gdf.columns:
+                    # 将Python列表转换为PostgreSQL数组格式 {item1,item2}
+                    gdf['polygon_ids'] = gdf['polygon_ids'].apply(
+                        lambda x: '{' + ','.join(str(item) for item in x) + '}' if isinstance(x, list) else x
+                    )
+                
                 # 批量插入到数据库
                 gdf.to_postgis(
                     table_name, 
