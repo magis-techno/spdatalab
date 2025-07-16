@@ -467,8 +467,7 @@ class HighPerformancePolygonTrajectoryQuery:
                     table_name, 
                     self.engine, 
                     if_exists='append', 
-                    index=False,
-                    method='multi'  # 使用批量插入优化
+                    index=False
                 )
                 
                 total_saved += len(gdf)
