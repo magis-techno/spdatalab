@@ -117,6 +117,11 @@ class HighPerformancePolygonTrajectoryQuery:
             future=True,
             connect_args={"client_encoding": "utf8"}
         )
+        
+        # 调试信息：显示类的可用方法
+        logger.debug(f"🔧 HighPerformancePolygonTrajectoryQuery 初始化完成")
+        logger.debug(f"🔧 可用方法: {[method for method in dir(self) if not method.startswith('_')]}")
+        logger.debug(f"🔧 process_complete_workflow 方法存在: {hasattr(self, 'process_complete_workflow')}")
     
     def query_intersecting_trajectory_points(self, polygons: List[Dict]) -> Tuple[pd.DataFrame, Dict]:
         """高效批量查询与polygon相交的轨迹点
@@ -576,6 +581,10 @@ def create_trajectory_table(eng, table_name: str) -> bool:
         Returns:
             详细的处理统计信息
         """
+        logger.debug("🔧 DEBUG: process_complete_workflow 方法被调用")
+        logger.debug(f"🔧 DEBUG: 实例类型: {type(self)}")
+        logger.debug(f"🔧 DEBUG: 方法存在性: {hasattr(self, 'process_complete_workflow')}")
+        
         workflow_start = time.time()
         
         # 综合统计信息
@@ -734,6 +743,18 @@ def process_polygon_trajectory_query(
     # 使用高性能查询器
     query_config = config or PolygonTrajectoryConfig()
     processor = HighPerformancePolygonTrajectoryQuery(query_config)
+    
+    # 调试信息：验证实例和方法
+    logger.debug(f"🔧 DEBUG: 创建的处理器类型: {type(processor)}")
+    logger.debug(f"🔧 DEBUG: 处理器可用方法: {[method for method in dir(processor) if not method.startswith('_')]}")
+    logger.debug(f"🔧 DEBUG: process_complete_workflow 方法是否存在: {hasattr(processor, 'process_complete_workflow')}")
+    
+    if not hasattr(processor, 'process_complete_workflow'):
+        logger.error("❌ CRITICAL: process_complete_workflow 方法不存在!")
+        logger.error(f"❌ 可用方法: {[method for method in dir(processor) if callable(getattr(processor, method)) and not method.startswith('_')]}")
+        raise AttributeError("HighPerformancePolygonTrajectoryQuery object has no attribute 'process_complete_workflow'")
+    
+    logger.debug("🔧 DEBUG: 即将调用 process_complete_workflow 方法")
     
     return processor.process_complete_workflow(
         geojson_file=geojson_file,
