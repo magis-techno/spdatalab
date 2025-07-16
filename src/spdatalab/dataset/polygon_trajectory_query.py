@@ -309,7 +309,7 @@ class HighPerformancePolygonTrajectoryQuery:
             sql = ("SELECT origin_name AS data_name, id AS scene_id "
                    "FROM transform.ods_t_data_fragment_datalake WHERE origin_name IN %(tok)s")
             
-            with hive_cursor("dataset_gy1") as cur:
+            with hive_cursor() as cur:  # 使用默认的app_gy1 catalog，和trajectory.py保持一致
                 cur.execute(sql, {"tok": tuple(data_names)})
                 cols = [d[0] for d in cur.description]
                 result_df = pd.DataFrame(cur.fetchall(), columns=cols)
