@@ -59,6 +59,9 @@ class PolygonTrajectoryConfig:
     min_points_per_trajectory: int = 2 # 构建轨迹的最小点数
     enable_speed_stats: bool = True    # 启用速度统计
     enable_avp_stats: bool = True      # 启用AVP统计
+    
+    # 完整轨迹获取配置
+    fetch_complete_trajectories: bool = True  # 是否获取完整轨迹（而非仅多边形内的片段）
 
 def load_polygons_from_geojson(file_path: str) -> List[Dict]:
     """从GeoJSON文件加载polygon
@@ -168,6 +171,21 @@ class HighPerformancePolygonTrajectoryQuery:
             stats['unique_datasets'] = result_df['dataset_name'].nunique()
             stats['points_per_polygon'] = stats['total_points'] / stats['polygon_count']
             
+            # 如果启用完整轨迹获取，则获取完整轨迹数据
+            if self.config.fetch_complete_trajectories:
+                logger.info(f"🔄 获取完整轨迹数据...")
+                complete_result_df, complete_stats = self._fetch_complete_trajectories(result_df)
+                
+                if not complete_result_df.empty:
+                    result_df = complete_result_df
+                    stats.update(complete_stats)
+                    stats['total_points'] = len(result_df)
+                    stats['complete_trajectories_fetched'] = True
+                    logger.info(f"✅ 完整轨迹获取完成: {stats['total_points']} 个轨迹点")
+                else:
+                    stats['complete_trajectories_fetched'] = False
+                    logger.warning("⚠️ 完整轨迹获取失败，返回原始数据")
+            
             logger.info(f"✅ 查询完成: {stats['total_points']} 个轨迹点, "
                        f"{stats['unique_datasets']} 个数据集, "
                        f"策略: {stats['strategy']}, "
@@ -177,6 +195,104 @@ class HighPerformancePolygonTrajectoryQuery:
         
         return result_df, stats
     
+    def _fetch_complete_trajectories(self, intersection_result_df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict]:
+        """获取完整轨迹数据（基于相交结果中的data_name）
+        
+        Args:
+            intersection_result_df: 多边形相交结果DataFrame
+            
+        Returns:
+            (完整轨迹DataFrame, 统计信息)
+        """
+        start_time = time.time()
+        
+        # 统计信息
+        complete_stats = {
+            'complete_query_time': 0,
+            'original_datasets': 0,
+            'original_points': 0,
+            'complete_datasets': 0,
+            'complete_points': 0
+        }
+        
+        if intersection_result_df.empty:
+            logger.warning("相交结果为空，无法获取完整轨迹")
+            return pd.DataFrame(), complete_stats
+        
+        # 获取所有涉及的data_name
+        unique_data_names = intersection_result_df['dataset_name'].unique()
+        complete_stats['original_datasets'] = len(unique_data_names)
+        complete_stats['original_points'] = len(intersection_result_df)
+        
+        logger.info(f"📋 需要获取完整轨迹的数据集: {len(unique_data_names)} 个")
+        
+        try:
+            # 构建查询所有完整轨迹的SQL
+            data_names_tuple = tuple(unique_data_names)
+            
+            complete_trajectory_sql = f"""
+                SELECT 
+                    dataset_name,
+                    timestamp,
+                    point_lla,
+                    twist_linear,
+                    avp_flag,
+                    workstage,
+                    ST_X(point_lla) as longitude,
+                    ST_Y(point_lla) as latitude
+                FROM {self.config.point_table}
+                WHERE dataset_name IN %(data_names)s
+                AND point_lla IS NOT NULL
+                AND timestamp IS NOT NULL
+                ORDER BY dataset_name, timestamp
+            """
+            
+            logger.info(f"🚀 执行完整轨迹查询...")
+            
+            with hive_cursor("dataset_gy1") as cur:
+                cur.execute(complete_trajectory_sql, {"data_names": data_names_tuple})
+                
+                # 获取列名和数据
+                cols = [d[0] for d in cur.description]
+                rows = cur.fetchall()
+                
+                if rows:
+                    complete_df = pd.DataFrame(rows, columns=cols)
+                    
+                    # 为完整轨迹数据添加polygon_id信息
+                    # 基于原始相交结果创建data_name到polygon_id的映射
+                    dataset_polygon_mapping = {}
+                    for _, row in intersection_result_df.iterrows():
+                        dataset_name = row['dataset_name']
+                        polygon_id = row.get('polygon_id', 'unknown')
+                        
+                        if dataset_name not in dataset_polygon_mapping:
+                            dataset_polygon_mapping[dataset_name] = []
+                        if polygon_id not in dataset_polygon_mapping[dataset_name]:
+                            dataset_polygon_mapping[dataset_name].append(polygon_id)
+                    
+                    # 为完整轨迹添加polygon_id信息
+                    complete_df['polygon_id'] = complete_df['dataset_name'].map(
+                        lambda x: dataset_polygon_mapping.get(x, ['unknown'])[0]
+                    )
+                    
+                    complete_stats['complete_datasets'] = complete_df['dataset_name'].nunique()
+                    complete_stats['complete_points'] = len(complete_df)
+                    complete_stats['complete_query_time'] = time.time() - start_time
+                    
+                    logger.info(f"✅ 完整轨迹查询成功: {len(complete_df)} 个点, "
+                               f"{complete_df['dataset_name'].nunique()} 个数据集, "
+                               f"用时: {complete_stats['complete_query_time']:.2f}s")
+                    
+                    return complete_df, complete_stats
+                else:
+                    logger.warning("完整轨迹查询无结果")
+                    return pd.DataFrame(), complete_stats
+                    
+        except Exception as e:
+            logger.error(f"获取完整轨迹失败: {str(e)}")
+            return pd.DataFrame(), complete_stats
+
     def _batch_query_strategy(self, polygons: List[Dict]) -> pd.DataFrame:
         """批量查询策略 - 使用hive_cursor连接（性能优化版）"""
         logger.info(f"🔍 使用批量查询策略处理 {len(polygons)} 个polygon")
