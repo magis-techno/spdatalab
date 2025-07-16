@@ -601,35 +601,6 @@ def export_trajectories_to_geojson(trajectories: List[Dict], output_file: str) -
         logger.error(f"导出轨迹数据失败: {str(e)}")
         return False
 
-# 便捷函数（保持向后兼容）
-def process_polygon_trajectory_query(
-    geojson_file: str,
-    output_table: Optional[str] = None,
-    output_geojson: Optional[str] = None,
-    config: Optional[PolygonTrajectoryConfig] = None
-) -> Dict:
-    """高性能polygon轨迹查询完整流程
-    
-    Args:
-        geojson_file: 输入的GeoJSON文件路径
-        output_table: 输出数据库表名（可选）
-        output_geojson: 输出GeoJSON文件路径（可选）
-        config: 自定义配置（可选）
-        
-    Returns:
-        详细的处理统计信息
-    """
-    # 使用高性能查询器
-    query_config = config or PolygonTrajectoryConfig()
-    processor = HighPerformancePolygonTrajectoryQuery(query_config)
-    
-    return processor.process_complete_workflow(
-        geojson_file=geojson_file,
-        output_table=output_table,
-        output_geojson=output_geojson
-    )
-
-
     def process_complete_workflow(
         self,
         geojson_file: str,
@@ -759,6 +730,34 @@ def process_polygon_trajectory_query(
             complete_stats['error'] = str(e)
             complete_stats['success'] = False
             return complete_stats
+
+# 便捷函数（保持向后兼容）
+def process_polygon_trajectory_query(
+    geojson_file: str,
+    output_table: Optional[str] = None,
+    output_geojson: Optional[str] = None,
+    config: Optional[PolygonTrajectoryConfig] = None
+) -> Dict:
+    """高性能polygon轨迹查询完整流程
+    
+    Args:
+        geojson_file: 输入的GeoJSON文件路径
+        output_table: 输出数据库表名（可选）
+        output_geojson: 输出GeoJSON文件路径（可选）
+        config: 自定义配置（可选）
+        
+    Returns:
+        详细的处理统计信息
+    """
+    # 使用高性能查询器
+    query_config = config or PolygonTrajectoryConfig()
+    processor = HighPerformancePolygonTrajectoryQuery(query_config)
+    
+    return processor.process_complete_workflow(
+        geojson_file=geojson_file,
+        output_table=output_table,
+        output_geojson=output_geojson
+    )
 
 def main():
     """主函数，CLI入口点"""
