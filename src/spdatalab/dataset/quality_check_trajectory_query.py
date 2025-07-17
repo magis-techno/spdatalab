@@ -172,8 +172,8 @@ class ExcelDataParser:
         try:
             logger.info(f"📖 加载Excel文件: {Path(file_path).name}")
             
-            # 读取Excel文件
-            df = pd.read_excel(file_path)
+            # 读取Excel文件（指定编码）
+            df = pd.read_excel(file_path, engine='openpyxl')
             logger.info(f"📊 原始数据: {len(df)} 行, {len(df.columns)} 列")
             
             # 检查必需列
@@ -212,11 +212,14 @@ class ExcelDataParser:
         # 移除空行
         df = df.dropna(subset=['autoscene_id'])
         
-        # 清理字符串字段
+        # 清理字符串字段（确保UTF-8编码）
         string_cols = ['task_name', 'annotator', 'autoscene_id', 'result', 'other_scenario']
         for col in string_cols:
             if col in df.columns:
+                # 确保字符串编码正确
                 df[col] = df[col].astype(str).str.strip()
+                # 处理编码问题：如果存在编码错误，尝试修复
+                df[col] = df[col].apply(self._fix_encoding)
                 df[col] = df[col].replace(['nan', 'None', ''], None)
         
         # 处理description字段
@@ -228,7 +231,7 @@ class ExcelDataParser:
         return df
     
     def _filter_valid_records(self, df: pd.DataFrame) -> pd.DataFrame:
-        """过滤有效记录：至少有result或other_scenario的数据"""
+        """过滤有效记录：至少有result或other_scenario的数据，且排除result为'good'的记录"""
         # 检查result字段是否有效
         result_valid = df['result'].notna() & (df['result'] != '') & (df['result'] != 'nan')
         
@@ -238,11 +241,101 @@ class ExcelDataParser:
         # 至少有一个字段有效
         valid_mask = result_valid | other_scenario_valid
         
-        filtered_df = df[valid_mask].copy()
+        # 过滤掉result为'good'的记录
+        def is_good_result(value):
+            """检查结果是否为good（处理编码问题）"""
+            if pd.isna(value) or value == '' or value == 'nan':
+                return False
+            
+            # 先修复编码
+            fixed_value = self._fix_encoding(value)
+            
+            # 处理字符串格式的列表
+            if isinstance(fixed_value, str):
+                if fixed_value.lower().strip() == 'good':
+                    return True
+                # 处理字符串格式的列表，如 "['good']"
+                try:
+                    if fixed_value.startswith('[') and fixed_value.endswith(']'):
+                        import ast
+                        parsed_list = ast.literal_eval(fixed_value)
+                        if isinstance(parsed_list, list):
+                            # 检查列表中是否只有'good'
+                            cleaned_list = []
+                            for item in parsed_list:
+                                if str(item).strip():
+                                    fixed_item = self._fix_encoding(str(item)).lower().strip()
+                                    cleaned_list.append(fixed_item)
+                            return len(cleaned_list) == 1 and cleaned_list[0] == 'good'
+                except:
+                    pass
+            
+            # 处理列表类型
+            elif isinstance(fixed_value, list):
+                cleaned_list = []
+                for item in fixed_value:
+                    if str(item).strip():
+                        fixed_item = self._fix_encoding(str(item)).lower().strip()
+                        cleaned_list.append(fixed_item)
+                return len(cleaned_list) == 1 and cleaned_list[0] == 'good'
+            
+            return False
         
-        logger.debug(f"数据过滤: {len(df)} -> {len(filtered_df)} 行（过滤掉 {len(df) - len(filtered_df)} 行无效数据）")
+        # 过滤掉result为good的记录
+        good_mask = df['result'].apply(is_good_result)
+        logger.debug(f"发现 {good_mask.sum()} 条result为'good'的记录，将被过滤")
+        
+        # 最终过滤条件：有效记录 且 不是good结果
+        final_mask = valid_mask & ~good_mask
+        
+        filtered_df = df[final_mask].copy()
+        
+        logger.info(f"数据过滤: {len(df)} -> {len(filtered_df)} 行")
+        logger.info(f"  过滤掉无效数据: {(~valid_mask).sum()} 行")
+        logger.info(f"  过滤掉'good'结果: {good_mask.sum()} 行")
+        logger.info(f"  最终有效数据: {len(filtered_df)} 行")
         
         return filtered_df
+    
+    def _fix_encoding(self, text):
+        """修复字符串编码问题"""
+        if pd.isna(text) or text in ['nan', 'None', '']:
+            return text
+        
+        try:
+            # 转换为字符串
+            text_str = str(text)
+            
+            # 如果是正常的字符串，直接返回
+            if all(ord(char) < 128 for char in text_str if char.isprintable()):
+                # 纯ASCII字符，可能包含中文的编码表示
+                pass
+            elif any('\u4e00' <= char <= '\u9fff' for char in text_str):
+                # 包含中文字符，直接返回
+                return text_str
+            
+            # 尝试各种编码修复
+            encodings_to_try = ['utf-8', 'gbk', 'gb2312', 'gb18030', 'latin1']
+            
+            for encoding in encodings_to_try:
+                try:
+                    # 如果文本已经是字符串，尝试先编码再解码
+                    if isinstance(text_str, str):
+                        # 尝试不同的解码方式
+                        fixed_text = text_str.encode('latin1').decode(encoding)
+                        # 检查是否包含中文字符
+                        if any('\u4e00' <= char <= '\u9fff' for char in fixed_text):
+                            logger.debug(f"编码修复成功: '{text_str}' -> '{fixed_text}' (使用 {encoding})")
+                            return fixed_text
+                except:
+                    continue
+            
+            # 如果无法修复，返回原文本
+            return text_str
+            
+        except Exception as e:
+            logger.debug(f"编码修复失败: {text}, 错误: {e}")
+            return str(text)
     
     def _parse_record(self, row: pd.Series) -> Optional[QualityCheckRecord]:
         """解析单条记录"""
@@ -278,52 +371,83 @@ class ExcelDataParser:
             return None
     
     def _parse_result_field(self, value) -> Union[str, List[str]]:
-        """解析result或other_scenario字段"""
+        """解析result或other_scenario字段（处理编码问题）"""
         if pd.isna(value) or value in ['', 'nan', 'None']:
             return []
         
-        value_str = str(value).strip()
+        # 先修复编码问题
+        value_fixed = self._fix_encoding(value)
+        value_str = str(value_fixed).strip()
         
         # 尝试解析为列表
         if value_str.startswith('[') and value_str.endswith(']'):
             try:
                 parsed = ast.literal_eval(value_str)
                 if isinstance(parsed, list):
-                    return [str(item).strip().strip("'\"") for item in parsed if str(item).strip()]
+                    # 对列表中的每个元素也进行编码修复
+                    result = []
+                    for item in parsed:
+                        if str(item).strip():
+                            fixed_item = self._fix_encoding(str(item).strip().strip("'\""))
+                            result.append(fixed_item)
+                    return result
                 else:
-                    return [str(parsed).strip().strip("'\"")]
+                    fixed_item = self._fix_encoding(str(parsed).strip().strip("'\""))
+                    return [fixed_item]
             except:
                 # 解析失败，当作字符串处理
-                return [value_str.strip().strip("'\"")]
+                fixed_item = self._fix_encoding(value_str.strip().strip("'\""))
+                return [fixed_item]
         else:
             # 单个字符串
-            return [value_str.strip().strip("'\"")]
+            fixed_item = self._fix_encoding(value_str.strip().strip("'\""))
+            return [fixed_item]
     
     def _parse_description_field(self, value) -> List[List[float]]:
         """解析description时间区间字段"""
+        logger.debug(f"🔍 解析description字段: {value} (类型: {type(value)})")
+        
         if pd.isna(value) or value in ['', 'nan', 'None']:
+            logger.debug("   结果: 空值，返回空列表")
             return []
         
         value_str = str(value).strip()
+        logger.debug(f"   字符串化后: '{value_str}'")
         
         try:
             # 尝试解析为嵌套列表
             parsed = ast.literal_eval(value_str)
+            logger.debug(f"   ast解析结果: {parsed} (类型: {type(parsed)})")
+            
             if isinstance(parsed, list):
                 result = []
-                for item in parsed:
+                for i, item in enumerate(parsed):
+                    logger.debug(f"   处理第{i+1}个区间: {item} (类型: {type(item)})")
+                    
                     if isinstance(item, list) and len(item) == 2:
                         try:
                             start_time = float(item[0])
                             end_time = float(item[1])
+                            
                             if start_time < end_time:  # 验证时间区间有效性
                                 result.append([start_time, end_time])
-                        except:
+                                logger.debug(f"     ✅ 有效区间: [{start_time}, {end_time}]")
+                            else:
+                                logger.debug(f"     ❌ 无效区间: [{start_time}, {end_time}] (开始>=结束)")
+                        except Exception as e:
+                            logger.debug(f"     ❌ 区间转换失败: {e}")
                             continue
+                    else:
+                        logger.debug(f"     ❌ 区间格式错误: 不是长度为2的列表")
+                
+                logger.debug(f"   解析结果: {result} ({len(result)} 个有效区间)")
                 return result
-        except:
-            pass
+            else:
+                logger.debug(f"   ❌ 解析结果不是列表: {type(parsed)}")
+        except Exception as e:
+            logger.debug(f"   ❌ ast解析失败: {e}")
         
+        logger.debug("   返回空列表")
         return []
 
 class ResultFieldProcessor:
@@ -502,6 +626,8 @@ class TrajectorySegmenter:
         Returns:
             轨迹点DataFrame
         """
+        logger.debug(f"🔍 开始查询轨迹数据: {dataset_name}")
+        
         try:
             sql = f"""
                 SELECT 
@@ -518,21 +644,42 @@ class TrajectorySegmenter:
                 ORDER BY timestamp
             """
             
+            logger.debug(f"📊 执行SQL查询: {self.config.point_table}")
+            
             with hive_cursor("dataset_gy1") as cur:
                 cur.execute(sql, {"dataset_name": dataset_name})
                 cols = [d[0] for d in cur.description]
                 rows = cur.fetchall()
                 
+                logger.debug(f"📋 SQL查询结果: {len(rows)} 行数据")
+                
                 if rows:
                     df = pd.DataFrame(rows, columns=cols)
-                    logger.debug(f"查询到轨迹 {dataset_name}: {len(df)} 个点")
+                    
+                    # 检查数据质量
+                    null_coords = df[['longitude', 'latitude']].isnull().any(axis=1).sum()
+                    null_timestamps = df['timestamp'].isnull().sum()
+                    
+                    logger.debug(f"✅ 查询成功 {dataset_name}: {len(df)} 个点")
+                    logger.debug(f"   空坐标: {null_coords} 个")
+                    logger.debug(f"   空时间戳: {null_timestamps} 个")
+                    
+                    if len(df) > 0:
+                        logger.debug(f"   时间范围: {df['timestamp'].min()} - {df['timestamp'].max()}")
+                        logger.debug(f"   坐标范围: lon[{df['longitude'].min():.6f}, {df['longitude'].max():.6f}], "
+                                   f"lat[{df['latitude'].min():.6f}, {df['latitude'].max():.6f}]")
+                    
                     return df
                 else:
-                    logger.warning(f"未查询到轨迹数据: {dataset_name}")
+                    logger.warning(f"⚠️ 未查询到轨迹数据: {dataset_name}")
+                    logger.debug(f"   SQL: {sql}")
+                    logger.debug(f"   参数: dataset_name={dataset_name}")
                     return pd.DataFrame()
                     
         except Exception as e:
-            logger.error(f"查询轨迹失败 {dataset_name}: {str(e)}")
+            logger.error(f"❌ 查询轨迹失败 {dataset_name}: {str(e)}")
+            logger.error(f"   SQL: {sql}")
+            logger.error(f"   表名: {self.config.point_table}")
             return pd.DataFrame()
     
     def segment_trajectory_by_time_ranges(self, 
@@ -547,18 +694,40 @@ class TrajectorySegmenter:
         Returns:
             (MultiLineString几何, 有效分段数量)
         """
+        logger.debug(f"🔧 开始轨迹分段: 轨迹点数={len(trajectory_df)}, 时间区间数={len(time_ranges)}")
+        
         if trajectory_df.empty:
+            logger.warning("⚠️ 轨迹DataFrame为空，无法进行分段")
             return MultiLineString([]), 0
         
         # 计算相对时间
         start_timestamp = trajectory_df['timestamp'].min()
+        end_timestamp = trajectory_df['timestamp'].max()
+        total_duration = end_timestamp - start_timestamp
+        
+        logger.debug(f"📊 轨迹时间范围: {start_timestamp} - {end_timestamp} (时长: {total_duration}s)")
+        
         trajectory_df = trajectory_df.copy()
         trajectory_df['relative_time'] = trajectory_df['timestamp'] - start_timestamp
         
         segments = []
+        valid_segments = 0
+        skipped_segments = 0
         
-        for time_range in time_ranges:
+        for i, time_range in enumerate(time_ranges):
             start_time, end_time = time_range
+            logger.debug(f"🔍 处理时间区间 {i+1}/{len(time_ranges)}: [{start_time}, {end_time}]s")
+            
+            # 检查时间区间是否合理
+            if start_time >= end_time:
+                logger.warning(f"⚠️ 无效时间区间: [{start_time}, {end_time}] (开始时间 >= 结束时间)")
+                skipped_segments += 1
+                continue
+            
+            if end_time < 0 or start_time > total_duration:
+                logger.warning(f"⚠️ 时间区间超出轨迹范围: [{start_time}, {end_time}]s, 轨迹时长: {total_duration}s")
+                skipped_segments += 1
+                continue
             
             # 筛选时间区间内的点
             mask = (
@@ -567,21 +736,53 @@ class TrajectorySegmenter:
             )
             
             segment_points = trajectory_df[mask]
+            logger.debug(f"📍 时间区间 [{start_time}, {end_time}]s 筛选到 {len(segment_points)} 个点")
             
-            if len(segment_points) >= self.config.min_points_per_segment:
+            if len(segment_points) < self.config.min_points_per_segment:
+                logger.warning(f"⚠️ 分段点数不足: {len(segment_points)} < {self.config.min_points_per_segment}")
+                skipped_segments += 1
+                continue
+            
+            try:
                 coordinates = list(zip(segment_points['longitude'], segment_points['latitude']))
-                segment_geom = LineString(coordinates)
+                
+                # 检查坐标有效性
+                valid_coords = [(lon, lat) for lon, lat in coordinates if pd.notna(lon) and pd.notna(lat)]
+                if len(valid_coords) < self.config.min_points_per_segment:
+                    logger.warning(f"⚠️ 有效坐标不足: {len(valid_coords)} < {self.config.min_points_per_segment}")
+                    skipped_segments += 1
+                    continue
+                
+                segment_geom = LineString(valid_coords)
                 
                 # 可选的几何简化
                 if self.config.simplify_geometry:
+                    original_coords = len(segment_geom.coords)
                     segment_geom = segment_geom.simplify(self.config.simplify_tolerance)
+                    simplified_coords = len(segment_geom.coords)
+                    logger.debug(f"🔧 几何简化: {original_coords} -> {simplified_coords} 个坐标点")
                 
                 segments.append(segment_geom)
-                logger.debug(f"创建分段: {start_time}-{end_time}s, {len(segment_points)} 个点")
+                valid_segments += 1
+                logger.debug(f"✅ 成功创建分段 {valid_segments}: {start_time}-{end_time}s, {len(segment_points)} 个点")
+                
+            except Exception as e:
+                logger.error(f"❌ 创建分段几何失败: {str(e)}")
+                skipped_segments += 1
+                continue
+        
+        logger.info(f"📊 分段结果: 成功={valid_segments}, 跳过={skipped_segments}, 总数={len(time_ranges)}")
         
         if segments:
-            return MultiLineString(segments), len(segments)
+            try:
+                multi_geom = MultiLineString(segments)
+                logger.debug(f"✅ 成功创建MultiLineString: {len(segments)} 个分段")
+                return multi_geom, len(segments)
+            except Exception as e:
+                logger.error(f"❌ 创建MultiLineString失败: {str(e)}")
+                return MultiLineString([]), 0
         else:
+            logger.warning("⚠️ 没有有效的分段，返回空几何")
             return MultiLineString([]), 0
     
     def create_complete_trajectory(self, trajectory_df: pd.DataFrame) -> Tuple[MultiLineString, float]:
@@ -593,23 +794,62 @@ class TrajectorySegmenter:
         Returns:
             (MultiLineString几何, 总时长)
         """
-        if trajectory_df.empty or len(trajectory_df) < self.config.min_points_per_segment:
+        logger.debug(f"🔧 开始创建完整轨迹: 轨迹点数={len(trajectory_df)}")
+        
+        if trajectory_df.empty:
+            logger.warning("⚠️ 轨迹DataFrame为空，无法创建完整轨迹")
             return MultiLineString([]), 0.0
         
-        coordinates = list(zip(trajectory_df['longitude'], trajectory_df['latitude']))
-        trajectory_geom = LineString(coordinates)
+        if len(trajectory_df) < self.config.min_points_per_segment:
+            logger.warning(f"⚠️ 轨迹点数不足: {len(trajectory_df)} < {self.config.min_points_per_segment}")
+            return MultiLineString([]), 0.0
         
-        # 可选的几何简化
-        if self.config.simplify_geometry:
-            trajectory_geom = trajectory_geom.simplify(self.config.simplify_tolerance)
-        
-        # 计算总时长
-        duration = float(trajectory_df['timestamp'].max() - trajectory_df['timestamp'].min())
-        
-        # 转换为MultiLineString
-        multi_geom = MultiLineString([trajectory_geom])
-        
-        return multi_geom, duration
+        try:
+            # 检查必要字段
+            required_columns = ['longitude', 'latitude', 'timestamp']
+            missing_columns = [col for col in required_columns if col not in trajectory_df.columns]
+            if missing_columns:
+                logger.error(f"❌ 缺少必要字段: {missing_columns}")
+                return MultiLineString([]), 0.0
+            
+            # 过滤有效坐标
+            coordinates = list(zip(trajectory_df['longitude'], trajectory_df['latitude']))
+            valid_coords = [(lon, lat) for lon, lat in coordinates if pd.notna(lon) and pd.notna(lat)]
+            
+            logger.debug(f"📍 有效坐标数量: {len(valid_coords)}/{len(coordinates)}")
+            
+            if len(valid_coords) < self.config.min_points_per_segment:
+                logger.warning(f"⚠️ 有效坐标不足: {len(valid_coords)} < {self.config.min_points_per_segment}")
+                return MultiLineString([]), 0.0
+            
+            # 创建轨迹几何
+            trajectory_geom = LineString(valid_coords)
+            logger.debug(f"✅ 成功创建LineString: {len(trajectory_geom.coords)} 个坐标点")
+            
+            # 可选的几何简化
+            if self.config.simplify_geometry:
+                original_coords = len(trajectory_geom.coords)
+                trajectory_geom = trajectory_geom.simplify(self.config.simplify_tolerance)
+                simplified_coords = len(trajectory_geom.coords)
+                logger.debug(f"🔧 几何简化: {original_coords} -> {simplified_coords} 个坐标点")
+            
+            # 计算总时长
+            min_timestamp = trajectory_df['timestamp'].min()
+            max_timestamp = trajectory_df['timestamp'].max()
+            duration = float(max_timestamp - min_timestamp)
+            
+            logger.debug(f"📊 轨迹时长: {duration}s ({min_timestamp} - {max_timestamp})")
+            
+            # 转换为MultiLineString
+            multi_geom = MultiLineString([trajectory_geom])
+            logger.debug(f"✅ 成功创建完整轨迹MultiLineString")
+            
+            return multi_geom, duration
+            
+        except Exception as e:
+            logger.error(f"❌ 创建完整轨迹失败: {str(e)}")
+            logger.error(f"   轨迹数据样本: {trajectory_df.head() if not trajectory_df.empty else 'Empty'}")
+            return MultiLineString([]), 0.0
 
 class QualityCheckTrajectoryQuery:
     """质检轨迹查询主类"""
@@ -619,7 +859,10 @@ class QualityCheckTrajectoryQuery:
         self.engine = create_engine(
             self.config.local_dsn, 
             future=True,
-            connect_args={"client_encoding": "utf8"}
+            connect_args={
+                "client_encoding": "utf8",
+                "options": "-c timezone=UTC"
+            }
         )
         
         # 初始化组件
@@ -875,27 +1118,42 @@ class QualityCheckTrajectoryQuery:
         Returns:
             分段轨迹对象或None
         """
+        logger.debug(f"🔧 开始处理记录: {record.autoscene_id}")
+        logger.debug(f"   task_name: {record.task_name}")
+        logger.debug(f"   annotator: {record.annotator}")
+        logger.debug(f"   result: {record.result}")
+        logger.debug(f"   other_scenario: {record.other_scenario}")
+        logger.debug(f"   description: {record.description}")
+        
         # 获取场景映射信息
         scene_info = scene_mappings.get(record.autoscene_id)
         if not scene_info:
-            logger.warning(f"未找到场景映射: {record.autoscene_id}")
+            logger.warning(f"❌ 未找到场景映射: {record.autoscene_id}")
+            logger.debug(f"   可用的场景ID: {list(scene_mappings.keys())[:5]}...")
             return None
         
         dataset_name = scene_info.get('dataset_name')
         if not dataset_name:
-            logger.warning(f"场景映射缺少dataset_name: {record.autoscene_id}")
+            logger.warning(f"❌ 场景映射缺少dataset_name: {record.autoscene_id}")
+            logger.debug(f"   场景信息: {scene_info}")
             return None
         
+        logger.debug(f"✅ 获得场景映射: {record.autoscene_id} -> {dataset_name}")
+        
         # 查询完整轨迹
+        logger.debug(f"🔍 查询轨迹数据: {dataset_name}")
         trajectory_df = self.trajectory_segmenter.query_complete_trajectory(dataset_name)
         if trajectory_df.empty:
-            logger.warning(f"未查询到轨迹数据: {dataset_name}")
+            logger.warning(f"❌ 未查询到轨迹数据: {dataset_name}")
             return None
+        
+        logger.debug(f"✅ 查询到轨迹数据: {len(trajectory_df)} 个点")
         
         # 合并结果字段
         merged_results = self.result_processor.merge_and_clean_results(
             record.result, record.other_scenario
         )
+        logger.debug(f"📋 合并结果字段: {merged_results}")
         
         # 计算基础统计
         start_time = int(trajectory_df['timestamp'].min())
@@ -903,24 +1161,47 @@ class QualityCheckTrajectoryQuery:
         total_duration = float(end_time - start_time)
         total_points = len(trajectory_df)
         
+        logger.debug(f"📊 轨迹基础统计: 点数={total_points}, 时长={total_duration}s, 时间范围=[{start_time}, {end_time}]")
+        
         # 处理轨迹分段
-        if record.description:
+        if record.description and len(record.description) > 0:
             # 有时间区间描述，进行分段
+            logger.debug(f"🔄 开始时间分段处理: {len(record.description)} 个时间区间")
+            logger.debug(f"   时间区间详情: {record.description}")
+            logger.debug(f"   轨迹时长: {total_duration}s")
+            
             geometry, segment_count = self.trajectory_segmenter.segment_trajectory_by_time_ranges(
                 trajectory_df, record.description
             )
             
             if geometry.is_empty:
-                logger.warning(f"分段轨迹生成失败: {record.autoscene_id}")
-                return None
+                logger.warning(f"❌ 分段轨迹生成失败: {record.autoscene_id}")
+                logger.warning(f"   时间区间: {record.description}")
+                logger.warning(f"   轨迹时长: {total_duration}s")
+                # 如果分段失败，尝试创建完整轨迹作为备选
+                logger.info(f"🔄 分段失败，尝试创建完整轨迹作为备选...")
+                geometry, _ = self.trajectory_segmenter.create_complete_trajectory(trajectory_df)
+                segment_count = 0
+                if geometry.is_empty:
+                    logger.warning(f"❌ 备选完整轨迹也失败: {record.autoscene_id}")
+                    return None
+                else:
+                    logger.info(f"✅ 备选完整轨迹创建成功")
+            else:
+                logger.debug(f"✅ 分段轨迹创建成功: {segment_count} 个分段")
         else:
             # 无描述，保留完整轨迹
+            logger.debug(f"🔄 创建完整轨迹（无时间区间描述）")
             geometry, _ = self.trajectory_segmenter.create_complete_trajectory(trajectory_df)
             segment_count = 0
             
             if geometry.is_empty:
-                logger.warning(f"完整轨迹生成失败: {record.autoscene_id}")
+                logger.warning(f"❌ 完整轨迹生成失败: {record.autoscene_id}")
+                logger.warning(f"   轨迹点数: {total_points}")
+                logger.warning(f"   最小点数要求: {self.config.min_points_per_segment}")
                 return None
+                
+            logger.debug(f"✅ 完整轨迹创建成功")
         
         return SegmentedTrajectory(
             task_name=record.task_name,
@@ -982,9 +1263,25 @@ class QualityCheckTrajectoryQuery:
                 gdf_data = []
                 geometries = []
                 
-                for traj in batch:
-                    # 转换PostgreSQL数组格式
-                    merged_results_pg = '{' + ','.join(f'"{result}"' for result in traj.merged_results) + '}'
+                for j, traj in enumerate(batch):
+                    # 转换PostgreSQL数组格式（确保UTF-8编码）
+                    try:
+                        # 确保每个结果都是正确编码的字符串
+                        cleaned_results = []
+                        for result in traj.merged_results:
+                            if isinstance(result, str):
+                                # 确保字符串是UTF-8编码
+                                cleaned_result = result.encode('utf-8', errors='ignore').decode('utf-8')
+                                # 转义双引号
+                                cleaned_result = cleaned_result.replace('"', '""')
+                                cleaned_results.append(cleaned_result)
+                            else:
+                                cleaned_results.append(str(result))
+                        
+                        merged_results_pg = '{' + ','.join(f'"{result}"' for result in cleaned_results) + '}'
+                    except Exception as e:
+                        logger.warning(f"PostgreSQL数组格式转换失败: {e}, 使用默认格式")
+                        merged_results_pg = '{' + ','.join(f'"{str(result)}"' for result in traj.merged_results) + '}'
                     
                     row = {
                         'task_name': traj.task_name,
@@ -998,6 +1295,28 @@ class QualityCheckTrajectoryQuery:
                         'end_time': traj.end_time,
                         'total_points': traj.total_points
                     }
+                    
+                    # 调试信息：显示第一条记录的详细信息
+                    if batch_num == 1 and j == 0:
+                        logger.debug(f"💾 第一条记录保存信息:")
+                        logger.debug(f"   task_name: '{traj.task_name}'")
+                        logger.debug(f"   annotator: '{traj.annotator}'")
+                        logger.debug(f"   scene_id: '{traj.scene_id}'")
+                        logger.debug(f"   dataset_name: '{traj.dataset_name}'")
+                        logger.debug(f"   segment_count: {traj.segment_count}")
+                        logger.debug(f"   merged_results: {traj.merged_results}")
+                        logger.debug(f"   merged_results_pg: '{merged_results_pg}'")
+                        # 显示编码信息
+                        for idx, result in enumerate(traj.merged_results):
+                            try:
+                                encoded_check = result.encode('utf-8').decode('utf-8')
+                                logger.debug(f"   结果{idx+1} 编码检查: '{result}' -> UTF-8正常")
+                            except:
+                                logger.debug(f"   结果{idx+1} 编码检查: '{result}' -> 可能有编码问题")
+                        logger.debug(f"   total_duration: {traj.total_duration}")
+                        logger.debug(f"   几何类型: {traj.geometry.geom_type}")
+                        logger.debug(f"   几何是否为空: {traj.geometry.is_empty}")
+                    
                     gdf_data.append(row)
                     geometries.append(traj.geometry)
                 
@@ -1132,13 +1451,23 @@ class QualityCheckTrajectoryQuery:
             geometries = []
             
             for traj in trajectories:
+                # 确保字符串字段编码正确
+                try:
+                    merged_results_str = ','.join(
+                        result.encode('utf-8', errors='ignore').decode('utf-8') 
+                        if isinstance(result, str) else str(result)
+                        for result in traj.merged_results
+                    )
+                except:
+                    merged_results_str = ','.join(str(result) for result in traj.merged_results)
+                
                 row = {
                     'task_name': traj.task_name,
                     'annotator': traj.annotator,
                     'scene_id': traj.scene_id,
                     'dataset_name': traj.dataset_name,
                     'segment_count': traj.segment_count,
-                    'merged_results': ','.join(traj.merged_results),  # 转换为字符串
+                    'merged_results': merged_results_str,
                     'total_duration': traj.total_duration,
                     'start_time': traj.start_time,
                     'end_time': traj.end_time,
