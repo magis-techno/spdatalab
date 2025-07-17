@@ -53,7 +53,34 @@ if 'event_id' in gdf.columns:
 - ✅ `NaN` (float) → `None` (object)
 - ✅ PostgreSQL接受整数值，插入成功
 
+## 🔄 渐进式查询策略（新增）
+
+### 问题背景
+部分 `data_name` 在 `transform.ods_t_data_fragment_datalake` 表中查询不到对应的 `event_id` 和 `event_name`。
+
+### 解决方案：两阶段查询
+```
+阶段1：主查询 (origin_name直接查询)
+data_name → transform.ods_t_data_fragment_datalake.origin_name → event_id, event_name
+
+阶段2：备选查询 (通过defect_id间接查询) 
+data_name → elasticsearch_ros.ods_ddi_index002_datalake.id → defect_id
+defect_id → transform.ods_t_data_fragment_datalake.origin_source_id → event_id, event_name
+```
+
+### 查询流程
+1. **主查询**：处理所有 `data_name`，记录成功和失败的数量
+2. **缺失检查**：找出主查询中未找到的 `data_name`
+3. **备选查询**：对缺失的 `data_name` 执行两步查询
+4. **结果合并**：将主查询和备选查询结果合并
+
+### 性能优势
+- ✅ **大部分场景一次查询**：主查询成功率高时性能最优
+- ✅ **按需启用备选**：只对失败的记录执行复杂查询
+- ✅ **完整性保障**：最大化 `event_id` 和 `event_name` 的覆盖率
+- ✅ **可监控性**：详细日志记录主/备查询使用情况
+
 ## 🔧 相关文件
 
-- `src/spdatalab/dataset/polygon_trajectory_query.py` - 主要修复代码
+- `src/spdatalab/dataset/polygon_trajectory_query.py` - 主要修复代码 + 渐进式查询策略
 - `DATABASE_CONNECTION_RULES.md` - 数据库连接规范 

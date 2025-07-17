@@ -198,7 +198,7 @@ class ExcelDataParser:
                     if record:
                         records.append(record)
                 except Exception as e:
-                    logger.debug(f"解析第 {index+1} 行数据失败: {str(e)}")
+                    logger.warning(f"解析第 {index+1} 行数据失败: {str(e)}")
                     continue
             
             logger.info(f"✅ 解析完成: {len(records)} 条有效质检记录")
@@ -228,7 +228,6 @@ class ExcelDataParser:
             df['description'] = df['description'].astype(str).str.strip()
             df['description'] = df['description'].replace(['nan', 'None', ''], None)
         
-        logger.debug(f"数据清理后: {len(df)} 行有效数据")
         return df
     
     def _filter_valid_records(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -284,7 +283,6 @@ class ExcelDataParser:
         
         # 过滤掉result为good的记录
         good_mask = df['result'].apply(is_good_result)
-        logger.debug(f"发现 {good_mask.sum()} 条result为'good'的记录，将被过滤")
         
         # 最终过滤条件：有效记录 且 不是good结果
         final_mask = valid_mask & ~good_mask
@@ -326,7 +324,6 @@ class ExcelDataParser:
                         fixed_text = text_str.encode('latin1').decode(encoding)
                         # 检查是否包含中文字符
                         if any('\u4e00' <= char <= '\u9fff' for char in fixed_text):
-                            logger.debug(f"编码修复成功: '{text_str}' -> '{fixed_text}' (使用 {encoding})")
                             return fixed_text
                 except:
                     continue
@@ -335,7 +332,6 @@ class ExcelDataParser:
             return text_str
             
         except Exception as e:
-            logger.debug(f"编码修复失败: {text}, 错误: {e}")
             return str(text)
     
     def _parse_record(self, row: pd.Series) -> Optional[QualityCheckRecord]:
@@ -368,7 +364,6 @@ class ExcelDataParser:
             )
             
         except Exception as e:
-            logger.debug(f"解析记录失败: {str(e)}")
             return None
     
     def _parse_result_field(self, value) -> Union[str, List[str]]:
@@ -406,25 +401,18 @@ class ExcelDataParser:
     
     def _parse_description_field(self, value) -> List[List[float]]:
         """解析description时间区间字段"""
-        logger.debug(f"🔍 解析description字段: {value} (类型: {type(value)})")
-        
         if pd.isna(value) or value in ['', 'nan', 'None']:
-            logger.debug("   结果: 空值，返回空列表")
             return []
         
         value_str = str(value).strip()
-        logger.debug(f"   字符串化后: '{value_str}'")
         
         try:
             # 尝试解析为嵌套列表
             parsed = ast.literal_eval(value_str)
-            logger.debug(f"   ast解析结果: {parsed} (类型: {type(parsed)})")
             
             if isinstance(parsed, list):
                 result = []
-                for i, item in enumerate(parsed):
-                    logger.debug(f"   处理第{i+1}个区间: {item} (类型: {type(item)})")
-                    
+                for item in parsed:
                     if isinstance(item, list) and len(item) == 2:
                         try:
                             start_time = float(item[0])
@@ -432,23 +420,13 @@ class ExcelDataParser:
                             
                             if start_time < end_time:  # 验证时间区间有效性
                                 result.append([start_time, end_time])
-                                logger.debug(f"     ✅ 有效区间: [{start_time}, {end_time}]")
-                            else:
-                                logger.debug(f"     ❌ 无效区间: [{start_time}, {end_time}] (开始>=结束)")
-                        except Exception as e:
-                            logger.debug(f"     ❌ 区间转换失败: {e}")
+                        except Exception:
                             continue
-                    else:
-                        logger.debug(f"     ❌ 区间格式错误: 不是长度为2的列表")
                 
-                logger.debug(f"   解析结果: {result} ({len(result)} 个有效区间)")
                 return result
-            else:
-                logger.debug(f"   ❌ 解析结果不是列表: {type(parsed)}")
-        except Exception as e:
-            logger.debug(f"   ❌ ast解析失败: {e}")
+        except Exception:
+            pass
         
-        logger.debug("   返回空列表")
         return []
 
 class ResultFieldProcessor:
