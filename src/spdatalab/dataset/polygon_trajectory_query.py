@@ -696,10 +696,25 @@ class HighPerformancePolygonTrajectoryQuery:
                 # 强制转换数值类型字段，避免浮点数格式问题
                 if 'event_id' in gdf.columns:
                     logger.info(f"🔍 开始强制转换event_id数据类型...")
-                    # 将event_id转换为整数，处理可能的浮点数和空值
-                    gdf['event_id'] = gdf['event_id'].apply(
-                        lambda x: int(float(x)) if pd.notna(x) and x != '' else None
-                    )
+                    
+                    # 更可靠的转换方法：先填充NaN，然后转换为整数
+                    # 1. 找出非空的值并转换为整数
+                    valid_mask = gdf['event_id'].notna()
+                    logger.info(f"🔍 有效event_id数量: {valid_mask.sum()}, NaN数量: {(~valid_mask).sum()}")
+                    
+                    # 2. 创建新的Series，先全部设为None
+                    new_event_ids = pd.Series([None] * len(gdf), dtype=object)
+                    
+                    # 3. 对有效值进行转换
+                    if valid_mask.any():
+                        valid_values = gdf.loc[valid_mask, 'event_id']
+                        converted_values = valid_values.apply(lambda x: int(x))
+                        new_event_ids.loc[valid_mask] = converted_values
+                        logger.info(f"🔍 转换示例: {gdf.loc[valid_mask, 'event_id'].iloc[0]} -> {converted_values.iloc[0]}")
+                    
+                    # 4. 替换原列
+                    gdf['event_id'] = new_event_ids
+                    
                     logger.info(f"🔍 转换后event_id类型: {gdf['event_id'].dtype}")
                     final_sample_values = gdf['event_id'].head(3).tolist()
                     for i, val in enumerate(final_sample_values):
