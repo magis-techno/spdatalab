@@ -11,7 +11,7 @@ import os
 # 添加项目路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
-from spdatalab.common.config import hive_cursor
+from spdatalab.common.io_hive import hive_cursor
 
 def debug_event_id_types():
     """调试event_id数据类型问题"""

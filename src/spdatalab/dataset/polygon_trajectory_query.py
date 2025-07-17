@@ -662,6 +662,13 @@ class HighPerformancePolygonTrajectoryQuery:
                 # 创建GeoDataFrame
                 gdf = gpd.GeoDataFrame(gdf_data, geometry=geometries, crs=4326)
                 
+                # 强制转换数值类型字段，避免浮点数格式问题
+                if 'event_id' in gdf.columns:
+                    # 将event_id转换为整数，处理可能的浮点数和空值
+                    gdf['event_id'] = gdf['event_id'].apply(
+                        lambda x: int(float(x)) if pd.notna(x) and x != '' else None
+                    )
+                
                 # 转换PostgreSQL数组格式
                 if 'polygon_ids' in gdf.columns:
                     # 将Python列表转换为PostgreSQL数组格式 {item1,item2}
