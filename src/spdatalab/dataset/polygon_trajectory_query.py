@@ -516,7 +516,11 @@ class HighPerformancePolygonTrajectoryQuery:
                 
                 # 处理event_id字段（可能为空）
                 if 'event_id' in scene_id_mappings.columns:
-                    data_name_to_event_id = dict(zip(scene_id_mappings['data_name'], scene_id_mappings['event_id']))
+                    # 确保event_id是整数类型，避免浮点数格式问题
+                    event_ids_cleaned = scene_id_mappings['event_id'].apply(
+                        lambda x: int(float(x)) if pd.notna(x) and x != '' else None
+                    )
+                    data_name_to_event_id = dict(zip(scene_id_mappings['data_name'], event_ids_cleaned))
                 
                 # 处理event_name字段（可能为空）
                 if 'event_name' in scene_id_mappings.columns:
