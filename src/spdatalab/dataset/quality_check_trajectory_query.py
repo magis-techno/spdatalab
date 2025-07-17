@@ -617,6 +617,29 @@ class TrajectorySegmenter:
     def __init__(self, config: QualityCheckConfig):
         self.config = config
     
+    def _detect_timestamp_unit(self, duration):
+        """检测时间戳单位并返回缩放因子
+        
+        Args:
+            duration: 原始时间戳差值
+            
+        Returns:
+            (单位名称, 缩放因子)
+        """
+        # 根据时间戳差值的大小推断单位
+        if duration < 1000:
+            # 小于1000，可能是秒级时间戳
+            return "秒", 1
+        elif duration < 1000000:
+            # 1000-1000000，可能是毫秒级时间戳
+            return "毫秒", 1000
+        elif duration < 1000000000:
+            # 1000000-1000000000，可能是微秒级时间戳
+            return "微秒", 1000000
+        else:
+            # 大于1000000000，可能是纳秒级时间戳
+            return "纳秒", 1000000000
+    
     def query_complete_trajectory(self, dataset_name: str) -> pd.DataFrame:
         """查询完整轨迹数据
         
@@ -700,15 +723,24 @@ class TrajectorySegmenter:
             logger.warning("⚠️ 轨迹DataFrame为空，无法进行分段")
             return MultiLineString([]), 0
         
-        # 计算相对时间
+        # 计算相对时间（处理不同的时间戳单位）
         start_timestamp = trajectory_df['timestamp'].min()
         end_timestamp = trajectory_df['timestamp'].max()
-        total_duration = end_timestamp - start_timestamp
+        raw_duration = end_timestamp - start_timestamp
         
-        logger.debug(f"📊 轨迹时间范围: {start_timestamp} - {end_timestamp} (时长: {total_duration}s)")
+        # 自动检测时间戳单位并转换为秒
+        timestamp_unit, time_scale = self._detect_timestamp_unit(raw_duration)
+        logger.debug(f"📊 检测到时间戳单位: {timestamp_unit} (缩放因子: {time_scale})")
         
+        # 转换为相对时间（秒）
         trajectory_df = trajectory_df.copy()
-        trajectory_df['relative_time'] = trajectory_df['timestamp'] - start_timestamp
+        trajectory_df['relative_time'] = (trajectory_df['timestamp'] - start_timestamp) / time_scale
+        
+        # 重新计算转换后的时长
+        total_duration = trajectory_df['relative_time'].max()
+        
+        logger.debug(f"📊 轨迹时间范围: {start_timestamp} - {end_timestamp}")
+        logger.debug(f"📊 转换后时长: {total_duration:.1f}s (原始: {raw_duration} {timestamp_unit})")
         
         segments = []
         valid_segments = 0
@@ -725,7 +757,7 @@ class TrajectorySegmenter:
                 continue
             
             if end_time < 0 or start_time > total_duration:
-                logger.warning(f"⚠️ 时间区间超出轨迹范围: [{start_time}, {end_time}]s, 轨迹时长: {total_duration}s")
+                logger.warning(f"⚠️ 时间区间超出轨迹范围: [{start_time}, {end_time}]s, 轨迹时长: {total_duration:.1f}s")
                 skipped_segments += 1
                 continue
             
@@ -833,12 +865,17 @@ class TrajectorySegmenter:
                 simplified_coords = len(trajectory_geom.coords)
                 logger.debug(f"🔧 几何简化: {original_coords} -> {simplified_coords} 个坐标点")
             
-            # 计算总时长
+            # 计算总时长（处理时间戳单位）
             min_timestamp = trajectory_df['timestamp'].min()
             max_timestamp = trajectory_df['timestamp'].max()
-            duration = float(max_timestamp - min_timestamp)
+            raw_duration = max_timestamp - min_timestamp
             
-            logger.debug(f"📊 轨迹时长: {duration}s ({min_timestamp} - {max_timestamp})")
+            # 检测时间戳单位并转换为秒
+            timestamp_unit, time_scale = self._detect_timestamp_unit(raw_duration)
+            duration = float(raw_duration / time_scale)
+            
+            logger.debug(f"📊 轨迹时长: {duration:.1f}s (原始: {raw_duration} {timestamp_unit})")
+            logger.debug(f"📊 时间戳范围: {min_timestamp} - {max_timestamp}")
             
             # 转换为MultiLineString
             multi_geom = MultiLineString([trajectory_geom])
@@ -1155,13 +1192,18 @@ class QualityCheckTrajectoryQuery:
         )
         logger.debug(f"📋 合并结果字段: {merged_results}")
         
-        # 计算基础统计
+        # 计算基础统计（处理时间戳单位）
         start_time = int(trajectory_df['timestamp'].min())
         end_time = int(trajectory_df['timestamp'].max())
-        total_duration = float(end_time - start_time)
+        raw_duration = float(end_time - start_time)
+        
+        # 检测时间戳单位并转换为秒
+        timestamp_unit, time_scale = self.trajectory_segmenter._detect_timestamp_unit(raw_duration)
+        total_duration = raw_duration / time_scale
         total_points = len(trajectory_df)
         
-        logger.debug(f"📊 轨迹基础统计: 点数={total_points}, 时长={total_duration}s, 时间范围=[{start_time}, {end_time}]")
+        logger.debug(f"📊 轨迹基础统计: 点数={total_points}, 时长={total_duration:.1f}s (原始: {raw_duration} {timestamp_unit})")
+        logger.debug(f"📊 时间戳范围: {start_time} - {end_time}")
         
         # 处理轨迹分段
         if record.description and len(record.description) > 0:
@@ -1177,7 +1219,7 @@ class QualityCheckTrajectoryQuery:
             if geometry.is_empty:
                 logger.warning(f"❌ 分段轨迹生成失败: {record.autoscene_id}")
                 logger.warning(f"   时间区间: {record.description}")
-                logger.warning(f"   轨迹时长: {total_duration}s")
+                logger.warning(f"   轨迹时长: {total_duration:.1f}s")
                 # 如果分段失败，尝试创建完整轨迹作为备选
                 logger.info(f"🔄 分段失败，尝试创建完整轨迹作为备选...")
                 geometry, _ = self.trajectory_segmenter.create_complete_trajectory(trajectory_df)
