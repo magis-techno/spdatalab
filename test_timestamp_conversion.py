@@ -23,13 +23,13 @@ def test_timestamp_detection():
         config = QualityCheckConfig()
         segmenter = TrajectorySegmenter(config)
         
-        # 测试不同单位的时间戳差值
-        test_cases = [
-            (100, "秒", 1),                          # 100秒
-            (30000, "毫秒", 1000),                   # 30秒 = 30000毫秒
-            (15000000, "微秒", 1000000),             # 15秒 = 15000000微秒
-            (29000273000000000, "纳秒", 1000000000), # 29000273秒 = 29000273000000000纳秒
-        ]
+                          # 测试不同单位的时间戳差值（更新检测阈值）
+         test_cases = [
+             (100, "秒", 1),                          # 100秒
+             (30000, "毫秒", 1000),                   # 30秒 = 30000毫秒
+             (30000000, "微秒", 1000000),             # 30秒 = 30000000微秒（16位时间戳典型值）
+             (29000273000000000, "纳秒", 1000000000), # 29000273秒 = 29000273000000000纳秒
+         ]
         
         for duration, expected_unit, expected_scale in test_cases:
             unit, scale = segmenter._detect_timestamp_unit(duration)

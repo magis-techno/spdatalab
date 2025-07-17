@@ -89,7 +89,8 @@ class QualityCheckConfig:
     
     # 轨迹分段配置
     min_points_per_segment: int = 2
-    time_tolerance: float = 0.1  # 时间匹配容差（秒）
+    time_tolerance: float = 0.5  # 时间匹配容差（秒）- 增加到0.5秒
+    adaptive_tolerance: bool = True  # 启用自适应时间容差
     
     # 几何配置
     force_multilinestring: bool = True
@@ -627,17 +628,18 @@ class TrajectorySegmenter:
             (单位名称, 缩放因子)
         """
         # 根据时间戳差值的大小推断单位
+        # 优化：更精确的单位检测，特别处理16位微秒时间戳
         if duration < 1000:
             # 小于1000，可能是秒级时间戳
             return "秒", 1
-        elif duration < 1000000:
-            # 1000-1000000，可能是毫秒级时间戳
+        elif duration < 100000:
+            # 1000-100000，可能是毫秒级时间戳（典型范围：几秒到几分钟）
             return "毫秒", 1000
-        elif duration < 1000000000:
-            # 1000000-1000000000，可能是微秒级时间戳
+        elif duration < 100000000:
+            # 100000-100000000，可能是微秒级时间戳（典型范围：几秒到几分钟）
             return "微秒", 1000000
         else:
-            # 大于1000000000，可能是纳秒级时间戳
+            # 大于100000000，可能是纳秒级时间戳
             return "纳秒", 1000000000
     
     def query_complete_trajectory(self, dataset_name: str) -> pd.DataFrame:
@@ -761,19 +763,49 @@ class TrajectorySegmenter:
                 skipped_segments += 1
                 continue
             
-            # 筛选时间区间内的点
-            mask = (
-                (trajectory_df['relative_time'] >= start_time - self.config.time_tolerance) &
-                (trajectory_df['relative_time'] <= end_time + self.config.time_tolerance)
-            )
+            # 筛选时间区间内的点（支持自适应容差）
+            tolerance = self.config.time_tolerance
+            segment_points = None
             
-            segment_points = trajectory_df[mask]
-            logger.debug(f"📍 时间区间 [{start_time}, {end_time}]s 筛选到 {len(segment_points)} 个点")
-            
-            if len(segment_points) < self.config.min_points_per_segment:
-                logger.warning(f"⚠️ 分段点数不足: {len(segment_points)} < {self.config.min_points_per_segment}")
-                skipped_segments += 1
-                continue
+            # 如果启用自适应容差，逐步增加容差直到找到足够的点
+            if self.config.adaptive_tolerance:
+                max_tolerance = min(5.0, total_duration * 0.1)  # 最大容差不超过5秒或轨迹时长的10%
+                tolerance_step = 0.5
+                
+                while tolerance <= max_tolerance:
+                    mask = (
+                        (trajectory_df['relative_time'] >= start_time - tolerance) &
+                        (trajectory_df['relative_time'] <= end_time + tolerance)
+                    )
+                    
+                    segment_points = trajectory_df[mask]
+                    logger.debug(f"📍 时间区间 [{start_time}, {end_time}]s 容差±{tolerance}s 筛选到 {len(segment_points)} 个点")
+                    
+                    if len(segment_points) >= self.config.min_points_per_segment:
+                        if tolerance > self.config.time_tolerance:
+                            logger.info(f"✅ 自适应容差成功: 使用±{tolerance}s容差找到{len(segment_points)}个点")
+                        break
+                    
+                    tolerance += tolerance_step
+                else:
+                    # 达到最大容差仍不足，记录并跳过
+                    logger.warning(f"⚠️ 自适应容差失败: 最大容差±{max_tolerance}s仍只有 {len(segment_points)} < {self.config.min_points_per_segment} 个点")
+                    skipped_segments += 1
+                    continue
+            else:
+                # 标准容差处理
+                mask = (
+                    (trajectory_df['relative_time'] >= start_time - tolerance) &
+                    (trajectory_df['relative_time'] <= end_time + tolerance)
+                )
+                
+                segment_points = trajectory_df[mask]
+                logger.debug(f"📍 时间区间 [{start_time}, {end_time}]s 筛选到 {len(segment_points)} 个点")
+                
+                if len(segment_points) < self.config.min_points_per_segment:
+                    logger.warning(f"⚠️ 分段点数不足: {len(segment_points)} < {self.config.min_points_per_segment}")
+                    skipped_segments += 1
+                    continue
             
             try:
                 coordinates = list(zip(segment_points['longitude'], segment_points['latitude']))
