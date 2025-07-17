@@ -333,6 +333,14 @@ class HighPerformancePolygonTrajectoryQuery:
                 result_df = pd.DataFrame(cur.fetchall(), columns=cols)
                 
             logger.debug(f"查询到 {len(result_df)} 个data_name对应的scene_id、event_id、event_name")
+            
+            # 添加详细的数据类型日志
+            if not result_df.empty and 'event_id' in result_df.columns:
+                logger.info(f"🔍 数据库查询返回的event_id类型: {result_df['event_id'].dtype}")
+                sample_event_ids = result_df['event_id'].head(3).tolist()
+                for i, event_id in enumerate(sample_event_ids):
+                    logger.info(f"🔍 样本event_id[{i}]: {event_id} (type: {type(event_id)})")
+                    
             return result_df
             
         except Exception as e:
@@ -516,11 +524,20 @@ class HighPerformancePolygonTrajectoryQuery:
                 
                 # 处理event_id字段（可能为空）
                 if 'event_id' in scene_id_mappings.columns:
+                    logger.info(f"🔍 scene_id_mappings中event_id原始类型: {scene_id_mappings['event_id'].dtype}")
+                    
                     # 确保event_id是整数类型，避免浮点数格式问题
                     event_ids_cleaned = scene_id_mappings['event_id'].apply(
                         lambda x: int(float(x)) if pd.notna(x) and x != '' else None
                     )
+                    logger.info(f"🔍 清理后event_id类型: {event_ids_cleaned.dtype}")
+                    
                     data_name_to_event_id = dict(zip(scene_id_mappings['data_name'], event_ids_cleaned))
+                    
+                    # 验证字典中的数据类型
+                    sample_items = list(data_name_to_event_id.items())[:3]
+                    for data_name, event_id in sample_items:
+                        logger.info(f"🔍 字典中event_id - {data_name}: {event_id} (type: {type(event_id)})")
                 
                 # 处理event_name字段（可能为空）
                 if 'event_name' in scene_id_mappings.columns:
@@ -559,10 +576,13 @@ class HighPerformancePolygonTrajectoryQuery:
                 trajectory_geom = LineString(coordinates)
                 
                 # 基础统计信息
+                retrieved_event_id = data_name_to_event_id.get(dataset_name, None)
+                logger.debug(f"🔍 轨迹构建 - {dataset_name}: event_id={retrieved_event_id} (type: {type(retrieved_event_id)})")
+                
                 stats = {
                     'dataset_name': dataset_name,
                     'scene_id': data_name_to_scene_id.get(dataset_name, ''),  # 从数据库查询获取scene_id
-                    'event_id': data_name_to_event_id.get(dataset_name, None),  # 从数据库查询获取event_id
+                    'event_id': retrieved_event_id,  # 从数据库查询获取event_id
                     'event_name': data_name_to_event_name.get(dataset_name, ''),  # 从数据库查询获取event_name
                     'start_time': int(group['timestamp'].min()),
                     'end_time': int(group['timestamp'].max()),
@@ -666,12 +686,24 @@ class HighPerformancePolygonTrajectoryQuery:
                 # 创建GeoDataFrame
                 gdf = gpd.GeoDataFrame(gdf_data, geometry=geometries, crs=4326)
                 
+                # 检查GeoDataFrame创建后的数据类型
+                if 'event_id' in gdf.columns:
+                    logger.info(f"🔍 GeoDataFrame创建后event_id类型: {gdf['event_id'].dtype}")
+                    sample_values = gdf['event_id'].head(3).tolist()
+                    for i, val in enumerate(sample_values):
+                        logger.info(f"🔍 GDF中event_id样本[{i}]: {val} (type: {type(val)})")
+                
                 # 强制转换数值类型字段，避免浮点数格式问题
                 if 'event_id' in gdf.columns:
+                    logger.info(f"🔍 开始强制转换event_id数据类型...")
                     # 将event_id转换为整数，处理可能的浮点数和空值
                     gdf['event_id'] = gdf['event_id'].apply(
                         lambda x: int(float(x)) if pd.notna(x) and x != '' else None
                     )
+                    logger.info(f"🔍 转换后event_id类型: {gdf['event_id'].dtype}")
+                    final_sample_values = gdf['event_id'].head(3).tolist()
+                    for i, val in enumerate(final_sample_values):
+                        logger.info(f"🔍 转换后event_id样本[{i}]: {val} (type: {type(val)})")
                 
                 # 转换PostgreSQL数组格式
                 if 'polygon_ids' in gdf.columns:
@@ -680,13 +712,22 @@ class HighPerformancePolygonTrajectoryQuery:
                         lambda x: '{' + ','.join(str(item) for item in x) + '}' if isinstance(x, list) else x
                     )
                 
+                # 最终检查：保存前的数据状态
+                if 'event_id' in gdf.columns:
+                    logger.info(f"🔍 保存前最终检查 - event_id类型: {gdf['event_id'].dtype}")
+                    final_check_values = gdf['event_id'].head(3).tolist()
+                    for i, val in enumerate(final_check_values):
+                        logger.info(f"🔍 保存前event_id[{i}]: {val} (type: {type(val)})")
+                
                 # 批量插入到数据库
+                logger.info(f"🔍 开始调用to_postgis保存到数据库...")
                 gdf.to_postgis(
                     table_name, 
                     self.engine, 
                     if_exists='append', 
                     index=False
                 )
+                logger.info(f"🔍 to_postgis调用完成")
                 
                 total_saved += len(gdf)
                 save_stats['batch_count'] += 1
