@@ -446,8 +446,13 @@ class HighPerformancePolygonTrajectoryQuery:
             logger.error(f"通过origin_source_id查询失败: {str(e)}")
             return pd.DataFrame()
 
-    def _batch_query_strategy(self, polygons: List[Dict]) -> pd.DataFrame:
-        """批量查询策略 - 使用hive_cursor连接（性能优化版）"""
+    def _batch_query_strategy(self, polygons: List[Dict], is_chunk_mode: bool = False) -> pd.DataFrame:
+        """批量查询策略 - 使用hive_cursor连接（性能优化版）
+        
+        Args:
+            polygons: polygon列表
+            is_chunk_mode: 是否处于分块模式（避免无限递归）
+        """
         logger.info(f"🔍 使用批量查询策略处理 {len(polygons)} 个polygon")
         logger.info(f"⚡ 每polygon点数限制: {self.config.limit_per_polygon:,}")
         
@@ -466,9 +471,9 @@ class HighPerformancePolygonTrajectoryQuery:
             logger.error(f"❌ 数据库连接失败: {e}")
             return pd.DataFrame()
         
-        # 性能优化：检查polygon数量
-        if len(polygons) > 10:
-            logger.info(f"⚠️ polygon数量较多({len(polygons)})，切换到分块策略")
+        # 性能优化：检查polygon数量（只有在非分块模式下才切换）
+        if not is_chunk_mode and len(polygons) > self.config.batch_threshold:
+            logger.info(f"⚠️ polygon数量较多({len(polygons)} > {self.config.batch_threshold})，切换到分块策略")
             return self._chunked_query_strategy(polygons)
         
         # 构建优化的查询
@@ -573,8 +578,8 @@ class HighPerformancePolygonTrajectoryQuery:
             chunk_num = i // self.config.chunk_size + 1
             logger.info(f"处理第 {chunk_num} 块: {len(chunk)} 个polygon")
             
-            # 使用批量策略处理当前块
-            chunk_result = self._batch_query_strategy(chunk)
+            # 使用批量策略处理当前块，标记为分块模式避免无限递归
+            chunk_result = self._batch_query_strategy(chunk, is_chunk_mode=True)
             if not chunk_result.empty:
                 all_results.append(chunk_result)
         
