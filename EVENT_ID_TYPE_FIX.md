@@ -63,20 +63,20 @@ if 'event_id' in gdf.columns:
 阶段1：主查询 (origin_name直接查询)
 data_name → transform.ods_t_data_fragment_datalake.origin_name → event_id, event_name
 
-阶段2：备选查询 (通过defect_id间接查询) 
-data_name → elasticsearch_ros.ods_ddi_index002_datalake.id → defect_id
-defect_id → transform.ods_t_data_fragment_datalake.origin_source_id → event_id, event_name
+阶段2：备选查询 (直接查询index002表)
+data_name → elasticsearch_ros.ods_ddi_index002_datalake.data_name → event_id, event_name
 ```
 
 ### 查询流程
 1. **主查询**：处理所有 `data_name`，记录成功和失败的数量
 2. **缺失检查**：找出主查询中未找到的 `data_name`
-3. **备选查询**：对缺失的 `data_name` 执行两步查询
+3. **备选查询**：对缺失的 `data_name` 直接查询index002表
 4. **结果合并**：将主查询和备选查询结果合并
 
 ### 性能优势
 - ✅ **大部分场景一次查询**：主查询成功率高时性能最优
-- ✅ **按需启用备选**：只对失败的记录执行复杂查询
+- ✅ **按需启用备选**：只对失败的记录执行备选查询
+- ✅ **简化查询路径**：备选查询直接查询index002表，无需中间步骤
 - ✅ **完整性保障**：最大化 `event_id` 和 `event_name` 的覆盖率
 - ✅ **可监控性**：详细日志记录主/备查询使用情况
 

@@ -297,8 +297,8 @@ class HighPerformancePolygonTrajectoryQuery:
         """根据data_name批量查询对应的scene_id、event_id、event_name（渐进式查询）
         
         采用两阶段查询策略：
-        1. 主查询：直接通过origin_name查询
-        2. 备选查询：通过data_name->defect_id->origin_source_id查询
+        1. 主查询：直接通过origin_name查询transform.ods_t_data_fragment_datalake
+        2. 备选查询：直接查询elasticsearch_ros.ods_ddi_index002_datalake
         
         Args:
             data_names: 数据名称列表
@@ -318,10 +318,10 @@ class HighPerformancePolygonTrajectoryQuery:
         
         logger.info(f"主查询成功: {len(found_data_names)}/{len(data_names)}, 需要备选查询: {len(missing_data_names)}")
         
-        # 第二阶段：备选查询（通过defect_id查询）
+        # 第二阶段：备选查询（直接查询index002表）
         if missing_data_names:
             logger.info(f"开始备选查询，处理 {len(missing_data_names)} 个缺失的data_name")
-            fallback_result_df = self._fallback_query_by_defect_id(missing_data_names)
+            fallback_result_df = self._fallback_query_by_index002(missing_data_names)
             
             # 合并主查询和备选查询的结果
             if not fallback_result_df.empty:
@@ -368,82 +368,36 @@ class HighPerformancePolygonTrajectoryQuery:
             logger.error(f"主查询失败: {str(e)}")
             return pd.DataFrame()
     
-    def _fallback_query_by_defect_id(self, missing_data_names: List[str]) -> pd.DataFrame:
-        """备选查询：通过data_name->defect_id->origin_source_id查询"""
-        try:
-            # 第一步：通过data_name查询defect_id
-            defect_mapping = self._query_defect_ids(missing_data_names)
-            
-            if defect_mapping.empty:
-                logger.warning("未查询到任何defect_id")
-                return pd.DataFrame()
-            
-            # 第二步：通过defect_id查询scene_id、event_id、event_name
-            defect_ids = defect_mapping['defect_id'].tolist()
-            result_df = self._query_by_origin_source_id(defect_ids, defect_mapping)
-            
-            logger.debug(f"备选查询完成: {len(result_df)} 条记录")
-            return result_df
-            
-        except Exception as e:
-            logger.error(f"备选查询失败: {str(e)}")
-            return pd.DataFrame()
-    
-    def _query_defect_ids(self, data_names: List[str]) -> pd.DataFrame:
-        """查询data_name对应的defect_id"""
-        try:
-            sql = "SELECT id AS data_name, defect_id FROM elasticsearch_ros.ods_ddi_index002_datalake WHERE id IN %(tok)s"
-            
-            with hive_cursor() as cur:
-                cur.execute(sql, {"tok": tuple(data_names)})
-                cols = [d[0] for d in cur.description]
-                result_df = pd.DataFrame(cur.fetchall(), columns=cols)
-                
-            logger.debug(f"defect_id查询: {len(result_df)}/{len(data_names)} 成功")
-            return result_df
-            
-        except Exception as e:
-            logger.error(f"查询defect_id失败: {str(e)}")
-            return pd.DataFrame()
-    
-    def _query_by_origin_source_id(self, defect_ids: List[str], defect_mapping: pd.DataFrame) -> pd.DataFrame:
-        """通过origin_source_id查询scene_id、event_id、event_name"""
+    def _fallback_query_by_index002(self, missing_data_names: List[str]) -> pd.DataFrame:
+        """备选查询：直接从ods_ddi_index002_datalake查询event_id和event_name"""
         try:
             sql = """
-                SELECT origin_source_id AS defect_id,
+                SELECT data_name,
                        id AS scene_id,
                        event_id,
                        event_name
                 FROM (
-                    SELECT origin_source_id, 
-                           id, 
+                    SELECT data_name,
+                           id,
                            event_id,
                            event_name,
-                           ROW_NUMBER() OVER (PARTITION BY origin_source_id ORDER BY updated_at DESC) as rn
-                    FROM transform.ods_t_data_fragment_datalake 
-                    WHERE origin_source_id IN %(tok)s
+                           ROW_NUMBER() OVER (PARTITION BY data_name ORDER BY updated_at DESC) as rn
+                    FROM elasticsearch_ros.ods_ddi_index002_datalake 
+                    WHERE data_name IN %(tok)s
                 ) ranked
                 WHERE rn = 1
             """
             
             with hive_cursor() as cur:
-                cur.execute(sql, {"tok": tuple(defect_ids)})
+                cur.execute(sql, {"tok": tuple(missing_data_names)})
                 cols = [d[0] for d in cur.description]
                 result_df = pd.DataFrame(cur.fetchall(), columns=cols)
-            
-            # 合并defect_mapping和查询结果，获得data_name
-            final_result = pd.merge(
-                defect_mapping, 
-                result_df, 
-                on='defect_id', 
-                how='inner'
-            ).drop('defect_id', axis=1)  # 删除中间字段defect_id
-            
-            logger.debug(f"origin_source_id查询: {len(final_result)} 条最终记录")
-            return final_result
+                
+            logger.debug(f"备选查询完成: {len(result_df)} 条记录")
+            return result_df
             
         except Exception as e:
-            logger.error(f"通过origin_source_id查询失败: {str(e)}")
+            logger.error(f"备选查询失败: {str(e)}")
             return pd.DataFrame()
 
     def _batch_query_strategy(self, polygons: List[Dict], is_chunk_mode: bool = False) -> pd.DataFrame:
