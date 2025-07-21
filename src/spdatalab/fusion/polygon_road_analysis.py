@@ -37,31 +37,34 @@ class PolygonRoadAnalysisConfig:
     local_dsn: str = LOCAL_DSN
     remote_catalog: str = "rcdatalake_gy1"
     
-    # 远程表名配置（复用trajectory_road_analysis的表名）
-    lane_table: str = "full_lane"
-    intersection_table: str = "full_intersection"
+    # 远程表名配置（包含关联表）
     road_table: str = "full_road"
+    intersection_table: str = "full_intersection"
+    intersection_inroad_table: str = "full_intersectiongoinroad"
+    intersection_outroad_table: str = "full_intersectiongooutroad"
+    roadintersection_table: str = "full_roadintersection"
     
     # 批量处理配置
     polygon_batch_size: int = 50  # 每批处理的polygon数量
     enable_parallel_queries: bool = True  # 启用并行查询
-    temp_table_timeout: int = 300  # 临时表超时时间（秒）
     
     # 查询限制配置
     max_polygon_area: float = 10000000  # 最大polygon面积（平方米）
     max_roads_per_polygon: int = 1000  # 单个polygon最大road数量
     max_intersections_per_polygon: int = 200  # 单个polygon最大intersection数量
-    max_lanes_from_roads: int = 10000  # 从roads查找lanes的最大数量
+    
+    # 两阶段查询配置
+    spatial_prefilter_limit: int = 2000  # 空间预筛选限制
+    detailed_query_batch_size: int = 100  # 详细查询批次大小
     
     # 边界处理配置
     include_boundary_roads: bool = True  # 是否包含边界roads
     boundary_inclusion_threshold: float = 0.1  # 边界road包含阈值（相交长度比）
     
-    # 结果表名
+    # 结果表名（移除lanes）
     polygon_analysis_table: str = "polygon_road_analysis"
     polygon_roads_table: str = "polygon_roads"
     polygon_intersections_table: str = "polygon_intersections"
-    polygon_lanes_table: str = "polygon_lanes"
 
 # 默认配置
 DEFAULT_CONFIG = PolygonRoadAnalysisConfig()
@@ -90,7 +93,6 @@ class BatchPolygonRoadAnalyzer:
         self._init_main_analysis_table()
         self._init_polygon_roads_table()
         self._init_polygon_intersections_table()
-        self._init_polygon_lanes_table()
     
     def _init_main_analysis_table(self):
         """初始化主分析表"""
@@ -103,7 +105,6 @@ class BatchPolygonRoadAnalyzer:
                 total_polygons INTEGER DEFAULT 0,
                 total_roads INTEGER DEFAULT 0,
                 total_intersections INTEGER DEFAULT 0,
-                total_lanes INTEGER DEFAULT 0,
                 processing_time_seconds FLOAT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -125,7 +126,7 @@ class BatchPolygonRoadAnalyzer:
                 logger.warning(f"创建索引失败: {e}")
     
     def _init_polygon_roads_table(self):
-        """初始化polygon roads表"""
+        """初始化polygon roads表（包含full_road所有字段和boolean关联字段）"""
         table_name = self.config.polygon_roads_table
         
         create_table_sql = text(f"""
@@ -133,13 +134,37 @@ class BatchPolygonRoadAnalyzer:
                 id SERIAL PRIMARY KEY,
                 analysis_id VARCHAR(100) NOT NULL,
                 polygon_id VARCHAR(100) NOT NULL,
+                
+                -- full_road的所有原始字段
                 road_id BIGINT NOT NULL,
-                road_type VARCHAR(50),
-                road_level VARCHAR(20),
+                cityid VARCHAR(50),
+                patchid VARCHAR(50),
+                patchversion VARCHAR(50),
+                releaseversion VARCHAR(50),
+                citypatchversion VARCHAR(50),
+                length INTEGER,
+                roadtype INTEGER,
+                isbothway INTEGER,
+                roadclass INTEGER,
+                roadclasssource INTEGER,
+                roadtypesource INTEGER,
+                turninfo VARCHAR(50),
+                turntype INTEGER,
+                turntypesource INTEGER,
+                roadflag INTEGER,
+                roadflagsource INTEGER,
+                
+                -- 新增的3个boolean字段
+                is_intersection_inroad BOOLEAN DEFAULT FALSE,
+                is_intersection_outroad BOOLEAN DEFAULT FALSE,
+                is_road_intersection BOOLEAN DEFAULT FALSE,
+                
+                -- 空间相交分析字段
                 intersection_type VARCHAR(20), -- WITHIN/INTERSECTS
                 intersection_ratio FLOAT, -- 相交长度比例
                 road_length FLOAT,
                 intersection_length FLOAT,
+                
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -147,19 +172,19 @@ class BatchPolygonRoadAnalyzer:
         with self.engine.connect() as conn:
             conn.execute(create_table_sql)
             
-            # 添加几何列（3D支持）
+            # 添加几何列（roads是LINESTRING类型）
             try:
                 add_geometry_sql = text(f"""
-                    SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRINGZ', 3)
+                    SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRING', 2)
                 """)
                 conn.execute(add_geometry_sql)
             except Exception:
-                # 几何列可能已存在，尝试2D兼容模式
+                # 几何列可能已存在，尝试3D模式
                 try:
-                    add_geometry_sql_2d = text(f"""
-                        SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRING', 3)
+                    add_geometry_sql_3d = text(f"""
+                        SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRINGZ', 3)
                     """)
-                    conn.execute(add_geometry_sql_2d)
+                    conn.execute(add_geometry_sql_3d)
                 except Exception:
                     # 如果都失败，表可能已存在
                     pass
@@ -180,7 +205,7 @@ class BatchPolygonRoadAnalyzer:
                 logger.warning(f"创建索引失败: {e}")
     
     def _init_polygon_intersections_table(self):
-        """初始化polygon intersections表"""
+        """初始化polygon intersections表（包含full_intersection所有字段）"""
         table_name = self.config.polygon_intersections_table
         
         create_table_sql = text(f"""
@@ -188,9 +213,18 @@ class BatchPolygonRoadAnalyzer:
                 id SERIAL PRIMARY KEY,
                 analysis_id VARCHAR(100) NOT NULL,
                 polygon_id VARCHAR(100) NOT NULL,
+                
+                -- full_intersection的所有原始字段
                 intersection_id BIGINT NOT NULL,
-                intersection_type VARCHAR(50),
-                intersection_level VARCHAR(20),
+                cityid VARCHAR(50),
+                patchid VARCHAR(50),
+                patchversion VARCHAR(50),
+                releaseversion VARCHAR(50),
+                citypatchversion VARCHAR(50),
+                intersectiontype INTEGER,
+                intersectionsubtype INTEGER,
+                source INTEGER,
+                
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -198,19 +232,19 @@ class BatchPolygonRoadAnalyzer:
         with self.engine.connect() as conn:
             conn.execute(create_table_sql)
             
-            # 添加几何列（3D支持）
+            # 添加几何列（intersection是POLYGON类型）
             try:
                 add_geometry_sql = text(f"""
-                    SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'POINTZ', 3)
+                    SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'POLYGON', 2)
                 """)
                 conn.execute(add_geometry_sql)
             except Exception:
-                # 几何列可能已存在，尝试2D兼容模式
+                # 几何列可能已存在，尝试3D模式
                 try:
-                    add_geometry_sql_2d = text(f"""
-                        SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'POINT', 3)
+                    add_geometry_sql_3d = text(f"""
+                        SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'POLYGONZ', 3)
                     """)
-                    conn.execute(add_geometry_sql_2d)
+                    conn.execute(add_geometry_sql_3d)
                 except Exception:
                     # 如果都失败，表可能已存在
                     pass
@@ -230,58 +264,7 @@ class BatchPolygonRoadAnalyzer:
             except Exception as e:
                 logger.warning(f"创建索引失败: {e}")
     
-    def _init_polygon_lanes_table(self):
-        """初始化polygon lanes表"""
-        table_name = self.config.polygon_lanes_table
-        
-        create_table_sql = text(f"""
-            CREATE TABLE IF NOT EXISTS {table_name} (
-                id SERIAL PRIMARY KEY,
-                analysis_id VARCHAR(100) NOT NULL,
-                polygon_id VARCHAR(100) NOT NULL,
-                lane_id BIGINT NOT NULL,
-                road_id BIGINT,
-                lane_type VARCHAR(50),
-                lane_direction VARCHAR(20),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        
-        with self.engine.connect() as conn:
-            conn.execute(create_table_sql)
-            
-            # 添加几何列（3D支持）
-            try:
-                add_geometry_sql = text(f"""
-                    SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRINGZ', 3)
-                """)
-                conn.execute(add_geometry_sql)
-            except Exception:
-                # 几何列可能已存在，尝试2D兼容模式
-                try:
-                    add_geometry_sql_2d = text(f"""
-                        SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRING', 3)
-                    """)
-                    conn.execute(add_geometry_sql_2d)
-                except Exception:
-                    # 如果都失败，表可能已存在
-                    pass
-            
-            conn.commit()
-            
-            # 创建索引
-            try:
-                create_index_sql = text(f"""
-                    CREATE INDEX IF NOT EXISTS idx_{table_name}_analysis_id ON {table_name}(analysis_id);
-                    CREATE INDEX IF NOT EXISTS idx_{table_name}_polygon_id ON {table_name}(polygon_id);
-                    CREATE INDEX IF NOT EXISTS idx_{table_name}_lane_id ON {table_name}(lane_id);
-                    CREATE INDEX IF NOT EXISTS idx_{table_name}_road_id ON {table_name}(road_id);
-                    CREATE INDEX IF NOT EXISTS idx_{table_name}_geometry ON {table_name} USING GIST(geometry);
-                """)
-                conn.execute(create_index_sql)
-                conn.commit()
-            except Exception as e:
-                logger.warning(f"创建索引失败: {e}")
+
     
     def analyze_polygons_from_geojson(self, geojson_file: str, 
                                     batch_analysis_id: Optional[str] = None) -> str:
@@ -453,12 +436,7 @@ class BatchPolygonRoadAnalyzer:
                     logger.error(f"{query_name}查询失败: {e}")
                     results[query_name] = pd.DataFrame()
         
-        # 基于roads结果查询lanes
-        if not results['roads'].empty:
-            road_ids = results['roads']['road_id'].unique().tolist()
-            results['lanes'] = self._batch_query_lanes_from_roads(road_ids)
-        else:
-            results['lanes'] = pd.DataFrame()
+
         
         return results
     
@@ -472,204 +450,266 @@ class BatchPolygonRoadAnalyzer:
         # 查询intersections
         results['intersections'] = self._batch_query_intersections(polygons)
         
-        # 基于roads查询lanes
-        if not results['roads'].empty:
-            road_ids = results['roads']['road_id'].unique().tolist()
-            results['lanes'] = self._batch_query_lanes_from_roads(road_ids)
-        else:
-            results['lanes'] = pd.DataFrame()
+
         
         return results
     
     def _batch_query_roads(self, polygons: List[Dict]) -> pd.DataFrame:
-        """批量查询roads"""
-        logger.debug("批量查询roads")
+        """批量查询roads（两阶段查询策略）"""
+        logger.info("开始两阶段roads查询")
         
         if not polygons:
             return pd.DataFrame()
         
-        # 使用Trino/Hive连接查询远程数据，严格按照trajectory_road_analysis的模式
-        from spdatalab.common.io_hive import hive_cursor
-        
         all_results = []
         
-        try:
-            # 严格按照trajectory_road_analysis的方式：直接使用remote_catalog
-            logger.info(f"连接远程catalog: {self.config.remote_catalog}")
+        for polygon in polygons:
+            polygon_id = polygon['polygon_id']
+            polygon_wkt = polygon['polygon_wkt']
             
-            with hive_cursor(self.config.remote_catalog) as cur:
-                for polygon in polygons:
-                    polygon_id = polygon['polygon_id']
-                    polygon_wkt = polygon['polygon_wkt']
+            try:
+                # 阶段1：空间预筛选
+                filtered_road_keys = self._spatial_prefilter_roads(polygon_wkt)
+                if not filtered_road_keys:
+                    logger.info(f"Polygon {polygon_id}: 空间预筛选未找到roads")
+                    continue
+                
+                logger.info(f"Polygon {polygon_id}: 预筛选到 {len(filtered_road_keys)} 个roads")
+                
+                # 阶段2：详细查询（包含JOIN和完整字段）
+                detailed_roads = self._detailed_query_roads(filtered_road_keys, polygon_id, polygon_wkt)
+                if not detailed_roads.empty:
+                    all_results.append(detailed_roads)
+                    logger.info(f"Polygon {polygon_id}: 详细查询到 {len(detailed_roads)} 条road记录")
+                else:
+                    logger.info(f"Polygon {polygon_id}: 详细查询未找到符合条件的roads")
                     
-                    # 严格按照trajectory_road_analysis的SQL模式，并修复SRID问题
+            except Exception as e:
+                logger.error(f"查询polygon {polygon_id} roads失败: {e}")
+                continue
+        
+        if all_results:
+            df = pd.concat(all_results, ignore_index=True)
+            logger.info(f"总计查询到 {len(df)} 条road记录")
+            return df
+        else:
+            logger.info("所有polygon都没有找到road记录")
+            return pd.DataFrame()
+    
+    def _spatial_prefilter_roads(self, polygon_wkt: str) -> List[Tuple]:
+        """阶段1：空间预筛选roads，返回(id, patchid, releaseversion)列表"""
+        from spdatalab.common.io_hive import hive_cursor
+        
+        try:
+            with hive_cursor(self.config.remote_catalog) as cur:
+                # 快速空间查询，只获取复合键
+                sql = f"""
+                SELECT r.id, r.patchid, r.releaseversion
+                FROM {self.config.road_table} r
+                WHERE ST_Intersects(ST_SetSRID(r.wkb_geometry, 4326), ST_GeomFromText('{polygon_wkt}', 4326))
+                AND r.wkb_geometry IS NOT NULL
+                LIMIT {self.config.spatial_prefilter_limit}
+                """
+                
+                cur.execute(sql)
+                rows = cur.fetchall()
+                
+                # 返回复合键列表
+                return [(row[0], row[1], row[2]) for row in rows]
+                
+        except Exception as e:
+            logger.error(f"空间预筛选roads失败: {e}")
+            return []
+    
+    def _detailed_query_roads(self, filtered_road_keys: List[Tuple], polygon_id: str, polygon_wkt: str) -> pd.DataFrame:
+        """阶段2：基于预筛选结果进行详细查询，包含JOIN和完整字段"""
+        from spdatalab.common.io_hive import hive_cursor
+        
+        if not filtered_road_keys:
+            return pd.DataFrame()
+        
+        try:
+            with hive_cursor(self.config.remote_catalog) as cur:
+                # 分批处理避免IN子句过长
+                batch_size = self.config.detailed_query_batch_size
+                all_results = []
+                
+                for i in range(0, len(filtered_road_keys), batch_size):
+                    batch_keys = filtered_road_keys[i:i+batch_size]
+                    
+                    # 构建IN子句
+                    keys_condition = ','.join([
+                        f"({key[0]}, '{key[1]}', '{key[2]}')" for key in batch_keys
+                    ])
+                    
+                    # 详细查询SQL，包含所有字段和JOIN
                     sql = f"""
                     SELECT 
                         '{polygon_id}' as polygon_id,
-                        r.id as road_id,
+                        r.*,  -- full_road所有字段
                         ST_AsText(r.wkb_geometry) as road_geom,
+                        CASE WHEN gir.roadid IS NOT NULL THEN TRUE ELSE FALSE END as is_intersection_inroad,
+                        CASE WHEN gor.roadid IS NOT NULL THEN TRUE ELSE FALSE END as is_intersection_outroad,
+                        CASE WHEN ri.roadid IS NOT NULL THEN TRUE ELSE FALSE END as is_road_intersection,
                         CASE 
                             WHEN ST_Within(ST_SetSRID(r.wkb_geometry, 4326), ST_GeomFromText('{polygon_wkt}', 4326)) THEN 'WITHIN'
                             ELSE 'INTERSECTS'
                         END as intersection_type,
-                        ST_Length(ST_SetSRID(r.wkb_geometry, 4326)) as total_length,
+                        ST_Length(ST_SetSRID(r.wkb_geometry, 4326)) as road_length,
                         ST_Length(ST_Intersection(ST_SetSRID(r.wkb_geometry, 4326), ST_GeomFromText('{polygon_wkt}', 4326))) as intersection_length
                     FROM {self.config.road_table} r
-                    WHERE ST_Intersects(ST_SetSRID(r.wkb_geometry, 4326), ST_GeomFromText('{polygon_wkt}', 4326))
-                    AND r.wkb_geometry IS NOT NULL
-                    ORDER BY r.id
-                    LIMIT 1000
+                    LEFT JOIN {self.config.intersection_inroad_table} gir 
+                        ON gir.roadid = r.id AND gir.patchid = r.patchid AND gir.releaseversion = r.releaseversion
+                    LEFT JOIN {self.config.intersection_outroad_table} gor 
+                        ON gor.roadid = r.id AND gor.patchid = r.patchid AND gor.releaseversion = r.releaseversion
+                    LEFT JOIN {self.config.roadintersection_table} ri 
+                        ON ri.roadid = r.id AND ri.patchid = r.patchid AND ri.releaseversion = r.releaseversion
+                    WHERE (r.id, r.patchid, r.releaseversion) IN ({keys_condition})
                     """
                     
-                    logger.debug(f"执行polygon {polygon_id}的road查询")
                     cur.execute(sql)
                     rows = cur.fetchall()
                     
                     if rows:
-                        columns = ['polygon_id', 'road_id', 'road_geom', 'intersection_type', 
-                                  'total_length', 'intersection_length']
-                        polygon_df = pd.DataFrame(rows, columns=columns)
-                        all_results.append(polygon_df)
-                        
-                        logger.info(f"Polygon {polygon_id}: 查询到 {len(polygon_df)} 条road记录")
-                    else:
-                        logger.info(f"Polygon {polygon_id}: 未找到road记录")
+                        # 获取列名
+                        columns = [d[0] for d in cur.description]
+                        batch_df = pd.DataFrame(rows, columns=columns)
+                        all_results.append(batch_df)
                 
                 if all_results:
-                    df = pd.concat(all_results, ignore_index=True)
+                    result_df = pd.concat(all_results, ignore_index=True)
                     # 计算intersection_ratio，避免除零
-                    df['intersection_ratio'] = df['intersection_length'] / (df['total_length'] + 1e-10)
-                    logger.info(f"总计查询到 {len(df)} 条road记录")
-                    return df
+                    result_df['intersection_ratio'] = result_df['intersection_length'] / (result_df['road_length'] + 1e-10)
+                    return result_df
                 else:
-                    logger.info("所有polygon都没有找到road记录")
                     return pd.DataFrame()
-                
+                    
         except Exception as e:
-            logger.error(f"批量查询roads失败: {e}")
+            logger.error(f"详细查询roads失败: {e}")
             import traceback
             logger.error(f"详细错误: {traceback.format_exc()}")
             return pd.DataFrame()
     
     def _batch_query_intersections(self, polygons: List[Dict]) -> pd.DataFrame:
-        """批量查询intersections"""
-        logger.debug("批量查询intersections")
+        """批量查询intersections（两阶段查询策略）"""
+        logger.info("开始两阶段intersections查询")
         
         if not polygons:
             return pd.DataFrame()
         
-        from spdatalab.common.io_hive import hive_cursor
-        
         all_results = []
         
-        try:
-            # 严格按照trajectory_road_analysis的方式
-            logger.info(f"连接远程catalog: {self.config.remote_catalog}")
+        for polygon in polygons:
+            polygon_id = polygon['polygon_id']
+            polygon_wkt = polygon['polygon_wkt']
             
-            with hive_cursor(self.config.remote_catalog) as cur:
-                for polygon in polygons:
-                    polygon_id = polygon['polygon_id']
-                    polygon_wkt = polygon['polygon_wkt']
+            try:
+                # 阶段1：空间预筛选
+                filtered_intersection_keys = self._spatial_prefilter_intersections(polygon_wkt)
+                if not filtered_intersection_keys:
+                    logger.info(f"Polygon {polygon_id}: 空间预筛选未找到intersections")
+                    continue
+                
+                logger.info(f"Polygon {polygon_id}: 预筛选到 {len(filtered_intersection_keys)} 个intersections")
+                
+                # 阶段2：详细查询（包含完整字段）
+                detailed_intersections = self._detailed_query_intersections(filtered_intersection_keys, polygon_id)
+                if not detailed_intersections.empty:
+                    all_results.append(detailed_intersections)
+                    logger.info(f"Polygon {polygon_id}: 详细查询到 {len(detailed_intersections)} 条intersection记录")
+                else:
+                    logger.info(f"Polygon {polygon_id}: 详细查询未找到符合条件的intersections")
                     
-                    # 严格按照trajectory_road_analysis的SQL模式，并修复SRID问题
+            except Exception as e:
+                logger.error(f"查询polygon {polygon_id} intersections失败: {e}")
+                continue
+        
+        if all_results:
+            df = pd.concat(all_results, ignore_index=True)
+            logger.info(f"总计查询到 {len(df)} 条intersection记录")
+            return df
+        else:
+            logger.info("所有polygon都没有找到intersection记录")
+            return pd.DataFrame()
+    
+    def _spatial_prefilter_intersections(self, polygon_wkt: str) -> List[Tuple]:
+        """阶段1：空间预筛选intersections，返回(id, patchid, releaseversion)列表"""
+        from spdatalab.common.io_hive import hive_cursor
+        
+        try:
+            with hive_cursor(self.config.remote_catalog) as cur:
+                # 快速空间查询，只获取复合键
+                sql = f"""
+                SELECT i.id, i.patchid, i.releaseversion
+                FROM {self.config.intersection_table} i
+                WHERE ST_Intersects(ST_SetSRID(i.wkb_geometry, 4326), ST_GeomFromText('{polygon_wkt}', 4326))
+                AND i.wkb_geometry IS NOT NULL
+                LIMIT {self.config.max_intersections_per_polygon}
+                """
+                
+                cur.execute(sql)
+                rows = cur.fetchall()
+                
+                # 返回复合键列表
+                return [(row[0], row[1], row[2]) for row in rows]
+                
+        except Exception as e:
+            logger.error(f"空间预筛选intersections失败: {e}")
+            return []
+    
+    def _detailed_query_intersections(self, filtered_intersection_keys: List[Tuple], polygon_id: str) -> pd.DataFrame:
+        """阶段2：基于预筛选结果进行详细查询，包含完整字段"""
+        from spdatalab.common.io_hive import hive_cursor
+        
+        if not filtered_intersection_keys:
+            return pd.DataFrame()
+        
+        try:
+            with hive_cursor(self.config.remote_catalog) as cur:
+                # 分批处理避免IN子句过长
+                batch_size = self.config.detailed_query_batch_size
+                all_results = []
+                
+                for i in range(0, len(filtered_intersection_keys), batch_size):
+                    batch_keys = filtered_intersection_keys[i:i+batch_size]
+                    
+                    # 构建IN子句
+                    keys_condition = ','.join([
+                        f"({key[0]}, '{key[1]}', '{key[2]}')" for key in batch_keys
+                    ])
+                    
+                    # 详细查询SQL，包含所有字段
                     sql = f"""
                     SELECT 
                         '{polygon_id}' as polygon_id,
-                        i.id as intersection_id,
-                        i.intersectiontype,
-                        i.intersectionsubtype,
+                        i.*,  -- full_intersection所有字段
                         ST_AsText(i.wkb_geometry) as intersection_geom
                     FROM {self.config.intersection_table} i
-                    WHERE ST_Intersects(ST_SetSRID(i.wkb_geometry, 4326), ST_GeomFromText('{polygon_wkt}', 4326))
-                    AND i.wkb_geometry IS NOT NULL
-                    ORDER BY i.id
-                    LIMIT 500
+                    WHERE (i.id, i.patchid, i.releaseversion) IN ({keys_condition})
                     """
                     
-                    logger.debug(f"执行polygon {polygon_id}的intersection查询")
                     cur.execute(sql)
                     rows = cur.fetchall()
                     
                     if rows:
-                        columns = ['polygon_id', 'intersection_id', 'intersectiontype', 
-                                  'intersectionsubtype', 'intersection_geom']
-                        polygon_df = pd.DataFrame(rows, columns=columns)
-                        all_results.append(polygon_df)
-                        
-                        logger.info(f"Polygon {polygon_id}: 查询到 {len(polygon_df)} 条intersection记录")
-                    else:
-                        logger.info(f"Polygon {polygon_id}: 未找到intersection记录")
+                        # 获取列名
+                        columns = [d[0] for d in cur.description]
+                        batch_df = pd.DataFrame(rows, columns=columns)
+                        all_results.append(batch_df)
                 
                 if all_results:
-                    df = pd.concat(all_results, ignore_index=True)
-                    logger.info(f"总计查询到 {len(df)} 条intersection记录")
-                    return df
+                    result_df = pd.concat(all_results, ignore_index=True)
+                    return result_df
                 else:
-                    logger.info("所有polygon都没有找到intersection记录")
                     return pd.DataFrame()
-                
+                    
         except Exception as e:
-            logger.error(f"批量查询intersections失败: {e}")
+            logger.error(f"详细查询intersections失败: {e}")
             import traceback
             logger.error(f"详细错误: {traceback.format_exc()}")
             return pd.DataFrame()
     
-    def _batch_query_lanes_from_roads(self, road_ids: List[int]) -> pd.DataFrame:
-        """从road_ids批量查询lanes"""
-        if not road_ids:
-            return pd.DataFrame()
-        
-        logger.info(f"从 {len(road_ids)} 个roads查询lanes")
-        
-        from spdatalab.common.io_hive import hive_cursor
-        
-        # 分批查询避免IN子句过长
-        batch_size = 500
-        all_lanes = []
-        
-        try:
-            # 严格按照trajectory_road_analysis的方式
-            with hive_cursor(self.config.remote_catalog) as cur:
-                for i in range(0, len(road_ids), batch_size):
-                    batch_road_ids = road_ids[i:i+batch_size]
-                    road_ids_str = ','.join(map(str, batch_road_ids))
-                    
-                    # 严格按照trajectory_road_analysis的SQL模式，使用roadid字段
-                    sql = f"""
-                    SELECT 
-                        l.roadid as road_id,
-                        l.id as lane_id,
-                        ST_AsText(l.wkb_geometry) as lane_geom
-                    FROM {self.config.lane_table} l
-                    WHERE l.roadid IN ({road_ids_str})
-                    AND l.wkb_geometry IS NOT NULL
-                    ORDER BY l.roadid, l.id
-                    """
-                    
-                    logger.debug(f"查询lanes批次 {i//batch_size + 1}: {len(batch_road_ids)} roads")
-                    cur.execute(sql)
-                    rows = cur.fetchall()
-                    
-                    if rows:
-                        columns = ['road_id', 'lane_id', 'lane_geom']
-                        batch_df = pd.DataFrame(rows, columns=columns)
-                        all_lanes.append(batch_df)
-                        logger.info(f"批次 {i//batch_size + 1}: 查询到 {len(batch_df)} 条lane记录")
-                    else:
-                        logger.info(f"批次 {i//batch_size + 1}: 未找到lane记录")
-        
-        except Exception as e:
-            logger.error(f"查询lanes失败: {e}")
-            import traceback
-            logger.error(f"详细错误: {traceback.format_exc()}")
-        
-        if all_lanes:
-            result_df = pd.concat(all_lanes, ignore_index=True)
-            logger.info(f"总计查询到 {len(result_df)} 条lane记录")
-            return result_df
-        else:
-            logger.info("没有查询到lane记录")
-            return pd.DataFrame()
+
     
     def _save_analysis_results(self, analysis_id: str, batch_analysis_id: str,
                              polygons: List[Dict], query_results: Dict[str, pd.DataFrame]):
@@ -684,12 +724,10 @@ class BatchPolygonRoadAnalyzer:
         if not query_results['intersections'].empty:
             self._save_intersections_results(analysis_id, query_results['intersections'])
         
-        # 保存lanes结果（需要关联polygon_id）
-        if not query_results['lanes'].empty and not query_results['roads'].empty:
-            self._save_lanes_results(analysis_id, query_results['roads'], query_results['lanes'])
+
     
     def _save_roads_results(self, analysis_id: str, roads_df: pd.DataFrame):
-        """保存roads结果"""
+        """保存roads结果（包含完整字段）"""
         table_name = self.config.polygon_roads_table
         
         # 删除现有记录
@@ -697,12 +735,16 @@ class BatchPolygonRoadAnalyzer:
         
         insert_sql = text(f"""
             INSERT INTO {table_name} 
-            (analysis_id, polygon_id, road_id, road_type, road_level, 
-             intersection_type, intersection_ratio, road_length, intersection_length, geometry)
+            (analysis_id, polygon_id, road_id, cityid, patchid, patchversion, releaseversion, citypatchversion,
+             length, roadtype, isbothway, roadclass, roadclasssource, roadtypesource, turninfo, turntype, 
+             turntypesource, roadflag, roadflagsource, is_intersection_inroad, is_intersection_outroad, 
+             is_road_intersection, intersection_type, intersection_ratio, road_length, intersection_length, geometry)
             VALUES (
-                :analysis_id, :polygon_id, :road_id, :road_type, :road_level,
-                :intersection_type, :intersection_ratio, :road_length, :intersection_length,
-                ST_Force3D(ST_SetSRID(ST_GeomFromText(:road_geom), 4326))
+                :analysis_id, :polygon_id, :road_id, :cityid, :patchid, :patchversion, :releaseversion, :citypatchversion,
+                :length, :roadtype, :isbothway, :roadclass, :roadclasssource, :roadtypesource, :turninfo, :turntype,
+                :turntypesource, :roadflag, :roadflagsource, :is_intersection_inroad, :is_intersection_outroad,
+                :is_road_intersection, :intersection_type, :intersection_ratio, :road_length, :intersection_length,
+                ST_SetSRID(ST_GeomFromText(:road_geom), 4326)
             )
         """)
         
@@ -712,15 +754,55 @@ class BatchPolygonRoadAnalyzer:
             
             # 插入新记录
             for _, row in roads_df.iterrows():
+                # 处理boolean字段
+                def safe_bool(value):
+                    if pd.isna(value) or value is None:
+                        return False
+                    if isinstance(value, str):
+                        return value.lower() in ('true', 't', '1', 'yes')
+                    return bool(value)
+                
+                # 处理整数字段  
+                def safe_int(value):
+                    if pd.isna(value) or value is None or str(value).strip() == '':
+                        return None
+                    try:
+                        return int(value)
+                    except (ValueError, TypeError):
+                        return None
+                
+                # 处理字符串字段
+                def safe_str(value):
+                    if pd.isna(value) or value is None:
+                        return ''
+                    return str(value)
+                
                 conn.execute(insert_sql, {
                     'analysis_id': analysis_id,
                     'polygon_id': row['polygon_id'],
-                    'road_id': int(row['road_id']),
-                    'road_type': '',  # 简化的查询不包含这些字段
-                    'road_level': '',  # 简化的查询不包含这些字段
+                    'road_id': int(row['id']),  # 使用原始id字段
+                    'cityid': safe_str(row.get('cityid', '')),
+                    'patchid': safe_str(row.get('patchid', '')),
+                    'patchversion': safe_str(row.get('patchversion', '')),
+                    'releaseversion': safe_str(row.get('releaseversion', '')),
+                    'citypatchversion': safe_str(row.get('citypatchversion', '')),
+                    'length': safe_int(row.get('length')),
+                    'roadtype': safe_int(row.get('roadtype')),
+                    'isbothway': safe_int(row.get('isbothway')),
+                    'roadclass': safe_int(row.get('roadclass')),
+                    'roadclasssource': safe_int(row.get('roadclasssource')),
+                    'roadtypesource': safe_int(row.get('roadtypesource')),
+                    'turninfo': safe_str(row.get('turninfo', '')),
+                    'turntype': safe_int(row.get('turntype')),
+                    'turntypesource': safe_int(row.get('turntypesource')),
+                    'roadflag': safe_int(row.get('roadflag')),
+                    'roadflagsource': safe_int(row.get('roadflagsource')),
+                    'is_intersection_inroad': safe_bool(row.get('is_intersection_inroad', False)),
+                    'is_intersection_outroad': safe_bool(row.get('is_intersection_outroad', False)),
+                    'is_road_intersection': safe_bool(row.get('is_road_intersection', False)),
                     'intersection_type': row.get('intersection_type', ''),
                     'intersection_ratio': float(row.get('intersection_ratio', 0.0)),
-                    'road_length': float(row.get('total_length', 0.0)),
+                    'road_length': float(row.get('road_length', 0.0)),
                     'intersection_length': float(row.get('intersection_length', 0.0)),
                     'road_geom': row.get('road_geom', '')
                 })
@@ -730,7 +812,7 @@ class BatchPolygonRoadAnalyzer:
         logger.info(f"保存roads结果: {len(roads_df)} 条记录")
     
     def _save_intersections_results(self, analysis_id: str, intersections_df: pd.DataFrame):
-        """保存intersections结果"""
+        """保存intersections结果（包含完整字段）"""
         table_name = self.config.polygon_intersections_table
         
         # 删除现有记录
@@ -738,10 +820,12 @@ class BatchPolygonRoadAnalyzer:
         
         insert_sql = text(f"""
             INSERT INTO {table_name} 
-            (analysis_id, polygon_id, intersection_id, intersection_type, intersection_level, geometry)
+            (analysis_id, polygon_id, intersection_id, cityid, patchid, patchversion, releaseversion, 
+             citypatchversion, intersectiontype, intersectionsubtype, source, geometry)
             VALUES (
-                :analysis_id, :polygon_id, :intersection_id, :intersection_type, :intersection_level,
-                ST_Force3D(ST_SetSRID(ST_GeomFromText(:intersection_geom), 4326))
+                :analysis_id, :polygon_id, :intersection_id, :cityid, :patchid, :patchversion, :releaseversion,
+                :citypatchversion, :intersectiontype, :intersectionsubtype, :source,
+                ST_SetSRID(ST_GeomFromText(:intersection_geom), 4326)
             )
         """)
         
@@ -751,12 +835,33 @@ class BatchPolygonRoadAnalyzer:
             
             # 插入新记录
             for _, row in intersections_df.iterrows():
+                # 处理整数字段  
+                def safe_int(value):
+                    if pd.isna(value) or value is None or str(value).strip() == '':
+                        return None
+                    try:
+                        return int(value)
+                    except (ValueError, TypeError):
+                        return None
+                
+                # 处理字符串字段
+                def safe_str(value):
+                    if pd.isna(value) or value is None:
+                        return ''
+                    return str(value)
+                
                 conn.execute(insert_sql, {
                     'analysis_id': analysis_id,
                     'polygon_id': row['polygon_id'],
-                    'intersection_id': int(row['intersection_id']),
-                    'intersection_type': row.get('intersectiontype', ''),  # 修正字段名
-                    'intersection_level': row.get('intersectionsubtype', ''),  # 修正字段名
+                    'intersection_id': int(row['id']),  # 使用原始id字段
+                    'cityid': safe_str(row.get('cityid', '')),
+                    'patchid': safe_str(row.get('patchid', '')),
+                    'patchversion': safe_str(row.get('patchversion', '')),
+                    'releaseversion': safe_str(row.get('releaseversion', '')),
+                    'citypatchversion': safe_str(row.get('citypatchversion', '')),
+                    'intersectiontype': safe_int(row.get('intersectiontype')),
+                    'intersectionsubtype': safe_int(row.get('intersectionsubtype')),
+                    'source': safe_int(row.get('source')),
                     'intersection_geom': row.get('intersection_geom', '')
                 })
             
@@ -764,55 +869,7 @@ class BatchPolygonRoadAnalyzer:
         
         logger.info(f"保存intersections结果: {len(intersections_df)} 条记录")
     
-    def _save_lanes_results(self, analysis_id: str, roads_df: pd.DataFrame, lanes_df: pd.DataFrame):
-        """保存lanes结果（通过road_id关联polygon_id）"""
-        table_name = self.config.polygon_lanes_table
-        
-        # 创建road_id到polygon_id的映射
-        road_polygon_map = {}
-        for _, row in roads_df.iterrows():
-            road_id = int(row['road_id'])
-            polygon_id = row['polygon_id']
-            if road_id not in road_polygon_map:
-                road_polygon_map[road_id] = []
-            road_polygon_map[road_id].append(polygon_id)
-        
-        # 删除现有记录
-        delete_sql = text(f"DELETE FROM {table_name} WHERE analysis_id = :analysis_id")
-        
-        insert_sql = text(f"""
-            INSERT INTO {table_name} 
-            (analysis_id, polygon_id, lane_id, road_id, lane_type, lane_direction, geometry)
-            VALUES (
-                :analysis_id, :polygon_id, :lane_id, :road_id, :lane_type, :lane_direction,
-                ST_Force3D(ST_SetSRID(ST_GeomFromText(:lane_geom), 4326))
-            )
-        """)
-        
-        with self.engine.connect() as conn:
-            # 删除现有记录
-            conn.execute(delete_sql, {'analysis_id': analysis_id})
-            
-            # 插入新记录
-            for _, row in lanes_df.iterrows():
-                road_id = int(row['road_id'])
-                polygon_ids = road_polygon_map.get(road_id, [])
-                
-                # 为每个polygon_id插入lane记录
-                for polygon_id in polygon_ids:
-                    conn.execute(insert_sql, {
-                        'analysis_id': analysis_id,
-                        'polygon_id': polygon_id,
-                        'lane_id': int(row['lane_id']),
-                        'road_id': road_id,
-                        'lane_type': '',  # 简化的查询不包含这些字段
-                        'lane_direction': '',  # 简化的查询不包含这些字段
-                        'lane_geom': row.get('lane_geom', '')
-                    })
-            
-            conn.commit()
-        
-        logger.info(f"保存lanes结果: {len(lanes_df)} 条记录")
+
     
     def _update_main_analysis_record(self, analysis_id: str, batch_analysis_id: str,
                                    polygons: List[Dict], query_results: Dict[str, pd.DataFrame],
@@ -826,10 +883,10 @@ class BatchPolygonRoadAnalyzer:
         insert_sql = text(f"""
             INSERT INTO {table_name} 
             (analysis_id, batch_analysis_id, total_polygons, total_roads, 
-             total_intersections, total_lanes, processing_time_seconds)
+             total_intersections, processing_time_seconds)
             VALUES (
                 :analysis_id, :batch_analysis_id, :total_polygons, :total_roads,
-                :total_intersections, :total_lanes, :processing_time_seconds
+                :total_intersections, :processing_time_seconds
             )
         """)
         
@@ -844,7 +901,6 @@ class BatchPolygonRoadAnalyzer:
                 'total_polygons': len(polygons),
                 'total_roads': len(query_results.get('roads', pd.DataFrame())),
                 'total_intersections': len(query_results.get('intersections', pd.DataFrame())),
-                'total_lanes': len(query_results.get('lanes', pd.DataFrame())),
                 'processing_time_seconds': processing_time
             })
             
