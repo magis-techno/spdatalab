@@ -1,0 +1,62 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "polygon_id": "test_area_001",
+        "name": "测试区域A",
+        "category": "commercial",
+        "description": "商业区测试polygon"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [116.3973, 39.9093],
+          [116.4073, 39.9093],
+          [116.4073, 39.9193],
+          [116.3973, 39.9193],
+          [116.3973, 39.9093]
+        ]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "polygon_id": "test_area_002", 
+        "name": "测试区域B",
+        "category": "residential",
+        "description": "住宅区测试polygon"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [116.4073, 39.9093],
+          [116.4173, 39.9093],
+          [116.4173, 39.9193],
+          [116.4073, 39.9193],
+          [116.4073, 39.9093]
+        ]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "polygon_id": "test_area_003",
+        "name": "测试区域C", 
+        "category": "industrial",
+        "description": "工业区测试polygon"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [116.3873, 39.9193],
+          [116.3973, 39.9193],
+          [116.3973, 39.9293],
+          [116.3873, 39.9293],
+          [116.3873, 39.9193]
+        ]]
+      }
+    }
+  ]
+} 

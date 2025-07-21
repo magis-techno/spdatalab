@@ -381,7 +381,7 @@ class HighPerformancePolygonTrajectoryQuery:
                            id,
                            event_id,
                            event_name,
-                           ROW_NUMBER() OVER (PARTITION BY data_name ORDER BY updated_at DESC) as rn
+                           ROW_NUMBER() OVER (PARTITION BY data_name ORDER BY updated_time DESC) as rn
                     FROM elasticsearch_ros.ods_ddi_index002_datalake 
                     WHERE data_name IN %(tok)s
                 ) ranked
