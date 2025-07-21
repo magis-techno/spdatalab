@@ -544,7 +544,7 @@ class SceneIdMapper:
                            origin_name,
                            event_id,
                            event_name,
-                           ROW_NUMBER() OVER (PARTITION BY id ORDER BY updated_at DESC) as rn
+                           ROW_NUMBER() OVER (PARTITION BY id ORDER BY updated_time DESC) as rn
                     FROM transform.ods_t_data_fragment_datalake 
                     WHERE id IN %(scene_ids)s
                 ) ranked
