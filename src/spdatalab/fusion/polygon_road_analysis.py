@@ -467,33 +467,25 @@ class BatchPolygonRoadAnalyzer:
         if not polygons:
             return pd.DataFrame()
         
-        # 使用Trino/Hive连接查询远程数据
+        # 使用Trino/Hive连接查询远程数据，严格按照trajectory_road_analysis的模式
         from spdatalab.common.io_hive import hive_cursor
         
         all_results = []
         
         try:
-            # 修正catalog名称：去掉_gy1后缀，避免重复
-            catalog = self.config.remote_catalog
-            if catalog.endswith('_gy1'):
-                catalog = catalog[:-4]  # 去掉'_gy1'
+            # 严格按照trajectory_road_analysis的方式：直接使用remote_catalog
+            logger.info(f"连接远程catalog: {self.config.remote_catalog}")
             
-            logger.info(f"连接Hive catalog: {catalog}")
-            
-            with hive_cursor(catalog) as cur:
+            with hive_cursor(self.config.remote_catalog) as cur:
                 for polygon in polygons:
                     polygon_id = polygon['polygon_id']
                     polygon_wkt = polygon['polygon_wkt']
                     
-                    # 使用完整的表名（包含catalog前缀）
-                    full_table_name = f"{self.config.remote_catalog}.{self.config.road_table}"
-                    
+                    # 严格按照trajectory_road_analysis的SQL模式：直接使用表名，不带catalog前缀
                     sql = f"""
                     SELECT 
                         '{polygon_id}' as polygon_id,
-                        r.road_id,
-                        r.road_type,
-                        r.road_level,
+                        r.id as road_id,
                         ST_AsText(r.wkb_geometry) as road_geom,
                         CASE 
                             WHEN ST_Within(r.wkb_geometry, ST_GeomFromText('{polygon_wkt}')) THEN 'WITHIN'
@@ -501,10 +493,10 @@ class BatchPolygonRoadAnalyzer:
                         END as intersection_type,
                         ST_Length(r.wkb_geometry) as total_length,
                         ST_Length(ST_Intersection(r.wkb_geometry, ST_GeomFromText('{polygon_wkt}'))) as intersection_length
-                    FROM {full_table_name} r
+                    FROM {self.config.road_table} r
                     WHERE ST_Intersects(r.wkb_geometry, ST_GeomFromText('{polygon_wkt}'))
                     AND r.wkb_geometry IS NOT NULL
-                    ORDER BY r.road_id
+                    ORDER BY r.id
                     LIMIT 1000
                     """
                     
@@ -513,8 +505,8 @@ class BatchPolygonRoadAnalyzer:
                     rows = cur.fetchall()
                     
                     if rows:
-                        columns = ['polygon_id', 'road_id', 'road_type', 'road_level', 
-                                  'road_geom', 'intersection_type', 'total_length', 'intersection_length']
+                        columns = ['polygon_id', 'road_id', 'road_geom', 'intersection_type', 
+                                  'total_length', 'intersection_length']
                         polygon_df = pd.DataFrame(rows, columns=columns)
                         all_results.append(polygon_df)
                         
@@ -550,29 +542,23 @@ class BatchPolygonRoadAnalyzer:
         all_results = []
         
         try:
-            # 修正catalog名称
-            catalog = self.config.remote_catalog
-            if catalog.endswith('_gy1'):
-                catalog = catalog[:-4]
+            # 严格按照trajectory_road_analysis的方式
+            logger.info(f"连接远程catalog: {self.config.remote_catalog}")
             
-            logger.info(f"连接Hive catalog: {catalog}")
-            
-            with hive_cursor(catalog) as cur:
+            with hive_cursor(self.config.remote_catalog) as cur:
                 for polygon in polygons:
                     polygon_id = polygon['polygon_id']
                     polygon_wkt = polygon['polygon_wkt']
                     
-                    # 使用完整的表名
-                    full_table_name = f"{self.config.remote_catalog}.{self.config.intersection_table}"
-                    
+                    # 严格按照trajectory_road_analysis的SQL模式
                     sql = f"""
                     SELECT 
                         '{polygon_id}' as polygon_id,
                         i.id as intersection_id,
-                        i.intersectiontype as intersection_type,
-                        i.intersectionsubtype as intersection_level,
+                        i.intersectiontype,
+                        i.intersectionsubtype,
                         ST_AsText(i.wkb_geometry) as intersection_geom
-                    FROM {full_table_name} i
+                    FROM {self.config.intersection_table} i
                     WHERE ST_Intersects(i.wkb_geometry, ST_GeomFromText('{polygon_wkt}'))
                     AND i.wkb_geometry IS NOT NULL
                     ORDER BY i.id
@@ -584,8 +570,8 @@ class BatchPolygonRoadAnalyzer:
                     rows = cur.fetchall()
                     
                     if rows:
-                        columns = ['polygon_id', 'intersection_id', 'intersection_type', 
-                                  'intersection_level', 'intersection_geom']
+                        columns = ['polygon_id', 'intersection_id', 'intersectiontype', 
+                                  'intersectionsubtype', 'intersection_geom']
                         polygon_df = pd.DataFrame(rows, columns=columns)
                         all_results.append(polygon_df)
                         
@@ -621,30 +607,22 @@ class BatchPolygonRoadAnalyzer:
         all_lanes = []
         
         try:
-            # 修正catalog名称
-            catalog = self.config.remote_catalog
-            if catalog.endswith('_gy1'):
-                catalog = catalog[:-4]
-            
-            with hive_cursor(catalog) as cur:
+            # 严格按照trajectory_road_analysis的方式
+            with hive_cursor(self.config.remote_catalog) as cur:
                 for i in range(0, len(road_ids), batch_size):
                     batch_road_ids = road_ids[i:i+batch_size]
                     road_ids_str = ','.join(map(str, batch_road_ids))
                     
-                    # 使用完整的表名
-                    full_table_name = f"{self.config.remote_catalog}.{self.config.lane_table}"
-                    
+                    # 严格按照trajectory_road_analysis的SQL模式，使用roadid字段
                     sql = f"""
                     SELECT 
-                        road_id,
-                        id as lane_id,
-                        lanetype as lane_type,
-                        lanesourcetype as lane_direction,
-                        ST_AsText(wkb_geometry) as lane_geom
-                    FROM {full_table_name}
-                    WHERE road_id IN ({road_ids_str})
-                    AND wkb_geometry IS NOT NULL
-                    ORDER BY road_id, id
+                        l.roadid as road_id,
+                        l.id as lane_id,
+                        ST_AsText(l.wkb_geometry) as lane_geom
+                    FROM {self.config.lane_table} l
+                    WHERE l.roadid IN ({road_ids_str})
+                    AND l.wkb_geometry IS NOT NULL
+                    ORDER BY l.roadid, l.id
                     """
                     
                     logger.debug(f"查询lanes批次 {i//batch_size + 1}: {len(batch_road_ids)} roads")
@@ -652,7 +630,7 @@ class BatchPolygonRoadAnalyzer:
                     rows = cur.fetchall()
                     
                     if rows:
-                        columns = ['road_id', 'lane_id', 'lane_type', 'lane_direction', 'lane_geom']
+                        columns = ['road_id', 'lane_id', 'lane_geom']
                         batch_df = pd.DataFrame(rows, columns=columns)
                         all_lanes.append(batch_df)
                         logger.info(f"批次 {i//batch_size + 1}: 查询到 {len(batch_df)} 条lane记录")
@@ -717,8 +695,8 @@ class BatchPolygonRoadAnalyzer:
                     'analysis_id': analysis_id,
                     'polygon_id': row['polygon_id'],
                     'road_id': int(row['road_id']),
-                    'road_type': row.get('road_type', ''),
-                    'road_level': row.get('road_level', ''),
+                    'road_type': '',  # 简化的查询不包含这些字段
+                    'road_level': '',  # 简化的查询不包含这些字段
                     'intersection_type': row.get('intersection_type', ''),
                     'intersection_ratio': float(row.get('intersection_ratio', 0.0)),
                     'road_length': float(row.get('total_length', 0.0)),
@@ -756,8 +734,8 @@ class BatchPolygonRoadAnalyzer:
                     'analysis_id': analysis_id,
                     'polygon_id': row['polygon_id'],
                     'intersection_id': int(row['intersection_id']),
-                    'intersection_type': row.get('intersection_type', ''),
-                    'intersection_level': row.get('intersection_level', ''),
+                    'intersection_type': row.get('intersectiontype', ''),  # 修正字段名
+                    'intersection_level': row.get('intersectionsubtype', ''),  # 修正字段名
                     'intersection_geom': row.get('intersection_geom', '')
                 })
             
@@ -806,8 +784,8 @@ class BatchPolygonRoadAnalyzer:
                         'polygon_id': polygon_id,
                         'lane_id': int(row['lane_id']),
                         'road_id': road_id,
-                        'lane_type': row.get('lane_type', ''),
-                        'lane_direction': row.get('lane_direction', ''),
+                        'lane_type': '',  # 简化的查询不包含这些字段
+                        'lane_direction': '',  # 简化的查询不包含这些字段
                         'lane_geom': row.get('lane_geom', '')
                     })
             
