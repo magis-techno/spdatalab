@@ -5,9 +5,9 @@ import logging
 import sys
 from datetime import datetime
 
-# 配置日志
+# 配置日志（启用DEBUG级别以查看详细日志）
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 

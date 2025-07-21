@@ -85,18 +85,39 @@ class BatchPolygonRoadAnalyzer:
             pool_recycle=3600
         )
         
-        # 初始化分析表（延迟创建）
-        self._init_analysis_tables()
+        # 不在初始化时创建表，而是在需要时创建
     
     def _init_analysis_tables(self):
         """初始化所有分析表"""
-        self._init_main_analysis_table()
-        self._init_polygon_roads_table()
-        self._init_polygon_intersections_table()
+        logger.info("开始初始化分析表...")
+        
+        try:
+            self._init_main_analysis_table()
+            logger.info(f"✓ 主分析表创建成功: {self.config.polygon_analysis_table}")
+        except Exception as e:
+            logger.error(f"✗ 主分析表创建失败: {e}")
+            raise
+        
+        try:
+            self._init_polygon_roads_table()
+            logger.info(f"✓ Roads表创建成功: {self.config.polygon_roads_table}")
+        except Exception as e:
+            logger.error(f"✗ Roads表创建失败: {e}")
+            raise
+        
+        try:
+            self._init_polygon_intersections_table()
+            logger.info(f"✓ Intersections表创建成功: {self.config.polygon_intersections_table}")
+        except Exception as e:
+            logger.error(f"✗ Intersections表创建失败: {e}")
+            raise
+        
+        logger.info("所有分析表初始化完成")
     
     def _init_main_analysis_table(self):
         """初始化主分析表"""
         table_name = self.config.polygon_analysis_table
+        logger.debug(f"创建主分析表: {table_name}")
         
         create_table_sql = text(f"""
             CREATE TABLE IF NOT EXISTS {table_name} (
@@ -111,8 +132,10 @@ class BatchPolygonRoadAnalyzer:
         """)
         
         with self.engine.connect() as conn:
+            logger.debug(f"执行SQL: CREATE TABLE IF NOT EXISTS {table_name}...")
             conn.execute(create_table_sql)
             conn.commit()
+            logger.debug(f"主分析表创建SQL执行成功: {table_name}")
             
             # 创建索引
             try:
@@ -122,6 +145,7 @@ class BatchPolygonRoadAnalyzer:
                 """)
                 conn.execute(create_index_sql)
                 conn.commit()
+                logger.debug(f"主分析表索引创建成功: {table_name}")
             except Exception as e:
                 logger.warning(f"创建索引失败: {e}")
     
@@ -170,22 +194,30 @@ class BatchPolygonRoadAnalyzer:
         """)
         
         with self.engine.connect() as conn:
+            logger.debug(f"执行SQL: CREATE TABLE IF NOT EXISTS {table_name}...")
             conn.execute(create_table_sql)
+            logger.debug(f"Roads表创建SQL执行成功: {table_name}")
             
             # 添加几何列（roads是LINESTRING类型）
             try:
                 add_geometry_sql = text(f"""
                     SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRINGZ', 2)
                 """)
+                logger.debug(f"添加几何列: LINESTRINGZ, 2D")
                 conn.execute(add_geometry_sql)
-            except Exception:
+                logger.debug(f"Roads表几何列添加成功: LINESTRINGZ, 2D")
+            except Exception as e1:
+                logger.debug(f"LINESTRINGZ 2D添加失败: {e1}，尝试3D模式")
                 # 几何列可能已存在，尝试3D模式
                 try:
                     add_geometry_sql_3d = text(f"""
                         SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRINGZ', 3)
                     """)
+                    logger.debug(f"添加几何列: LINESTRINGZ, 3D")
                     conn.execute(add_geometry_sql_3d)
-                except Exception:
+                    logger.debug(f"Roads表几何列添加成功: LINESTRINGZ, 3D")
+                except Exception as e2:
+                    logger.debug(f"LINESTRINGZ 3D添加也失败: {e2}，可能表已存在")
                     # 如果都失败，表可能已存在
                     pass
             
@@ -230,22 +262,30 @@ class BatchPolygonRoadAnalyzer:
         """)
         
         with self.engine.connect() as conn:
+            logger.debug(f"执行SQL: CREATE TABLE IF NOT EXISTS {table_name}...")
             conn.execute(create_table_sql)
+            logger.debug(f"Intersections表创建SQL执行成功: {table_name}")
             
             # 添加几何列（intersection是POLYGON类型）
             try:
                 add_geometry_sql = text(f"""
                     SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'POLYGONZ', 2)
                 """)
+                logger.debug(f"添加几何列: POLYGONZ, 2D")
                 conn.execute(add_geometry_sql)
-            except Exception:
+                logger.debug(f"Intersections表几何列添加成功: POLYGONZ, 2D")
+            except Exception as e1:
+                logger.debug(f"POLYGONZ 2D添加失败: {e1}，尝试3D模式")
                 # 几何列可能已存在，尝试3D模式
                 try:
                     add_geometry_sql_3d = text(f"""
                         SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'POLYGONZ', 3)
                     """)
+                    logger.debug(f"添加几何列: POLYGONZ, 3D")
                     conn.execute(add_geometry_sql_3d)
-                except Exception:
+                    logger.debug(f"Intersections表几何列添加成功: POLYGONZ, 3D")
+                except Exception as e2:
+                    logger.debug(f"POLYGONZ 3D添加也失败: {e2}，可能表已存在")
                     # 如果都失败，表可能已存在
                     pass
             
