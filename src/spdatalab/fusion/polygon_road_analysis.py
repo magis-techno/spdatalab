@@ -42,7 +42,7 @@ class PolygonRoadAnalysisConfig:
     intersection_table: str = "full_intersection"
     intersection_inroad_table: str = "full_intersectiongoinroad"
     intersection_outroad_table: str = "full_intersectiongooutroad"
-    roadintersection_table: str = "full_roadintersection"
+    roadintersection_table: str = "full_roadinintersection"
     
     # 批量处理配置
     polygon_batch_size: int = 50  # 每批处理的polygon数量
@@ -175,7 +175,7 @@ class BatchPolygonRoadAnalyzer:
             # 添加几何列（roads是LINESTRING类型）
             try:
                 add_geometry_sql = text(f"""
-                    SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRING', 2)
+                    SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRINGZ', 2)
                 """)
                 conn.execute(add_geometry_sql)
             except Exception:
@@ -235,7 +235,7 @@ class BatchPolygonRoadAnalyzer:
             # 添加几何列（intersection是POLYGON类型）
             try:
                 add_geometry_sql = text(f"""
-                    SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'POLYGON', 2)
+                    SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'POLYGONZ', 2)
                 """)
                 conn.execute(add_geometry_sql)
             except Exception:
@@ -280,6 +280,10 @@ class BatchPolygonRoadAnalyzer:
         start_time = time.time()
         
         try:
+            # 0. 初始化数据库表
+            self._init_analysis_tables()
+            logger.info("✓ 数据库表初始化完成")
+            
             # 1. 加载和验证polygon数据
             polygons = self._load_and_validate_geojson(geojson_file)
             if not polygons:
@@ -370,7 +374,7 @@ class BatchPolygonRoadAnalyzer:
         logger.info("开始批量查询道路元素")
         
         # 分批处理以避免内存和查询超时问题
-        all_results = {'roads': [], 'intersections': [], 'lanes': []}
+        all_results = {'roads': [], 'intersections': []}
         
         batch_size = self.config.polygon_batch_size
         total_batches = (len(polygons) + batch_size - 1) // batch_size
@@ -455,45 +459,81 @@ class BatchPolygonRoadAnalyzer:
         return results
     
     def _batch_query_roads(self, polygons: List[Dict]) -> pd.DataFrame:
-        """批量查询roads（两阶段查询策略）"""
-        logger.info("开始两阶段roads查询")
+        """批量查询roads（两阶段查询策略 - 批量优化版）"""
+        logger.info("开始批量两阶段roads查询")
         
         if not polygons:
             return pd.DataFrame()
         
-        all_results = []
+        # 阶段1：对所有polygons进行空间预筛选
+        all_road_keys = set()
+        polygon_road_map = {}  # polygon_id -> [(id, patchid, releaseversion)]
         
+        logger.info("阶段1: 对所有polygons进行空间预筛选")
         for polygon in polygons:
             polygon_id = polygon['polygon_id']
             polygon_wkt = polygon['polygon_wkt']
             
             try:
-                # 阶段1：空间预筛选
                 filtered_road_keys = self._spatial_prefilter_roads(polygon_wkt)
-                if not filtered_road_keys:
-                    logger.info(f"Polygon {polygon_id}: 空间预筛选未找到roads")
-                    continue
-                
-                logger.info(f"Polygon {polygon_id}: 预筛选到 {len(filtered_road_keys)} 个roads")
-                
-                # 阶段2：详细查询（包含JOIN和完整字段）
-                detailed_roads = self._detailed_query_roads(filtered_road_keys, polygon_id, polygon_wkt)
-                if not detailed_roads.empty:
-                    all_results.append(detailed_roads)
-                    logger.info(f"Polygon {polygon_id}: 详细查询到 {len(detailed_roads)} 条road记录")
+                if filtered_road_keys:
+                    polygon_road_map[polygon_id] = filtered_road_keys
+                    all_road_keys.update(filtered_road_keys)
+                    logger.debug(f"Polygon {polygon_id}: 预筛选到 {len(filtered_road_keys)} 个roads")
                 else:
-                    logger.info(f"Polygon {polygon_id}: 详细查询未找到符合条件的roads")
-                    
+                    logger.debug(f"Polygon {polygon_id}: 空间预筛选未找到roads")
             except Exception as e:
-                logger.error(f"查询polygon {polygon_id} roads失败: {e}")
+                logger.error(f"预筛选polygon {polygon_id} roads失败: {e}")
                 continue
         
-        if all_results:
-            df = pd.concat(all_results, ignore_index=True)
+        if not all_road_keys:
+            logger.info("所有polygon的空间预筛选都没有找到roads")
+            return pd.DataFrame()
+        
+        logger.info(f"预筛选阶段: 找到 {len(all_road_keys)} 个唯一roads")
+        
+        # 阶段2：批量详细查询所有预筛选的roads
+        logger.info("阶段2: 批量详细查询预筛选的roads")
+        all_road_details = self._detailed_query_roads_batch(list(all_road_keys))
+        
+        if all_road_details.empty:
+            logger.info("详细查询未找到任何roads")
+            return pd.DataFrame()
+        
+        # 阶段3：为每个road关联到相应的polygons，并计算空间关系
+        logger.info("阶段3: 计算roads与polygons的空间关系")
+        final_results = []
+        
+        for _, road_row in all_road_details.iterrows():
+            road_key = (road_row['id'], road_row['patchid'], road_row['releaseversion'])
+            road_geom = road_row['road_geom']
+            
+            # 找到包含这个road的所有polygons
+            for polygon_id, polygon_road_keys in polygon_road_map.items():
+                if road_key in polygon_road_keys:
+                    # 获取polygon几何
+                    polygon_wkt = next(p['polygon_wkt'] for p in polygons if p['polygon_id'] == polygon_id)
+                    
+                    # 计算空间关系
+                    try:
+                        spatial_result = self._calculate_spatial_relationship(road_geom, polygon_wkt)
+                        
+                        # 创建结果记录
+                        result_row = road_row.copy()
+                        result_row['polygon_id'] = polygon_id
+                        result_row.update(spatial_result)
+                        
+                        final_results.append(result_row)
+                    except Exception as e:
+                        logger.error(f"计算road {road_key} 与 polygon {polygon_id} 空间关系失败: {e}")
+                        continue
+        
+        if final_results:
+            df = pd.DataFrame(final_results)
             logger.info(f"总计查询到 {len(df)} 条road记录")
             return df
         else:
-            logger.info("所有polygon都没有找到road记录")
+            logger.info("没有找到任何有效的road记录")
             return pd.DataFrame()
     
     def _spatial_prefilter_roads(self, polygon_wkt: str) -> List[Tuple]:
@@ -520,6 +560,102 @@ class BatchPolygonRoadAnalyzer:
         except Exception as e:
             logger.error(f"空间预筛选roads失败: {e}")
             return []
+    
+    def _detailed_query_roads_batch(self, filtered_road_keys: List[Tuple]) -> pd.DataFrame:
+        """批量详细查询roads，不包含polygon特定信息"""
+        from spdatalab.common.io_hive import hive_cursor
+        
+        if not filtered_road_keys:
+            return pd.DataFrame()
+        
+        try:
+            with hive_cursor(self.config.remote_catalog) as cur:
+                # 分批处理避免IN子句过长
+                batch_size = self.config.detailed_query_batch_size
+                all_results = []
+                
+                for i in range(0, len(filtered_road_keys), batch_size):
+                    batch_keys = filtered_road_keys[i:i+batch_size]
+                    
+                    # 构建IN子句
+                    keys_condition = ','.join([
+                        f"({key[0]}, '{key[1]}', '{key[2]}')" for key in batch_keys
+                    ])
+                    
+                    # 详细查询SQL，包含所有字段和JOIN
+                    sql = f"""
+                    SELECT 
+                        r.*,  -- full_road所有字段
+                        ST_AsText(r.wkb_geometry) as road_geom,
+                        CASE WHEN gir.roadid IS NOT NULL THEN TRUE ELSE FALSE END as is_intersection_inroad,
+                        CASE WHEN gor.roadid IS NOT NULL THEN TRUE ELSE FALSE END as is_intersection_outroad,
+                        CASE WHEN ri.roadid IS NOT NULL THEN TRUE ELSE FALSE END as is_road_intersection
+                    FROM {self.config.road_table} r
+                    LEFT JOIN {self.config.intersection_inroad_table} gir 
+                        ON gir.roadid = r.id AND gir.patchid = r.patchid AND gir.releaseversion = r.releaseversion
+                    LEFT JOIN {self.config.intersection_outroad_table} gor 
+                        ON gor.roadid = r.id AND gor.patchid = r.patchid AND gor.releaseversion = r.releaseversion
+                    LEFT JOIN {self.config.roadintersection_table} ri 
+                        ON ri.roadid = r.id AND ri.patchid = r.patchid AND ri.releaseversion = r.releaseversion
+                    WHERE (r.id, r.patchid, r.releaseversion) IN ({keys_condition})
+                    """
+                    
+                    cur.execute(sql)
+                    rows = cur.fetchall()
+                    
+                    if rows:
+                        # 获取列名
+                        columns = [d[0] for d in cur.description]
+                        batch_df = pd.DataFrame(rows, columns=columns)
+                        all_results.append(batch_df)
+                
+                if all_results:
+                    result_df = pd.concat(all_results, ignore_index=True)
+                    return result_df
+                else:
+                    return pd.DataFrame()
+                    
+        except Exception as e:
+            logger.error(f"批量详细查询roads失败: {e}")
+            import traceback
+            logger.error(f"详细错误: {traceback.format_exc()}")
+            return pd.DataFrame()
+    
+    def _calculate_spatial_relationship(self, road_geom_wkt: str, polygon_wkt: str) -> Dict:
+        """计算road与polygon的空间关系"""
+        try:
+            from shapely import wkt
+            
+            # 解析几何
+            road_geom = wkt.loads(road_geom_wkt)
+            polygon_geom = wkt.loads(polygon_wkt)
+            
+            # 计算空间关系
+            is_within = road_geom.within(polygon_geom)
+            intersection = road_geom.intersection(polygon_geom)
+            
+            # 计算长度
+            road_length = road_geom.length * 111320.0  # 转换为米
+            intersection_length = intersection.length * 111320.0 if hasattr(intersection, 'length') else 0.0
+            
+            # 计算比例
+            intersection_ratio = intersection_length / (road_length + 1e-10)
+            
+            return {
+                'intersection_type': 'WITHIN' if is_within else 'INTERSECTS',
+                'road_length': road_length,
+                'intersection_length': intersection_length,
+                'intersection_ratio': intersection_ratio
+            }
+            
+        except Exception as e:
+            logger.error(f"计算空间关系失败: {e}")
+            return {
+                'intersection_type': 'UNKNOWN',
+                'road_length': 0.0,
+                'intersection_length': 0.0,
+                'intersection_ratio': 0.0
+            }
     
     def _detailed_query_roads(self, filtered_road_keys: List[Tuple], polygon_id: str, polygon_wkt: str) -> pd.DataFrame:
         """阶段2：基于预筛选结果进行详细查询，包含JOIN和完整字段"""
@@ -591,45 +727,69 @@ class BatchPolygonRoadAnalyzer:
             return pd.DataFrame()
     
     def _batch_query_intersections(self, polygons: List[Dict]) -> pd.DataFrame:
-        """批量查询intersections（两阶段查询策略）"""
-        logger.info("开始两阶段intersections查询")
+        """批量查询intersections（两阶段查询策略 - 批量优化版）"""
+        logger.info("开始批量两阶段intersections查询")
         
         if not polygons:
             return pd.DataFrame()
         
-        all_results = []
+        # 阶段1：对所有polygons进行空间预筛选
+        all_intersection_keys = set()
+        polygon_intersection_map = {}  # polygon_id -> [(id, patchid, releaseversion)]
         
+        logger.info("阶段1: 对所有polygons进行空间预筛选")
         for polygon in polygons:
             polygon_id = polygon['polygon_id']
             polygon_wkt = polygon['polygon_wkt']
             
             try:
-                # 阶段1：空间预筛选
                 filtered_intersection_keys = self._spatial_prefilter_intersections(polygon_wkt)
-                if not filtered_intersection_keys:
-                    logger.info(f"Polygon {polygon_id}: 空间预筛选未找到intersections")
-                    continue
-                
-                logger.info(f"Polygon {polygon_id}: 预筛选到 {len(filtered_intersection_keys)} 个intersections")
-                
-                # 阶段2：详细查询（包含完整字段）
-                detailed_intersections = self._detailed_query_intersections(filtered_intersection_keys, polygon_id)
-                if not detailed_intersections.empty:
-                    all_results.append(detailed_intersections)
-                    logger.info(f"Polygon {polygon_id}: 详细查询到 {len(detailed_intersections)} 条intersection记录")
+                if filtered_intersection_keys:
+                    polygon_intersection_map[polygon_id] = filtered_intersection_keys
+                    all_intersection_keys.update(filtered_intersection_keys)
+                    logger.debug(f"Polygon {polygon_id}: 预筛选到 {len(filtered_intersection_keys)} 个intersections")
                 else:
-                    logger.info(f"Polygon {polygon_id}: 详细查询未找到符合条件的intersections")
-                    
+                    logger.debug(f"Polygon {polygon_id}: 空间预筛选未找到intersections")
             except Exception as e:
-                logger.error(f"查询polygon {polygon_id} intersections失败: {e}")
+                logger.error(f"预筛选polygon {polygon_id} intersections失败: {e}")
                 continue
         
-        if all_results:
-            df = pd.concat(all_results, ignore_index=True)
+        if not all_intersection_keys:
+            logger.info("所有polygon的空间预筛选都没有找到intersections")
+            return pd.DataFrame()
+        
+        logger.info(f"预筛选阶段: 找到 {len(all_intersection_keys)} 个唯一intersections")
+        
+        # 阶段2：批量详细查询所有预筛选的intersections
+        logger.info("阶段2: 批量详细查询预筛选的intersections")
+        all_intersection_details = self._detailed_query_intersections_batch(list(all_intersection_keys))
+        
+        if all_intersection_details.empty:
+            logger.info("详细查询未找到任何intersections")
+            return pd.DataFrame()
+        
+        # 阶段3：为每个intersection关联到相应的polygons
+        logger.info("阶段3: 关联intersections到相应的polygons")
+        final_results = []
+        
+        for _, intersection_row in all_intersection_details.iterrows():
+            intersection_key = (intersection_row['id'], intersection_row['patchid'], intersection_row['releaseversion'])
+            
+            # 找到包含这个intersection的所有polygons
+            for polygon_id, polygon_intersection_keys in polygon_intersection_map.items():
+                if intersection_key in polygon_intersection_keys:
+                    # 创建结果记录
+                    result_row = intersection_row.copy()
+                    result_row['polygon_id'] = polygon_id
+                    
+                    final_results.append(result_row)
+        
+        if final_results:
+            df = pd.DataFrame(final_results)
             logger.info(f"总计查询到 {len(df)} 条intersection记录")
             return df
         else:
-            logger.info("所有polygon都没有找到intersection记录")
+            logger.info("没有找到任何有效的intersection记录")
             return pd.DataFrame()
     
     def _spatial_prefilter_intersections(self, polygon_wkt: str) -> List[Tuple]:
@@ -656,6 +816,57 @@ class BatchPolygonRoadAnalyzer:
         except Exception as e:
             logger.error(f"空间预筛选intersections失败: {e}")
             return []
+    
+    def _detailed_query_intersections_batch(self, filtered_intersection_keys: List[Tuple]) -> pd.DataFrame:
+        """批量详细查询intersections，不包含polygon特定信息"""
+        from spdatalab.common.io_hive import hive_cursor
+        
+        if not filtered_intersection_keys:
+            return pd.DataFrame()
+        
+        try:
+            with hive_cursor(self.config.remote_catalog) as cur:
+                # 分批处理避免IN子句过长
+                batch_size = self.config.detailed_query_batch_size
+                all_results = []
+                
+                for i in range(0, len(filtered_intersection_keys), batch_size):
+                    batch_keys = filtered_intersection_keys[i:i+batch_size]
+                    
+                    # 构建IN子句
+                    keys_condition = ','.join([
+                        f"({key[0]}, '{key[1]}', '{key[2]}')" for key in batch_keys
+                    ])
+                    
+                    # 详细查询SQL，包含所有字段
+                    sql = f"""
+                    SELECT 
+                        i.*,  -- full_intersection所有字段
+                        ST_AsText(i.wkb_geometry) as intersection_geom
+                    FROM {self.config.intersection_table} i
+                    WHERE (i.id, i.patchid, i.releaseversion) IN ({keys_condition})
+                    """
+                    
+                    cur.execute(sql)
+                    rows = cur.fetchall()
+                    
+                    if rows:
+                        # 获取列名
+                        columns = [d[0] for d in cur.description]
+                        batch_df = pd.DataFrame(rows, columns=columns)
+                        all_results.append(batch_df)
+                
+                if all_results:
+                    result_df = pd.concat(all_results, ignore_index=True)
+                    return result_df
+                else:
+                    return pd.DataFrame()
+                    
+        except Exception as e:
+            logger.error(f"批量详细查询intersections失败: {e}")
+            import traceback
+            logger.error(f"详细错误: {traceback.format_exc()}")
+            return pd.DataFrame()
     
     def _detailed_query_intersections(self, filtered_intersection_keys: List[Tuple], polygon_id: str) -> pd.DataFrame:
         """阶段2：基于预筛选结果进行详细查询，包含完整字段"""
