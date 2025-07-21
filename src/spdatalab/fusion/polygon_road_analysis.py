@@ -147,15 +147,22 @@ class BatchPolygonRoadAnalyzer:
         with self.engine.connect() as conn:
             conn.execute(create_table_sql)
             
-            # 添加几何列
+            # 添加几何列（3D支持）
             try:
                 add_geometry_sql = text(f"""
-                    SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRING', 2)
+                    SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRINGZ', 3)
                 """)
                 conn.execute(add_geometry_sql)
             except Exception:
-                # 几何列可能已存在
-                pass
+                # 几何列可能已存在，尝试2D兼容模式
+                try:
+                    add_geometry_sql_2d = text(f"""
+                        SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRING', 3)
+                    """)
+                    conn.execute(add_geometry_sql_2d)
+                except Exception:
+                    # 如果都失败，表可能已存在
+                    pass
             
             conn.commit()
             
@@ -191,15 +198,22 @@ class BatchPolygonRoadAnalyzer:
         with self.engine.connect() as conn:
             conn.execute(create_table_sql)
             
-            # 添加几何列
+            # 添加几何列（3D支持）
             try:
                 add_geometry_sql = text(f"""
-                    SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'POINT', 2)
+                    SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'POINTZ', 3)
                 """)
                 conn.execute(add_geometry_sql)
             except Exception:
-                # 几何列可能已存在
-                pass
+                # 几何列可能已存在，尝试2D兼容模式
+                try:
+                    add_geometry_sql_2d = text(f"""
+                        SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'POINT', 3)
+                    """)
+                    conn.execute(add_geometry_sql_2d)
+                except Exception:
+                    # 如果都失败，表可能已存在
+                    pass
             
             conn.commit()
             
@@ -236,15 +250,22 @@ class BatchPolygonRoadAnalyzer:
         with self.engine.connect() as conn:
             conn.execute(create_table_sql)
             
-            # 添加几何列
+            # 添加几何列（3D支持）
             try:
                 add_geometry_sql = text(f"""
-                    SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRING', 2)
+                    SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRINGZ', 3)
                 """)
                 conn.execute(add_geometry_sql)
             except Exception:
-                # 几何列可能已存在
-                pass
+                # 几何列可能已存在，尝试2D兼容模式
+                try:
+                    add_geometry_sql_2d = text(f"""
+                        SELECT AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'LINESTRING', 3)
+                    """)
+                    conn.execute(add_geometry_sql_2d)
+                except Exception:
+                    # 如果都失败，表可能已存在
+                    pass
             
             conn.commit()
             
@@ -681,7 +702,7 @@ class BatchPolygonRoadAnalyzer:
             VALUES (
                 :analysis_id, :polygon_id, :road_id, :road_type, :road_level,
                 :intersection_type, :intersection_ratio, :road_length, :intersection_length,
-                ST_SetSRID(ST_GeomFromText(:road_geom), 4326)
+                ST_Force3D(ST_SetSRID(ST_GeomFromText(:road_geom), 4326))
             )
         """)
         
@@ -720,7 +741,7 @@ class BatchPolygonRoadAnalyzer:
             (analysis_id, polygon_id, intersection_id, intersection_type, intersection_level, geometry)
             VALUES (
                 :analysis_id, :polygon_id, :intersection_id, :intersection_type, :intersection_level,
-                ST_SetSRID(ST_GeomFromText(:intersection_geom), 4326)
+                ST_Force3D(ST_SetSRID(ST_GeomFromText(:intersection_geom), 4326))
             )
         """)
         
@@ -764,7 +785,7 @@ class BatchPolygonRoadAnalyzer:
             (analysis_id, polygon_id, lane_id, road_id, lane_type, lane_direction, geometry)
             VALUES (
                 :analysis_id, :polygon_id, :lane_id, :road_id, :lane_type, :lane_direction,
-                ST_SetSRID(ST_GeomFromText(:lane_geom), 4326)
+                ST_Force3D(ST_SetSRID(ST_GeomFromText(:lane_geom), 4326))
             )
         """)
         
