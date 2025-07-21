@@ -481,20 +481,20 @@ class BatchPolygonRoadAnalyzer:
                     polygon_id = polygon['polygon_id']
                     polygon_wkt = polygon['polygon_wkt']
                     
-                    # 严格按照trajectory_road_analysis的SQL模式：直接使用表名，不带catalog前缀
+                    # 严格按照trajectory_road_analysis的SQL模式，并修复SRID问题
                     sql = f"""
                     SELECT 
                         '{polygon_id}' as polygon_id,
                         r.id as road_id,
                         ST_AsText(r.wkb_geometry) as road_geom,
                         CASE 
-                            WHEN ST_Within(r.wkb_geometry, ST_GeomFromText('{polygon_wkt}')) THEN 'WITHIN'
+                            WHEN ST_Within(ST_SetSRID(r.wkb_geometry, 4326), ST_GeomFromText('{polygon_wkt}', 4326)) THEN 'WITHIN'
                             ELSE 'INTERSECTS'
                         END as intersection_type,
-                        ST_Length(r.wkb_geometry) as total_length,
-                        ST_Length(ST_Intersection(r.wkb_geometry, ST_GeomFromText('{polygon_wkt}'))) as intersection_length
+                        ST_Length(ST_SetSRID(r.wkb_geometry, 4326)) as total_length,
+                        ST_Length(ST_Intersection(ST_SetSRID(r.wkb_geometry, 4326), ST_GeomFromText('{polygon_wkt}', 4326))) as intersection_length
                     FROM {self.config.road_table} r
-                    WHERE ST_Intersects(r.wkb_geometry, ST_GeomFromText('{polygon_wkt}'))
+                    WHERE ST_Intersects(ST_SetSRID(r.wkb_geometry, 4326), ST_GeomFromText('{polygon_wkt}', 4326))
                     AND r.wkb_geometry IS NOT NULL
                     ORDER BY r.id
                     LIMIT 1000
@@ -550,7 +550,7 @@ class BatchPolygonRoadAnalyzer:
                     polygon_id = polygon['polygon_id']
                     polygon_wkt = polygon['polygon_wkt']
                     
-                    # 严格按照trajectory_road_analysis的SQL模式
+                    # 严格按照trajectory_road_analysis的SQL模式，并修复SRID问题
                     sql = f"""
                     SELECT 
                         '{polygon_id}' as polygon_id,
@@ -559,7 +559,7 @@ class BatchPolygonRoadAnalyzer:
                         i.intersectionsubtype,
                         ST_AsText(i.wkb_geometry) as intersection_geom
                     FROM {self.config.intersection_table} i
-                    WHERE ST_Intersects(i.wkb_geometry, ST_GeomFromText('{polygon_wkt}'))
+                    WHERE ST_Intersects(ST_SetSRID(i.wkb_geometry, 4326), ST_GeomFromText('{polygon_wkt}', 4326))
                     AND i.wkb_geometry IS NOT NULL
                     ORDER BY i.id
                     LIMIT 500
