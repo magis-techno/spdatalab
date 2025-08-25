@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 import warnings
+import urllib3
 
 import requests
 from requests.exceptions import RequestException, Timeout
@@ -27,6 +28,7 @@ from spdatalab.common.config import getenv
 
 # 抑制警告
 warnings.filterwarnings('ignore', category=UserWarning)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # 日志配置
 logger = logging.getLogger(__name__)
@@ -220,7 +222,8 @@ class MultimodalRetriever:
                 self.api_config.api_url,
                 headers=self.headers,
                 json=payload,
-                timeout=self.api_config.timeout
+                timeout=self.api_config.timeout,
+                verify=False  # 关闭SSL验证
             )
             response.raise_for_status()
             return response.json()
@@ -298,7 +301,8 @@ class MultimodalRetriever:
                 self.api_config.api_url,
                 headers=self.headers,
                 json=payload,
-                timeout=self.api_config.timeout
+                timeout=self.api_config.timeout,
+                verify=False  # 关闭SSL验证
             )
             response.raise_for_status()
             return response.json()
