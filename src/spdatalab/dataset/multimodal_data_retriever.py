@@ -225,8 +225,17 @@ class MultimodalRetriever:
                 timeout=self.api_config.timeout,
                 verify=False  # 关闭SSL验证
             )
-            response.raise_for_status()
-            return response.json()
+            try:
+                response.raise_for_status()
+                return response.json()
+            except requests.exceptions.HTTPError as e:
+                logger.error(f"🔍 HTTP错误详情 (状态码: {response.status_code})")
+                logger.error(f"🔍 响应头: {dict(response.headers)}")
+                logger.error(f"🔍 响应内容: {response.text}")
+                logger.error(f"🔍 请求URL: {response.url}")
+                logger.error(f"🔍 请求头: {dict(response.request.headers)}")
+                logger.error(f"🔍 请求体: {response.request.body}")
+                raise
         
         try:
             result = self.retry_strategy.execute_with_retry(api_call)
@@ -304,8 +313,17 @@ class MultimodalRetriever:
                 timeout=self.api_config.timeout,
                 verify=False  # 关闭SSL验证
             )
-            response.raise_for_status()
-            return response.json()
+            try:
+                response.raise_for_status()
+                return response.json()
+            except requests.exceptions.HTTPError as e:
+                logger.error(f"🔍 HTTP错误详情 (状态码: {response.status_code})")
+                logger.error(f"🔍 响应头: {dict(response.headers)}")
+                logger.error(f"🔍 响应内容: {response.text}")
+                logger.error(f"🔍 请求URL: {response.url}")
+                logger.error(f"🔍 请求头: {dict(response.request.headers)}")
+                logger.error(f"🔍 请求体: {response.request.body}")
+                raise
         
         try:
             result = self.retry_strategy.execute_with_retry(api_call)
