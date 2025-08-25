@@ -37,15 +37,15 @@ def get_api_config_from_env() -> APIConfig:
         return APIConfig.from_env()
     except RuntimeError as e:
         logger.error("❌ API配置不完整，请设置环境变量：")
-        logger.error("   必需变量：")
-        logger.error("     MULTIMODAL_PROJECT=<your_project>")
-        logger.error("     MULTIMODAL_API_KEY=<your_api_key>")
-        logger.error("     MULTIMODAL_USERNAME=<your_username>")
-        logger.error("   可选变量：")
-        logger.error("     MULTIMODAL_API_URL=<api_url> (默认: driveinsight-api.ias.huawei.com)")
-        logger.error("     MULTIMODAL_TIMEOUT=<timeout_seconds> (默认: 30)")
-        logger.error("     MULTIMODAL_MAX_RETRIES=<max_retries> (默认: 3)")
-        logger.error(f"   错误详情: {e}")
+        logger.error("   MULTIMODAL_API_KEY=<your_api_key> (必需)")
+        logger.error("   MULTIMODAL_USERNAME=<your_username> (必需)")
+        logger.error("   MULTIMODAL_PROJECT=<your_project> (默认: driveinsight)")
+        logger.error("   MULTIMODAL_API_BASE_URL=<api_base_url> (默认: https://driveinsight-api.ias.huawei.com)")
+        logger.error("   MULTIMODAL_API_PATH=<api_path> (默认: /xmodalitys/retrieve)")
+        logger.error("   MULTIMODAL_PLATFORM=<platform> (默认: xmodalitys-external)")
+        logger.error("   MULTIMODAL_REGION=<region> (默认: RaD-prod)")
+        logger.error("   MULTIMODAL_ENTRYPOINT_VERSION=<version> (默认: v2)")
+        logger.error(f"\n具体错误: {e}")
         sys.exit(1)
 
 
@@ -62,14 +62,14 @@ def create_parser() -> argparse.ArgumentParser:
       --collection "ddi_collection_camera_encoded_1" \\
       --output-table "discovered_trajectories"
 
-  # 完整参数示例
+  # 完整参数示例（文本检索）
   python -m spdatalab.fusion.multimodal_trajectory_retrieval \\
       --text "red car turning left" \\
       --collection "ddi_collection_camera_encoded_1" \\
-      --count 5000 \\
-      --similarity-threshold 0.7 \\
-      --start-time 1739958000000 \\
-      --end-time 1739959000000 \\
+      --count 10 \\
+      --start 0 \\
+      --start-time 1234567891011 \\
+      --end-time 1234567891111 \\
       --time-window 30 \\
       --buffer-distance 10 \\
       --output-table "red_car_trajectories" \\
@@ -77,14 +77,11 @@ def create_parser() -> argparse.ArgumentParser:
       --verbose
 
 环境变量配置:
-  必需变量:
-    MULTIMODAL_PROJECT=<your_project>
-    MULTIMODAL_API_KEY=<your_api_key>
-    MULTIMODAL_USERNAME=<your_username>
-  可选变量:
-    MULTIMODAL_API_URL=<api_url> (默认: driveinsight-api.ias.huawei.com)
-    MULTIMODAL_TIMEOUT=<timeout_seconds> (默认: 30)
-    MULTIMODAL_MAX_RETRIES=<max_retries> (默认: 3)
+  MULTIMODAL_API_KEY=<your_api_key> (必需)
+  MULTIMODAL_USERNAME=<your_username> (必需)
+  MULTIMODAL_PROJECT=<your_project> (默认: driveinsight)
+  MULTIMODAL_API_BASE_URL=<api_base_url> (可选)
+  MULTIMODAL_API_PATH=<api_path> (可选)
 
 API限制:
   - 单次查询最多10,000条
@@ -111,27 +108,27 @@ API限制:
     parser.add_argument(
         '--count',
         type=int,
-        default=5000,
-        help='返回数量，默认5000，最大10000'
+        default=5,
+        help='返回数量，默认5，最大10000'
     )
     
     parser.add_argument(
-        '--similarity-threshold',
-        type=float,
-        default=0.3,
-        help='相似度阈值，默认0.3'
+        '--start',
+        type=int,
+        default=0,
+        help='起始偏移量，默认0'
     )
     
     parser.add_argument(
         '--start-time',
         type=int,
-        help='开始时间戳（毫秒）'
+        help='事件开始时间，13位时间戳（可选）'
     )
     
     parser.add_argument(
         '--end-time',
         type=int,
-        help='结束时间戳（毫秒）'
+        help='事件结束时间，13位时间戳（可选）'
     )
     
     # 分析参数
@@ -210,16 +207,17 @@ def validate_args(args) -> None:
         logger.error(f"❌ count参数必须大于0，当前值: {args.count}")
         sys.exit(1)
     
-    # 验证相似度阈值
-    if not 0.0 <= args.similarity_threshold <= 1.0:
-        logger.error(f"❌ similarity-threshold必须在0.0-1.0之间，当前值: {args.similarity_threshold}")
+    # 验证start参数
+    if args.start < 0:
+        logger.error(f"❌ start参数必须大于等于0，当前值: {args.start}")
         sys.exit(1)
     
     # 验证时间参数
-    if args.start_time and args.end_time:
-        if args.start_time >= args.end_time:
-            logger.error(f"❌ start-time必须小于end-time")
-            sys.exit(1)
+    if hasattr(args, 'start_time') and hasattr(args, 'end_time'):
+        if args.start_time and args.end_time:
+            if args.start_time >= args.end_time:
+                logger.error(f"❌ start-time必须小于end-time")
+                sys.exit(1)
     
     # 验证缓冲区距离
     if args.buffer_distance <= 0:
@@ -244,7 +242,6 @@ def create_multimodal_config(args, api_config: APIConfig) -> MultimodalConfig:
     return MultimodalConfig(
         api_config=api_config,
         max_search_results=args.count,
-        similarity_threshold=args.similarity_threshold,
         time_window_days=args.time_window,
         buffer_distance=args.buffer_distance,
         overlap_threshold=args.overlap_threshold,
@@ -369,6 +366,7 @@ def main():
             text=args.text,
             collection=args.collection,
             count=args.count,
+            start=args.start,
             start_time=args.start_time,
             end_time=args.end_time
         )

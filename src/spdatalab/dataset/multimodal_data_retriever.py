@@ -38,21 +38,34 @@ class APIConfig:
     project: str
     api_key: str  
     username: str
-    api_url: str = "https://driveinsight-api.ias.huawei.com/xmodalitys"
+    platform: str = "xmodalitys-external"
+    region: str = "RaD-prod"
+    entrypoint_version: str = "v2"
+    api_base_url: str = "https://driveinsight-api.ias.huawei.com"
+    api_path: str = "/xmodalitys/retrieve"
     timeout: int = 30
     max_retries: int = 3
+    
+    @property
+    def api_url(self) -> str:
+        """完整的API URL"""
+        return f"{self.api_base_url.rstrip('/')}{self.api_path}"
     
     @classmethod
     def from_env(cls) -> 'APIConfig':
         """从环境变量创建API配置
         
         需要的环境变量：
-        - MULTIMODAL_PROJECT: 项目名称
-        - MULTIMODAL_API_KEY: API密钥
-        - MULTIMODAL_USERNAME: 用户名
-        - MULTIMODAL_API_URL: API地址（可选，有默认值）
-        - MULTIMODAL_TIMEOUT: 超时时间（可选，默认30秒）
-        - MULTIMODAL_MAX_RETRIES: 最大重试次数（可选，默认3次）
+        - MULTIMODAL_PROJECT: 项目名称（默认：driveinsight）
+        - MULTIMODAL_API_KEY: API密钥（必需）
+        - MULTIMODAL_USERNAME: 用户名（必需）
+        - MULTIMODAL_PLATFORM: 平台标识（默认：xmodalitys-external）
+        - MULTIMODAL_REGION: 区域标识（默认：RaD-prod）
+        - MULTIMODAL_ENTRYPOINT_VERSION: 入口版本（默认：v2）
+        - MULTIMODAL_API_BASE_URL: API基础URL（默认：https://driveinsight-api.ias.huawei.com）
+        - MULTIMODAL_API_PATH: API路径（默认：/xmodalitys/retrieve）
+        - MULTIMODAL_TIMEOUT: 超时时间（默认：30）
+        - MULTIMODAL_MAX_RETRIES: 最大重试次数（默认：3）
         
         Returns:
             APIConfig实例
@@ -61,10 +74,14 @@ class APIConfig:
             RuntimeError: 当必需的环境变量缺失时
         """
         return cls(
-            project=getenv('MULTIMODAL_PROJECT', required=True),
+            project=getenv('MULTIMODAL_PROJECT', 'driveinsight'),
             api_key=getenv('MULTIMODAL_API_KEY', required=True),
             username=getenv('MULTIMODAL_USERNAME', required=True),
-            api_url=getenv('MULTIMODAL_API_URL', 'https://driveinsight-api.ias.huawei.com/xmodalitys'),
+            platform=getenv('MULTIMODAL_PLATFORM', 'xmodalitys-external'),
+            region=getenv('MULTIMODAL_REGION', 'RaD-prod'),
+            entrypoint_version=getenv('MULTIMODAL_ENTRYPOINT_VERSION', 'v2'),
+            api_base_url=getenv('MULTIMODAL_API_BASE_URL', 'https://driveinsight-api.ias.huawei.com'),
+            api_path=getenv('MULTIMODAL_API_PATH', '/xmodalitys/retrieve'),
             timeout=int(getenv('MULTIMODAL_TIMEOUT', '30')),
             max_retries=int(getenv('MULTIMODAL_MAX_RETRIES', '3'))
         )
@@ -116,10 +133,17 @@ class MultimodalRetriever:
     def _build_headers(self) -> Dict[str, str]:
         """构建API请求头"""
         return {
-            "Content-Type": "application/json",
+            "Accept": "*/*",
+            "Accept-Encoding": "gzip, deflate, br",
             "Authorization": f"Bearer {self.api_config.api_key}",
-            "X-Project": self.api_config.project,
-            "X-Username": self.api_config.username
+            "Content-Type": "application/json",
+            "Deepdata-Platform": self.api_config.platform,
+            "Deepdata-Project": self.api_config.project,
+            "Deepdata-Region": self.api_config.region,
+            "Entrypoint-Version": self.api_config.entrypoint_version,
+            "Host": self.api_config.api_base_url.replace("https://", "").replace("http://", ""),
+            "User-Agent": "spdatalab-multimodal/1.0.0",
+            "username": self.api_config.username
         }
     
     def _extract_camera_from_collection(self, collection: str) -> str:
@@ -142,18 +166,18 @@ class MultimodalRetriever:
         logger.warning(f"无法从collection '{collection}' 推导camera参数，使用默认值")
         return "camera_1"
     
-    def retrieve_by_text(self, text: str, collection: str, count: int = 5000, 
-                        start_time: Optional[int] = None, end_time: Optional[int] = None,
-                        similarity_threshold: float = 0.3) -> List[Dict]:
+    def retrieve_by_text(self, text: str, collection: str, count: int = 5, 
+                        start: int = 0, start_time: Optional[int] = None, 
+                        end_time: Optional[int] = None) -> List[Dict]:
         """文本检索，包含API限制控制
         
         Args:
             text: 查询文本，如 "bicycle crossing intersection"
             collection: 相机表选择，如 "ddi_collection_camera_encoded_1"
-            count: 返回数量，默认5000，最大10000
-            start_time: 开始时间戳（毫秒）
-            end_time: 结束时间戳（毫秒）
-            similarity_threshold: 相似度阈值，默认0.3
+            count: 返回数量，默认5，最大10000
+            start: 起始偏移量，默认0
+            start_time: 事件开始时间，13位时间戳（可选）
+            end_time: 事件结束时间，13位时间戳（可选）
             
         Returns:
             检索结果列表
@@ -170,22 +194,25 @@ class MultimodalRetriever:
         # 3. 自动推导camera参数
         camera = self._extract_camera_from_collection(collection)
         
-        # 4. 构建请求参数
+        # 4. 构建请求参数（按照完整API格式）
         payload = {
             "text": text,
             "collection": collection,
             "camera": camera,
+            "start": start,
             "count": count,
-            "similarity_threshold": similarity_threshold
+            "modality": 1  # 1表示文本检索
         }
         
-        # 添加时间范围（如果提供）
+        # 添加可选的时间范围参数
         if start_time is not None:
             payload["start_time"] = start_time
         if end_time is not None:
             payload["end_time"] = end_time
         
-        logger.info(f"🔍 执行文本检索: '{text}', collection={collection}, camera={camera}, count={count}")
+        logger.info(f"🔍 执行文本检索: '{text}', collection={collection}, camera={camera}, start={start}, count={count}")
+        if start_time or end_time:
+            logger.info(f"   时间范围: {start_time} - {end_time}")
         
         # 5. 执行API调用
         def api_call():
@@ -213,9 +240,83 @@ class MultimodalRetriever:
             logger.error(f"❌ 文本检索失败: {e}")
             raise
     
-    def retrieve_by_images(self, image_paths: List[str], collection: str, **kwargs) -> List[Dict]:
-        """图片检索接口（预留，暂不实现）"""
-        raise NotImplementedError("图片检索功能预留，暂不开发")
+    def retrieve_by_images(self, images: List[str], collection: str, count: int = 5,
+                          start: int = 0, start_time: Optional[int] = None,
+                          end_time: Optional[int] = None) -> List[Dict]:
+        """图片检索，包含API限制控制
+        
+        Args:
+            images: 图片base64编码后的字符串列表
+            collection: 相机表选择，如 "ddi_collection_camera_encoded_1"
+            count: 返回数量，默认5，最大10000
+            start: 起始偏移量，默认0
+            start_time: 事件开始时间，13位时间戳（可选）
+            end_time: 事件结束时间，13位时间戳（可选）
+            
+        Returns:
+            检索结果列表
+        """
+        # 1. 验证单次查询限制（≤10000）
+        if count > self.max_single_count:
+            raise ValueError(f"单次查询数量不能超过{self.max_single_count}条，当前请求{count}条")
+        
+        # 2. 验证累计查询限制（≤100000）
+        if self.query_count + count > self.max_total_count:
+            remaining = self.max_total_count - self.query_count
+            raise ValueError(f"累计查询数量不能超过{self.max_total_count}条，当前已查询{self.query_count}条，剩余{remaining}条")
+        
+        # 3. 验证图片输入
+        if not images or len(images) == 0:
+            raise ValueError("图片列表不能为空")
+        
+        # 4. 自动推导camera参数
+        camera = self._extract_camera_from_collection(collection)
+        
+        # 5. 构建请求参数（按照完整API格式）
+        payload = {
+            "images": images,
+            "collection": collection,
+            "camera": camera,
+            "start": start,
+            "count": count,
+            "modality": 2  # 2表示图片检索
+        }
+        
+        # 添加可选的时间范围参数
+        if start_time is not None:
+            payload["start_time"] = start_time
+        if end_time is not None:
+            payload["end_time"] = end_time
+        
+        logger.info(f"🔍 执行图片检索: {len(images)}张图片, collection={collection}, camera={camera}, start={start}, count={count}")
+        if start_time or end_time:
+            logger.info(f"   时间范围: {start_time} - {end_time}")
+        
+        # 6. 执行API调用
+        def api_call():
+            response = requests.post(
+                self.api_config.api_url,
+                headers=self.headers,
+                json=payload,
+                timeout=self.api_config.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+        
+        try:
+            result = self.retry_strategy.execute_with_retry(api_call)
+            
+            # 7. 更新查询计数
+            actual_count = len(result) if isinstance(result, list) else 0
+            self.query_count += actual_count
+            
+            logger.info(f"✅ 图片检索成功: 返回{actual_count}条结果，累计查询{self.query_count}条")
+            
+            return result if isinstance(result, list) else []
+            
+        except Exception as e:
+            logger.error(f"❌ 图片检索失败: {e}")
+            raise
     
     def get_query_stats(self) -> Dict[str, Any]:
         """获取查询统计信息"""

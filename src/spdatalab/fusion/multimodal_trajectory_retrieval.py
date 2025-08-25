@@ -55,8 +55,7 @@ class MultimodalConfig:
     api_config: APIConfig
     
     # 核心参数（研发分析优化）
-    max_search_results: int = 5000          # 适合研发分析的默认值
-    similarity_threshold: float = 0.3
+    max_search_results: int = 5             # 适合研发分析的默认值（与API示例一致）
     time_window_days: int = 30              # 30天时间窗口
     buffer_distance: float = 10.0           # 10米精确缓冲
     
@@ -301,16 +300,17 @@ class MultimodalTrajectoryWorkflow:
         self.polygon_processor = HighPerformancePolygonTrajectoryQuery(config.polygon_config)
     
     def process_text_query(self, text: str, collection: str, count: Optional[int] = None, 
-                          start_time: Optional[int] = None, end_time: Optional[int] = None,
-                          **kwargs) -> Dict:
+                          start: int = 0, start_time: Optional[int] = None, 
+                          end_time: Optional[int] = None, **kwargs) -> Dict:
         """优化的文本查询流程
         
         Args:
             text: 查询文本
             collection: 相机collection
             count: 查询数量（默认使用配置值）
-            start_time: 开始时间戳
-            end_time: 结束时间戳
+            start: 起始偏移量，默认0
+            start_time: 事件开始时间，13位时间戳（可选）
+            end_time: 事件结束时间，13位时间戳（可选）
             
         Returns:
             轻量化查询结果
@@ -323,9 +323,9 @@ class MultimodalTrajectoryWorkflow:
                 text=text,
                 collection=collection,
                 count=count,
+                start=start,
                 start_time=start_time,
-                end_time=end_time,
-                similarity_threshold=self.config.similarity_threshold
+                end_time=end_time
             ),
             query_type="text",
             query_content=text,
@@ -333,9 +333,39 @@ class MultimodalTrajectoryWorkflow:
             **kwargs
         )
     
-    def process_image_query(self, image_paths: List[str], collection: str, **kwargs) -> Dict:
-        """图片查询接口（预留）"""
-        raise NotImplementedError("图片检索功能预留，暂不开发")
+    def process_image_query(self, images: List[str], collection: str, count: Optional[int] = None,
+                           start: int = 0, start_time: Optional[int] = None,
+                           end_time: Optional[int] = None, **kwargs) -> Dict:
+        """优化的图片查询流程
+        
+        Args:
+            images: 图片base64编码后的字符串列表
+            collection: 相机collection
+            count: 查询数量（默认使用配置值）
+            start: 起始偏移量，默认0
+            start_time: 事件开始时间，13位时间戳（可选）
+            end_time: 事件结束时间，13位时间戳（可选）
+            
+        Returns:
+            轻量化查询结果
+        """
+        if count is None:
+            count = self.config.max_search_results
+        
+        return self._execute_optimized_workflow(
+            retrieval_func=lambda: self.retriever.retrieve_by_images(
+                images=images,
+                collection=collection,
+                count=count,
+                start=start,
+                start_time=start_time,
+                end_time=end_time
+            ),
+            query_type="image",
+            query_content=f"{len(images)}张图片",
+            collection=collection,
+            **kwargs
+        )
     
     def _execute_optimized_workflow(self, retrieval_func, query_type: str, query_content: str, 
                                    collection: str, **kwargs) -> Dict:

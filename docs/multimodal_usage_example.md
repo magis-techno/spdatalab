@@ -24,36 +24,16 @@
 
 ### 1. 环境配置
 
-#### 方式1: 使用.env文件（推荐）
-
-在项目根目录创建 `.env` 文件：
+设置必要的环境变量：
 
 ```bash
-# 必需配置
-MULTIMODAL_PROJECT=your_project
-MULTIMODAL_API_KEY=your_api_key
-MULTIMODAL_USERNAME=your_username
-
-# 可选配置
-MULTIMODAL_API_URL=https://driveinsight-api.ias.huawei.com/xmodalitys
-MULTIMODAL_TIMEOUT=30
-MULTIMODAL_MAX_RETRIES=3
-```
-
-详细配置说明请参考：[环境变量配置示例](./env_config_example.md)
-
-#### 方式2: 直接设置环境变量
-
-```bash
-# 必需变量
+# API配置（必须）
 export MULTIMODAL_PROJECT="your_project"
 export MULTIMODAL_API_KEY="your_api_key"
 export MULTIMODAL_USERNAME="your_username"
 
-# 可选变量
+# API地址（可选）
 export MULTIMODAL_API_URL="https://driveinsight-api.ias.huawei.com/xmodalitys"
-export MULTIMODAL_TIMEOUT="30"
-export MULTIMODAL_MAX_RETRIES="3"
 ```
 
 ### 2. 基础命令行使用
@@ -69,8 +49,8 @@ python -m spdatalab.fusion.multimodal_trajectory_retrieval \
 python -m spdatalab.fusion.multimodal_trajectory_retrieval \
     --text "red car turning left" \
     --collection "ddi_collection_camera_encoded_1" \
-    --count 5000 \
-    --similarity-threshold 0.7 \
+    --count 10 \
+    --start 0 \
     --start-time 1739958000000 \
     --end-time 1739959000000 \
     --time-window 30 \
@@ -83,8 +63,6 @@ python -m spdatalab.fusion.multimodal_trajectory_retrieval \
 
 ### 3. Python API使用
 
-#### 方式1: 使用环境变量配置（推荐）
-
 ```python
 from spdatalab.dataset.multimodal_data_retriever import APIConfig
 from spdatalab.fusion.multimodal_trajectory_retrieval import (
@@ -92,10 +70,13 @@ from spdatalab.fusion.multimodal_trajectory_retrieval import (
     MultimodalTrajectoryWorkflow
 )
 
-# 从环境变量自动创建API配置
-api_config = APIConfig.from_env()
+# 配置
+api_config = APIConfig(
+    project="your_project",
+    api_key="your_api_key",
+    username="your_username"
+)
 
-# 创建多模态配置
 config = MultimodalConfig(
     api_config=api_config,
     buffer_distance=10.0,
@@ -109,34 +90,22 @@ workflow = MultimodalTrajectoryWorkflow(config)
 result = workflow.process_text_query(
     text="bicycle crossing intersection",
     collection="ddi_collection_camera_encoded_1",
-    count=5000
+    count=10,
+    start=0,
+    start_time=1739958000000,
+    end_time=1739959000000
+)
+
+# 图片查询
+image_result = workflow.process_image_query(
+    images=["base64_encoded_image_1", "base64_encoded_image_2"],
+    collection="ddi_collection_camera_encoded_1",
+    count=5,
+    start=0
 )
 
 print(f"发现轨迹点: {result['summary']['total_points']}")
 print(f"优化效果: {result['summary']['optimization_ratio']}")
-```
-
-#### 方式2: 手动创建配置
-
-```python
-from spdatalab.dataset.multimodal_data_retriever import APIConfig
-from spdatalab.fusion.multimodal_trajectory_retrieval import (
-    MultimodalConfig,
-    MultimodalTrajectoryWorkflow
-)
-
-# 手动创建API配置
-api_config = APIConfig(
-    project="your_project",
-    api_key="your_api_key",
-    username="your_username",
-    api_url="https://driveinsight-api.ias.huawei.com/xmodalitys",  # 可自定义
-    timeout=30,
-    max_retries=3
-)
-
-# 其余代码相同...
-config = MultimodalConfig(api_config=api_config, ...)
 ```
 
 ## 🔧 核心特性
@@ -150,6 +119,12 @@ config = MultimodalConfig(api_config=api_config, ...)
 - **单次查询限制**：最多10,000条（硬限制）
 - **累计查询限制**：最多100,000条（会话级限制）
 - **自动计数**：实时追踪查询使用量
+
+### 多模态检索支持
+- **文本检索**：自然语言描述查询（modality=1）
+- **图片检索**：base64编码图片查询（modality=2）
+- **时间范围**：支持start_time和end_time参数（可选）
+- **分页查询**：支持start和count参数
 
 ### 相机自动匹配
 ```python

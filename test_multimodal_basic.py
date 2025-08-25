@@ -62,8 +62,11 @@ def test_api_config():
         assert config.project == "test_project"
         assert config.api_key == "test_key"
         assert config.username == "test_user"
-        assert config.api_url == "https://driveinsight-api.ias.huawei.com/xmodalitys"
+        assert config.api_url == "https://driveinsight-api.ias.huawei.com/xmodalitys/retrieve"
         assert config.timeout == 30
+        assert config.platform == "xmodalitys-external"
+        assert config.region == "RaD-prod"
+        assert config.entrypoint_version == "v2"
         
         print("✅ API配置创建和验证成功")
         return True
@@ -256,8 +259,7 @@ def test_multimodal_config():
         config = MultimodalConfig(api_config=api_config)
         
         # 验证默认值
-        assert config.max_search_results == 5000
-        assert config.similarity_threshold == 0.3
+        assert config.max_search_results == 5
         assert config.time_window_days == 30
         assert config.buffer_distance == 10.0
         assert config.overlap_threshold == 0.7
@@ -284,13 +286,19 @@ def test_cli_parser():
         args = parser.parse_args([
             '--text', 'bicycle crossing intersection',
             '--collection', 'ddi_collection_camera_encoded_1',
-            '--count', '1000',
+            '--count', '10',
+            '--start', '5',
+            '--start-time', '1234567891011',
+            '--end-time', '1234567891111',
             '--buffer-distance', '15.0'
         ])
         
         assert args.text == 'bicycle crossing intersection'
         assert args.collection == 'ddi_collection_camera_encoded_1'
-        assert args.count == 1000
+        assert args.count == 10
+        assert args.start == 5
+        assert args.start_time == 1234567891011
+        assert args.end_time == 1234567891111
         assert args.buffer_distance == 15.0
         
         print("✅ CLI参数解析测试成功")
