@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Any
 import warnings
 
 import requests
-from requests.exceptions import RequestException, TimeoutError
+from requests.exceptions import RequestException, Timeout
 from shapely.geometry import LineString, Polygon
 
 # 抑制警告
@@ -51,7 +51,7 @@ class APIRetryStrategy:
         for attempt in range(self.max_retries):
             try:
                 return api_call_func()
-            except (RequestException, TimeoutError) as e:
+            except (RequestException, Timeout) as e:
                 if attempt == self.max_retries - 1:
                     logger.error(f"API调用失败，已重试{self.max_retries}次: {e}")
                     raise
