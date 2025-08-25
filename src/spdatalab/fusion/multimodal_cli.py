@@ -33,28 +33,20 @@ logger = logging.getLogger(__name__)
 
 def get_api_config_from_env() -> APIConfig:
     """从环境变量获取API配置"""
-    import os
-    
-    # 尝试从环境变量获取
-    project = os.getenv('MULTIMODAL_PROJECT')
-    api_key = os.getenv('MULTIMODAL_API_KEY')
-    username = os.getenv('MULTIMODAL_USERNAME')
-    api_url = os.getenv('MULTIMODAL_API_URL', 'https://driveinsight-api.ias.huawei.com/xmodalitys')
-    
-    if not all([project, api_key, username]):
+    try:
+        return APIConfig.from_env()
+    except RuntimeError as e:
         logger.error("❌ API配置不完整，请设置环境变量：")
-        logger.error("   MULTIMODAL_PROJECT=<your_project>")
-        logger.error("   MULTIMODAL_API_KEY=<your_api_key>")
-        logger.error("   MULTIMODAL_USERNAME=<your_username>")
-        logger.error("   MULTIMODAL_API_URL=<api_url> (可选)")
+        logger.error("   必需变量：")
+        logger.error("     MULTIMODAL_PROJECT=<your_project>")
+        logger.error("     MULTIMODAL_API_KEY=<your_api_key>")
+        logger.error("     MULTIMODAL_USERNAME=<your_username>")
+        logger.error("   可选变量：")
+        logger.error("     MULTIMODAL_API_URL=<api_url> (默认: driveinsight-api.ias.huawei.com)")
+        logger.error("     MULTIMODAL_TIMEOUT=<timeout_seconds> (默认: 30)")
+        logger.error("     MULTIMODAL_MAX_RETRIES=<max_retries> (默认: 3)")
+        logger.error(f"   错误详情: {e}")
         sys.exit(1)
-    
-    return APIConfig(
-        project=project,
-        api_key=api_key,
-        username=username,
-        api_url=api_url
-    )
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -85,10 +77,14 @@ def create_parser() -> argparse.ArgumentParser:
       --verbose
 
 环境变量配置:
-  MULTIMODAL_PROJECT=<your_project>
-  MULTIMODAL_API_KEY=<your_api_key>
-  MULTIMODAL_USERNAME=<your_username>
-  MULTIMODAL_API_URL=<api_url> (可选)
+  必需变量:
+    MULTIMODAL_PROJECT=<your_project>
+    MULTIMODAL_API_KEY=<your_api_key>
+    MULTIMODAL_USERNAME=<your_username>
+  可选变量:
+    MULTIMODAL_API_URL=<api_url> (默认: driveinsight-api.ias.huawei.com)
+    MULTIMODAL_TIMEOUT=<timeout_seconds> (默认: 30)
+    MULTIMODAL_MAX_RETRIES=<max_retries> (默认: 3)
 
 API限制:
   - 单次查询最多10,000条

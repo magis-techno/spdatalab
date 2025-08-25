@@ -24,16 +24,36 @@
 
 ### 1. 环境配置
 
-设置必要的环境变量：
+#### 方式1: 使用.env文件（推荐）
+
+在项目根目录创建 `.env` 文件：
 
 ```bash
-# API配置（必须）
+# 必需配置
+MULTIMODAL_PROJECT=your_project
+MULTIMODAL_API_KEY=your_api_key
+MULTIMODAL_USERNAME=your_username
+
+# 可选配置
+MULTIMODAL_API_URL=https://driveinsight-api.ias.huawei.com/xmodalitys
+MULTIMODAL_TIMEOUT=30
+MULTIMODAL_MAX_RETRIES=3
+```
+
+详细配置说明请参考：[环境变量配置示例](./env_config_example.md)
+
+#### 方式2: 直接设置环境变量
+
+```bash
+# 必需变量
 export MULTIMODAL_PROJECT="your_project"
 export MULTIMODAL_API_KEY="your_api_key"
 export MULTIMODAL_USERNAME="your_username"
 
-# API地址（可选）
+# 可选变量
 export MULTIMODAL_API_URL="https://driveinsight-api.ias.huawei.com/xmodalitys"
+export MULTIMODAL_TIMEOUT="30"
+export MULTIMODAL_MAX_RETRIES="3"
 ```
 
 ### 2. 基础命令行使用
@@ -63,6 +83,8 @@ python -m spdatalab.fusion.multimodal_trajectory_retrieval \
 
 ### 3. Python API使用
 
+#### 方式1: 使用环境变量配置（推荐）
+
 ```python
 from spdatalab.dataset.multimodal_data_retriever import APIConfig
 from spdatalab.fusion.multimodal_trajectory_retrieval import (
@@ -70,13 +92,10 @@ from spdatalab.fusion.multimodal_trajectory_retrieval import (
     MultimodalTrajectoryWorkflow
 )
 
-# 配置
-api_config = APIConfig(
-    project="your_project",
-    api_key="your_api_key",
-    username="your_username"
-)
+# 从环境变量自动创建API配置
+api_config = APIConfig.from_env()
 
+# 创建多模态配置
 config = MultimodalConfig(
     api_config=api_config,
     buffer_distance=10.0,
@@ -95,6 +114,29 @@ result = workflow.process_text_query(
 
 print(f"发现轨迹点: {result['summary']['total_points']}")
 print(f"优化效果: {result['summary']['optimization_ratio']}")
+```
+
+#### 方式2: 手动创建配置
+
+```python
+from spdatalab.dataset.multimodal_data_retriever import APIConfig
+from spdatalab.fusion.multimodal_trajectory_retrieval import (
+    MultimodalConfig,
+    MultimodalTrajectoryWorkflow
+)
+
+# 手动创建API配置
+api_config = APIConfig(
+    project="your_project",
+    api_key="your_api_key",
+    username="your_username",
+    api_url="https://driveinsight-api.ias.huawei.com/xmodalitys",  # 可自定义
+    timeout=30,
+    max_retries=3
+)
+
+# 其余代码相同...
+config = MultimodalConfig(api_config=api_config, ...)
 ```
 
 ## 🔧 核心特性

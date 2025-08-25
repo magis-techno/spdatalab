@@ -10,6 +10,7 @@
 
 import json
 import logging
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -20,6 +21,9 @@ import warnings
 import requests
 from requests.exceptions import RequestException, Timeout
 from shapely.geometry import LineString, Polygon
+
+# 导入项目配置工具
+from spdatalab.common.config import getenv
 
 # 抑制警告
 warnings.filterwarnings('ignore', category=UserWarning)
@@ -37,6 +41,33 @@ class APIConfig:
     api_url: str = "https://driveinsight-api.ias.huawei.com/xmodalitys"
     timeout: int = 30
     max_retries: int = 3
+    
+    @classmethod
+    def from_env(cls) -> 'APIConfig':
+        """从环境变量创建API配置
+        
+        需要的环境变量：
+        - MULTIMODAL_PROJECT: 项目名称
+        - MULTIMODAL_API_KEY: API密钥
+        - MULTIMODAL_USERNAME: 用户名
+        - MULTIMODAL_API_URL: API地址（可选，有默认值）
+        - MULTIMODAL_TIMEOUT: 超时时间（可选，默认30秒）
+        - MULTIMODAL_MAX_RETRIES: 最大重试次数（可选，默认3次）
+        
+        Returns:
+            APIConfig实例
+            
+        Raises:
+            RuntimeError: 当必需的环境变量缺失时
+        """
+        return cls(
+            project=getenv('MULTIMODAL_PROJECT', required=True),
+            api_key=getenv('MULTIMODAL_API_KEY', required=True),
+            username=getenv('MULTIMODAL_USERNAME', required=True),
+            api_url=getenv('MULTIMODAL_API_URL', 'https://driveinsight-api.ias.huawei.com/xmodalitys'),
+            timeout=int(getenv('MULTIMODAL_TIMEOUT', '30')),
+            max_retries=int(getenv('MULTIMODAL_MAX_RETRIES', '3'))
+        )
 
 
 class APIRetryStrategy:
