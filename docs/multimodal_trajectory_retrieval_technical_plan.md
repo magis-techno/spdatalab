@@ -82,7 +82,7 @@ sequenceDiagram
 ```python
 class MultimodalRetriever:
     def __init__(self, api_config: Dict):
-        self.api_url = "https://driveinsight-api.ias.huawei.com/xmodalitys"
+        self.api_url = "https://your-api-server.com/xmodalitys"
         self.headers = self._build_headers(api_config)
         self.query_count = 0      # 累计查询计数
         self.max_total_count = 100000  # 累计限制10万条
@@ -427,7 +427,7 @@ class APIConfig:
     project: str
     api_key: str  
     username: str
-    api_url: str = "https://driveinsight-api.ias.huawei.com/xmodalitys"
+    api_url: str = "https://your-api-server.com/xmodalitys"
     timeout: int = 30
     max_retries: int = 3
 
@@ -578,7 +578,7 @@ requests = "^2.28.0"           # HTTP客户端
 
 ### 技术文档
 - [现有polygon_trajectory_query源码](../src/spdatalab/dataset/polygon_trajectory_query.py)
-- [多模态API接口文档](https://driveinsight-api.ias.huawei.com/xmodalitys)
+- [多模态API接口文档](https://your-api-server.com/xmodalitys)
 - [PostGIS空间数据处理文档](https://postgis.net/documentation/)
 
 ### 开发参考

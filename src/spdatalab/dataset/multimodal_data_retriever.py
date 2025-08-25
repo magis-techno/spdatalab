@@ -41,7 +41,7 @@ class APIConfig:
     platform: str = "xmodalitys-external"
     region: str = "RaD-prod"
     entrypoint_version: str = "v2"
-    api_base_url: str = "https://driveinsight-api.ias.huawei.com"
+    api_base_url: str = "https://api.example.com"
     api_path: str = "/xmodalitys/retrieve"
     timeout: int = 30
     max_retries: int = 3
@@ -56,13 +56,13 @@ class APIConfig:
         """从环境变量创建API配置
         
         需要的环境变量：
-        - MULTIMODAL_PROJECT: 项目名称（默认：driveinsight）
+        - MULTIMODAL_PROJECT: 项目名称（默认：your_project）
         - MULTIMODAL_API_KEY: API密钥（必需）
         - MULTIMODAL_USERNAME: 用户名（必需）
         - MULTIMODAL_PLATFORM: 平台标识（默认：xmodalitys-external）
         - MULTIMODAL_REGION: 区域标识（默认：RaD-prod）
         - MULTIMODAL_ENTRYPOINT_VERSION: 入口版本（默认：v2）
-        - MULTIMODAL_API_BASE_URL: API基础URL（默认：https://driveinsight-api.ias.huawei.com）
+        - MULTIMODAL_API_BASE_URL: API基础URL（必需，从环境变量获取）
         - MULTIMODAL_API_PATH: API路径（默认：/xmodalitys/retrieve）
         - MULTIMODAL_TIMEOUT: 超时时间（默认：30）
         - MULTIMODAL_MAX_RETRIES: 最大重试次数（默认：3）
@@ -74,13 +74,13 @@ class APIConfig:
             RuntimeError: 当必需的环境变量缺失时
         """
         return cls(
-            project=getenv('MULTIMODAL_PROJECT', 'driveinsight'),
+            project=getenv('MULTIMODAL_PROJECT', 'your_project'),
             api_key=getenv('MULTIMODAL_API_KEY', required=True),
             username=getenv('MULTIMODAL_USERNAME', required=True),
             platform=getenv('MULTIMODAL_PLATFORM', 'xmodalitys-external'),
             region=getenv('MULTIMODAL_REGION', 'RaD-prod'),
             entrypoint_version=getenv('MULTIMODAL_ENTRYPOINT_VERSION', 'v2'),
-            api_base_url=getenv('MULTIMODAL_API_BASE_URL', 'https://driveinsight-api.ias.huawei.com'),
+            api_base_url=getenv('MULTIMODAL_API_BASE_URL', required=True),
             api_path=getenv('MULTIMODAL_API_PATH', '/xmodalitys/retrieve'),
             timeout=int(getenv('MULTIMODAL_TIMEOUT', '30')),
             max_retries=int(getenv('MULTIMODAL_MAX_RETRIES', '3'))

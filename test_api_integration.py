@@ -26,7 +26,7 @@ def test_api_config_from_env():
         'MULTIMODAL_PLATFORM': 'test-platform',
         'MULTIMODAL_REGION': 'test-region',
         'MULTIMODAL_ENTRYPOINT_VERSION': 'v3',
-        'MULTIMODAL_API_BASE_URL': 'https://test.example.com',
+        'MULTIMODAL_API_BASE_URL': 'https://test-api.example.com',
         'MULTIMODAL_API_PATH': '/test/api',
         'MULTIMODAL_TIMEOUT': '60',
         'MULTIMODAL_MAX_RETRIES': '5'
@@ -54,9 +54,9 @@ def test_api_config_from_env():
         assert config.platform == 'test-platform'
         assert config.region == 'test-region'
         assert config.entrypoint_version == 'v3'
-        assert config.api_base_url == 'https://test.example.com'
+        assert config.api_base_url == 'https://test-api.example.com'
         assert config.api_path == '/test/api'
-        assert config.api_url == 'https://test.example.com/test/api'
+        assert config.api_url == 'https://test-api.example.com/test/api'
         assert config.timeout == 60
         assert config.max_retries == 5
         
@@ -91,7 +91,7 @@ def test_api_headers():
             platform="test-platform",
             region="test-region",
             entrypoint_version="v3",
-            api_base_url="https://test.example.com"
+            api_base_url="https://test-api.example.com"
         )
         
         # 创建检索器
@@ -108,7 +108,7 @@ def test_api_headers():
             "Deepdata-Project": "test_project",
             "Deepdata-Region": "test-region",
             "Entrypoint-Version": "v3",
-            "Host": "test.example.com",
+            "Host": "test-api.example.com",
             "User-Agent": "spdatalab-multimodal/1.0.0",
             "username": "test_user"
         }
@@ -242,30 +242,30 @@ def test_real_api_format():
         
         # 模拟真实的API配置
         config = APIConfig(
-            project="driveinsight",
+            project="test_project",
             api_key="xxx",  # 模拟密钥
-            username="l00882130",
+            username="test_user",
             platform="xmodalitys-external",
             region="RaD-prod",
             entrypoint_version="v2",
-            api_base_url="https://driveinsight-api.ias.huawei.com",
+            api_base_url="https://api.example.com",
             api_path="/xmodalitys/retrieve"
         )
         
         retriever = MultimodalRetriever(config)
         
         # 验证URL构建
-        assert config.api_url == "https://driveinsight-api.ias.huawei.com/xmodalitys/retrieve"
+        assert config.api_url == "https://api.example.com/xmodalitys/retrieve"
         
         # 验证请求头格式（按照真实curl命令）
         headers = retriever.headers
         assert headers["Authorization"] == "Bearer xxx"
         assert headers["Deepdata-Platform"] == "xmodalitys-external"
-        assert headers["Deepdata-Project"] == "driveinsight"
+        assert headers["Deepdata-Project"] == "test_project"
         assert headers["Deepdata-Region"] == "RaD-prod"
         assert headers["Entrypoint-Version"] == "v2"
-        assert headers["Host"] == "driveinsight-api.ias.huawei.com"
-        assert headers["username"] == "l00882130"
+        assert headers["Host"] == "api.example.com"
+        assert headers["username"] == "test_user"
         
         # 验证相机推导（按照真实API示例）
         camera = retriever._extract_camera_from_collection("ddi_collection_camera_encoded_2")

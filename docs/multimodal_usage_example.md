@@ -33,7 +33,7 @@ export MULTIMODAL_API_KEY="your_api_key"
 export MULTIMODAL_USERNAME="your_username"
 
 # API地址（可选）
-export MULTIMODAL_API_URL="https://driveinsight-api.ias.huawei.com/xmodalitys"
+export MULTIMODAL_API_BASE_URL="https://your-api-server.com"
 ```
 
 ### 2. 基础命令行使用

@@ -348,7 +348,7 @@ config = MultimodalConfig(
 
 ### 相关文档
 - [现有polygon_trajectory_query使用指南](./polygon_trajectory_query_guide.md)
-- [多模态API文档](https://driveinsight-api.ias.huawei.com/xmodalitys)
+- [多模态API文档](https://your-api-server.com/xmodalitys)
 - [spdatalab开发规范](../README.md)
 
 ### 参考资源

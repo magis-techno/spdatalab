@@ -39,8 +39,8 @@ def get_api_config_from_env() -> APIConfig:
         logger.error("❌ API配置不完整，请设置环境变量：")
         logger.error("   MULTIMODAL_API_KEY=<your_api_key> (必需)")
         logger.error("   MULTIMODAL_USERNAME=<your_username> (必需)")
-        logger.error("   MULTIMODAL_PROJECT=<your_project> (默认: driveinsight)")
-        logger.error("   MULTIMODAL_API_BASE_URL=<api_base_url> (默认: https://driveinsight-api.ias.huawei.com)")
+        logger.error("   MULTIMODAL_API_BASE_URL=<api_base_url> (必需)")
+        logger.error("   MULTIMODAL_PROJECT=<your_project> (默认: your_project)")
         logger.error("   MULTIMODAL_API_PATH=<api_path> (默认: /xmodalitys/retrieve)")
         logger.error("   MULTIMODAL_PLATFORM=<platform> (默认: xmodalitys-external)")
         logger.error("   MULTIMODAL_REGION=<region> (默认: RaD-prod)")
@@ -79,8 +79,8 @@ def create_parser() -> argparse.ArgumentParser:
 环境变量配置:
   MULTIMODAL_API_KEY=<your_api_key> (必需)
   MULTIMODAL_USERNAME=<your_username> (必需)
-  MULTIMODAL_PROJECT=<your_project> (默认: driveinsight)
-  MULTIMODAL_API_BASE_URL=<api_base_url> (可选)
+  MULTIMODAL_API_BASE_URL=<api_base_url> (必需)
+  MULTIMODAL_PROJECT=<your_project> (可选)
   MULTIMODAL_API_PATH=<api_path> (可选)
 
 API限制:

@@ -62,7 +62,7 @@ def test_api_config():
         assert config.project == "test_project"
         assert config.api_key == "test_key"
         assert config.username == "test_user"
-        assert config.api_url == "https://driveinsight-api.ias.huawei.com/xmodalitys/retrieve"
+        assert config.api_url == "https://api.example.com/xmodalitys/retrieve"
         assert config.timeout == 30
         assert config.platform == "xmodalitys-external"
         assert config.region == "RaD-prod"
