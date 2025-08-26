@@ -445,9 +445,6 @@ class MultimodalTrajectoryWorkflow:
             logger.info("💾 Stage 6: 轻量化结果输出...")
             final_results = self._finalize_lightweight_results(trajectory_points, merged_polygons, stats)
             
-            # 获取轨迹点数据用于数据库保存
-            discovered_trajectories = final_results.get('trajectory_points', [])
-            
             stats['success'] = True
             stats['total_duration'] = time.time() - workflow_start
             
@@ -566,7 +563,9 @@ class MultimodalTrajectoryWorkflow:
         if self.config.output_table:
             logger.info(f"💾 保存结果到数据库表: {self.config.output_table}")
             try:
-                save_count = self._save_to_database(discovered_trajectories, self.config.output_table, stats)
+                # 将DataFrame转换为字典列表用于数据库保存
+                trajectory_records = trajectory_points.to_dict('records') if not trajectory_points.empty else []
+                save_count = self._save_to_database(trajectory_records, self.config.output_table, stats)
                 stats['saved_to_database'] = save_count
                 logger.info(f"✅ 数据库保存成功: {save_count} 条轨迹点")
             except Exception as e:
