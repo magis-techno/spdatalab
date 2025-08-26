@@ -785,7 +785,7 @@ class HighPerformancePolygonTrajectoryQuery:
             # 检查表是否已存在
             check_table_sql = text(f"""
                 SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
+                    SELECT 1 FROM information_schema.tables 
                     WHERE table_schema = 'public' 
                     AND table_name = '{table_name}'
                 );
