@@ -305,6 +305,18 @@ def print_summary(results: dict, verbose: bool = False) -> None:
     print(f"   检索结果: {stats.get('search_results_count', 0)} 条")
     print(f"   聚合数据集: {stats.get('aggregated_datasets', 0)} 个")
     
+    # 在verbose模式下显示数据集详情
+    if verbose and 'dataset_details' in stats:
+        print(f"\n📁 检索到的数据集详情:")
+        dataset_details = stats['dataset_details']
+        for i, (dataset_name, count) in enumerate(dataset_details.items(), 1):
+            # 截短过长的数据集名称
+            display_name = dataset_name if len(dataset_name) <= 60 else dataset_name[:57] + "..."
+            print(f"   {i}. {display_name}")
+            print(f"      └─ {count} 条结果")
+        if len(dataset_details) > 5:
+            print(f"   ... 共 {len(dataset_details)} 个数据集")
+    
     # 优化效果
     print(f"\n🔄 智能优化效果:")
     print(f"   Polygon优化: {summary.get('optimization_ratio', 'N/A')}")
@@ -328,6 +340,14 @@ def print_summary(results: dict, verbose: bool = False) -> None:
         print(f"   原始Polygon: {stats.get('raw_polygon_count', 0)} 个")
         print(f"   合并Polygon: {stats.get('merged_polygon_count', 0)} 个")
         print(f"   轨迹数据: {stats.get('trajectory_data_count', 0)} 条")
+        
+        # 数据库保存状态
+        if 'saved_to_database' in stats:
+            print(f"\n💾 数据库保存:")
+            print(f"   保存记录: {stats.get('saved_to_database', 0)} 条")
+        elif 'database_save_error' in stats:
+            print(f"\n❌ 数据库保存失败:")
+            print(f"   错误信息: {stats.get('database_save_error', 'N/A')}")
     
     print("="*60)
 

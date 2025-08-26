@@ -114,6 +114,19 @@ class ResultAggregator:
             dataset_groups[dataset_name].append(result)
         
         logger.info(f"📊 Dataset聚合: {len(search_results)}条结果 → {len(dataset_groups)}个数据集")
+        
+        # 在调试模式下显示详细的数据集信息
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("📋 聚合的数据集详情:")
+            for dataset_name, items in dataset_groups.items():
+                logger.debug(f"   📁 {dataset_name}: {len(items)}条结果")
+                for i, item in enumerate(items[:3]):  # 只显示前3条
+                    similarity = item.get('similarity', 0)
+                    timestamp = item.get('timestamp', 0)
+                    logger.debug(f"      {i+1}. 相似度={similarity:.3f}, 时间戳={timestamp}")
+                if len(items) > 3:
+                    logger.debug(f"      ... 还有{len(items)-3}条结果")
+        
         return dict(dataset_groups)
     
     def aggregate_by_timewindow(self, dataset_groups: Dict[str, List[Dict]]) -> Dict[str, Dict]:
@@ -399,6 +412,12 @@ class MultimodalTrajectoryWorkflow:
             stats['aggregated_datasets'] = len(aggregated_datasets)
             stats['aggregated_queries'] = len(aggregated_queries)
             
+            # 添加数据集详情用于verbose模式显示
+            dataset_details = {}
+            for dataset_name, results in aggregated_datasets.items():
+                dataset_details[dataset_name] = len(results)
+            stats['dataset_details'] = dataset_details
+            
             # Stage 3: 轨迹数据获取 (优化后，减少重复查询)
             logger.info(f"🚀 Stage 3: 批量获取 {len(aggregated_datasets)} 个数据集轨迹...")
             trajectory_data = self._fetch_aggregated_trajectories(aggregated_queries)
@@ -425,6 +444,9 @@ class MultimodalTrajectoryWorkflow:
             # Stage 6: 轻量化结果输出
             logger.info("💾 Stage 6: 轻量化结果输出...")
             final_results = self._finalize_lightweight_results(trajectory_points, merged_polygons, stats)
+            
+            # 获取轨迹点数据用于数据库保存
+            discovered_trajectories = final_results.get('trajectory_points', [])
             
             stats['success'] = True
             stats['total_duration'] = time.time() - workflow_start
@@ -543,7 +565,13 @@ class MultimodalTrajectoryWorkflow:
         # 可选的数据库保存
         if self.config.output_table:
             logger.info(f"💾 保存结果到数据库表: {self.config.output_table}")
-            # TODO: 实现数据库保存功能
+            try:
+                save_count = self._save_to_database(discovered_trajectories, self.config.output_table, stats)
+                stats['saved_to_database'] = save_count
+                logger.info(f"✅ 数据库保存成功: {save_count} 条轨迹点")
+            except Exception as e:
+                logger.error(f"❌ 数据库保存失败: {e}")
+                stats['database_save_error'] = str(e)
         
         # 可选的GeoJSON保存
         if self.config.output_geojson:
@@ -551,6 +579,172 @@ class MultimodalTrajectoryWorkflow:
             # TODO: 实现GeoJSON导出功能
         
         return results
+    
+    def _save_to_database(self, trajectories: List[Dict], table_name: str, stats: Dict) -> int:
+        """保存多模态检索结果到数据库表
+        
+        Args:
+            trajectories: 发现的轨迹点数据
+            table_name: 目标表名
+            stats: 统计信息
+            
+        Returns:
+            保存成功的记录数
+        """
+        from spdatalab.common.io_hive import hive_cursor
+        from sqlalchemy import text
+        import pandas as pd
+        
+        if not trajectories:
+            logger.warning("📊 没有轨迹数据需要保存")
+            return 0
+        
+        try:
+            # 创建多模态检索结果表
+            self._create_multimodal_results_table(table_name)
+            
+            # 准备插入数据
+            records = []
+            for traj in trajectories:
+                # 获取源信息
+                source_polygons = traj.get('source_polygons', [])
+                source_info = source_polygons[0] if source_polygons else {}
+                
+                record = {
+                    'dataset_name': traj.get('dataset_name', ''),
+                    'scene_id': traj.get('scene_id', ''),
+                    'event_id': traj.get('event_id'),
+                    'event_name': traj.get('event_name', ''),
+                    'longitude': traj.get('longitude', 0.0),
+                    'latitude': traj.get('latitude', 0.0),
+                    'timestamp': traj.get('timestamp', 0),
+                    'velocity': traj.get('velocity', 0.0),
+                    'heading': traj.get('heading', 0.0),
+                    'source_dataset': source_info.get('source_dataset', ''),
+                    'source_timestamp': source_info.get('source_timestamp', 0),
+                    'source_similarity': source_info.get('source_similarity', 0.0),
+                    'source_polygon_id': source_info.get('polygon_id', ''),
+                    'query_type': stats.get('query_type', 'text'),
+                    'query_content': stats.get('query_content', ''),
+                    'collection': stats.get('collection', ''),
+                    'optimization_ratio': f"{stats.get('raw_polygon_count', 0)}→{stats.get('merged_polygon_count', 0)}"
+                }
+                records.append(record)
+            
+            # 创建DataFrame并保存
+            df = pd.DataFrame(records)
+            
+            # 使用hive_cursor进行批量插入
+            with hive_cursor() as cursor:
+                # 分批插入数据
+                batch_size = 1000
+                total_inserted = 0
+                
+                for i in range(0, len(df), batch_size):
+                    batch_df = df.iloc[i:i+batch_size]
+                    batch_num = i // batch_size + 1
+                    
+                    logger.info(f"💾 保存第 {batch_num} 批: {len(batch_df)} 条记录")
+                    
+                    # 准备INSERT语句
+                    values_list = []
+                    for _, row in batch_df.iterrows():
+                        values = f"""(
+                            '{row['dataset_name']}', '{row['scene_id']}', {row['event_id'] or 'NULL'},
+                            '{row['event_name']}', {row['longitude']}, {row['latitude']}, 
+                            {row['timestamp']}, {row['velocity']}, {row['heading']},
+                            '{row['source_dataset']}', {row['source_timestamp']}, {row['source_similarity']},
+                            '{row['source_polygon_id']}', '{row['query_type']}', '{row['query_content']}',
+                            '{row['collection']}', '{row['optimization_ratio']}', CURRENT_TIMESTAMP
+                        )"""
+                        values_list.append(values)
+                    
+                    insert_sql = f"""
+                        INSERT INTO {table_name} (
+                            dataset_name, scene_id, event_id, event_name,
+                            longitude, latitude, timestamp, velocity, heading,
+                            source_dataset, source_timestamp, source_similarity, source_polygon_id,
+                            query_type, query_content, collection, optimization_ratio, created_at
+                        ) VALUES {','.join(values_list)}
+                    """
+                    
+                    cursor.execute(insert_sql)
+                    total_inserted += len(batch_df)
+                    
+                    logger.debug(f"📊 第 {batch_num} 批保存完成: {len(batch_df)} 条")
+            
+            logger.info(f"✅ 数据库保存完成: {total_inserted} 条记录保存到表 {table_name}")
+            return total_inserted
+            
+        except Exception as e:
+            logger.error(f"❌ 数据库保存失败: {e}")
+            raise
+    
+    def _create_multimodal_results_table(self, table_name: str) -> bool:
+        """创建多模态检索结果表"""
+        from spdatalab.common.io_hive import hive_cursor
+        
+        try:
+            with hive_cursor() as cursor:
+                # 检查表是否存在
+                check_sql = f"""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_schema = 'public' 
+                        AND table_name = '{table_name}'
+                    )
+                """
+                cursor.execute(check_sql)
+                table_exists = cursor.fetchone()[0]
+                
+                if table_exists:
+                    logger.info(f"📊 表 {table_name} 已存在，跳过创建")
+                    return True
+                
+                # 创建表
+                create_sql = f"""
+                    CREATE TABLE {table_name} (
+                        id SERIAL PRIMARY KEY,
+                        dataset_name TEXT NOT NULL,
+                        scene_id TEXT,
+                        event_id INTEGER,
+                        event_name VARCHAR(765),
+                        longitude DOUBLE PRECISION NOT NULL,
+                        latitude DOUBLE PRECISION NOT NULL,
+                        timestamp BIGINT NOT NULL,
+                        velocity DOUBLE PRECISION DEFAULT 0.0,
+                        heading DOUBLE PRECISION DEFAULT 0.0,
+                        source_dataset TEXT,
+                        source_timestamp BIGINT,
+                        source_similarity DOUBLE PRECISION,
+                        source_polygon_id TEXT,
+                        query_type VARCHAR(50),
+                        query_content TEXT,
+                        collection VARCHAR(255),
+                        optimization_ratio VARCHAR(50),
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """
+                cursor.execute(create_sql)
+                
+                # 创建索引
+                indices = [
+                    f"CREATE INDEX idx_{table_name}_dataset_name ON {table_name}(dataset_name)",
+                    f"CREATE INDEX idx_{table_name}_timestamp ON {table_name}(timestamp)", 
+                    f"CREATE INDEX idx_{table_name}_query_type ON {table_name}(query_type)",
+                    f"CREATE INDEX idx_{table_name}_collection ON {table_name}(collection)",
+                    f"CREATE INDEX idx_{table_name}_created_at ON {table_name}(created_at)"
+                ]
+                
+                for index_sql in indices:
+                    cursor.execute(index_sql)
+                
+                logger.info(f"✅ 成功创建多模态检索结果表: {table_name}")
+                return True
+                
+        except Exception as e:
+            logger.error(f"❌ 创建表失败: {e}")
+            return False
 
 
 # 导出主要类
