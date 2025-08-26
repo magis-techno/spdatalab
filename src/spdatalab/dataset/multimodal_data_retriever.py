@@ -227,7 +227,40 @@ class MultimodalRetriever:
             )
             try:
                 response.raise_for_status()
-                return response.json()
+                raw_response = response.json()
+                
+                # 解析实际的API响应结构
+                if isinstance(raw_response, dict) and "result" in raw_response:
+                    hits = raw_response.get("result", {}).get("hits", [])
+                    logger.info(f"🔍 API返回原始hits数量: {len(hits)}")
+                    
+                    # 转换数据格式为代码期望的格式
+                    formatted_results = []
+                    for hit in hits:
+                        entity = hit.get("entity", {})
+                        formatted_item = {
+                            "dataset_name": entity.get("dataset_name", ""),
+                            "timestamp": entity.get("dataset_timestamp", 0),
+                            "similarity": hit.get("similarity", entity.get("similarity", 0.0)),
+                            "metadata": {
+                                "img_path": entity.get("img_path", ""),
+                                "dataset_bag": entity.get("dataset_bag", ""),
+                                "uuid": entity.get("uuid", hit.get("id", "")),
+                                "distance": hit.get("distance", 0.0),
+                                "modality": entity.get("modality", 1),
+                                "task": entity.get("task", ""),
+                                "dataset_type": entity.get("dataset_type", ""),
+                                "dataset_path": entity.get("dataset_path", "")
+                            }
+                        }
+                        formatted_results.append(formatted_item)
+                    
+                    logger.info(f"🔍 转换后结果数量: {len(formatted_results)}")
+                    return formatted_results
+                else:
+                    logger.warning(f"🔍 意外的API响应格式: {type(raw_response)}")
+                    return raw_response if isinstance(raw_response, list) else []
+                    
             except requests.exceptions.HTTPError as e:
                 logger.error(f"🔍 HTTP错误详情 (状态码: {response.status_code})")
                 logger.error(f"🔍 响应头: {dict(response.headers)}")
@@ -315,7 +348,40 @@ class MultimodalRetriever:
             )
             try:
                 response.raise_for_status()
-                return response.json()
+                raw_response = response.json()
+                
+                # 解析实际的API响应结构
+                if isinstance(raw_response, dict) and "result" in raw_response:
+                    hits = raw_response.get("result", {}).get("hits", [])
+                    logger.info(f"🔍 API返回原始hits数量: {len(hits)}")
+                    
+                    # 转换数据格式为代码期望的格式
+                    formatted_results = []
+                    for hit in hits:
+                        entity = hit.get("entity", {})
+                        formatted_item = {
+                            "dataset_name": entity.get("dataset_name", ""),
+                            "timestamp": entity.get("dataset_timestamp", 0),
+                            "similarity": hit.get("similarity", entity.get("similarity", 0.0)),
+                            "metadata": {
+                                "img_path": entity.get("img_path", ""),
+                                "dataset_bag": entity.get("dataset_bag", ""),
+                                "uuid": entity.get("uuid", hit.get("id", "")),
+                                "distance": hit.get("distance", 0.0),
+                                "modality": entity.get("modality", 2),
+                                "task": entity.get("task", ""),
+                                "dataset_type": entity.get("dataset_type", ""),
+                                "dataset_path": entity.get("dataset_path", "")
+                            }
+                        }
+                        formatted_results.append(formatted_item)
+                    
+                    logger.info(f"🔍 转换后结果数量: {len(formatted_results)}")
+                    return formatted_results
+                else:
+                    logger.warning(f"🔍 意外的API响应格式: {type(raw_response)}")
+                    return raw_response if isinstance(raw_response, list) else []
+                    
             except requests.exceptions.HTTPError as e:
                 logger.error(f"🔍 HTTP错误详情 (状态码: {response.status_code})")
                 logger.error(f"🔍 响应头: {dict(response.headers)}")
