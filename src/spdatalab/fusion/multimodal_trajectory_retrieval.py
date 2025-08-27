@@ -409,17 +409,52 @@ class MultimodalTrajectoryWorkflow:
                 return self._handle_no_results(stats)
             
             # Stage 2: 智能聚合 (新增优化！)
+            aggregation_start = time.time()
             logger.info(f"📊 Stage 2: 智能聚合 {len(search_results)} 个检索结果...")
             aggregated_datasets = self.aggregator.aggregate_by_dataset(search_results)
             aggregated_queries = self.aggregator.aggregate_by_timewindow(aggregated_datasets)
-            stats['aggregated_datasets'] = len(aggregated_datasets)
-            stats['aggregated_queries'] = len(aggregated_queries)
+            
+            # 增强统计信息收集
+            aggregation_time = time.time() - aggregation_start
+            stats.update({
+                'aggregated_datasets': len(aggregated_datasets),
+                'aggregated_queries': len(aggregated_queries),
+                'aggregation_time': aggregation_time,
+                'aggregation_efficiency': {
+                    'original_results': len(search_results),
+                    'aggregated_datasets': len(aggregated_datasets),
+                    'aggregated_queries': len(aggregated_queries),
+                    'query_reduction_ratio': (len(search_results) - len(aggregated_queries)) / len(search_results) if len(search_results) > 0 else 0
+                }
+            })
             
             # 添加数据集详情用于verbose模式显示
             dataset_details = {}
+            similarity_stats = {'min': 1.0, 'max': 0.0, 'avg': 0.0}
+            timestamps = []
+            
             for dataset_name, results in aggregated_datasets.items():
                 dataset_details[dataset_name] = len(results)
-            stats['dataset_details'] = dataset_details
+                # 收集相似度和时间戳统计
+                for result in results:
+                    similarity = result.get('similarity', 0)
+                    similarity_stats['min'] = min(similarity_stats['min'], similarity)
+                    similarity_stats['max'] = max(similarity_stats['max'], similarity)
+                    timestamps.append(result.get('timestamp', 0))
+            
+            if search_results:
+                similarities = [r.get('similarity', 0) for r in search_results]
+                similarity_stats['avg'] = sum(similarities) / len(similarities)
+            
+            stats.update({
+                'dataset_details': dataset_details,
+                'similarity_stats': similarity_stats,
+                'time_range_stats': {
+                    'earliest': min(timestamps) if timestamps else 0,
+                    'latest': max(timestamps) if timestamps else 0,
+                    'span_hours': (max(timestamps) - min(timestamps)) / (1000 * 3600) if len(timestamps) > 1 else 0
+                }
+            })
             
             # Stage 3: 轨迹数据获取 (优化后，减少重复查询)
             logger.info(f"🚀 Stage 3: 批量获取 {len(aggregated_datasets)} 个数据集轨迹...")
@@ -430,19 +465,47 @@ class MultimodalTrajectoryWorkflow:
                 return self._handle_no_trajectories(stats)
             
             # Stage 4: Polygon转换和合并 (新增合并优化！)
+            polygon_start = time.time()
             logger.info(f"🔄 Stage 4: 转换轨迹为Polygon并智能合并...")
             raw_polygons = self.converter.batch_convert(trajectory_data)
             merged_polygons = self.polygon_merger.merge_overlapping_polygons(raw_polygons)
-            stats['raw_polygon_count'] = len(raw_polygons)
-            stats['merged_polygon_count'] = len(merged_polygons)
+            
+            # 增强polygon处理统计
+            polygon_time = time.time() - polygon_start
+            compression_ratio = ((len(raw_polygons) - len(merged_polygons)) / len(raw_polygons) * 100) if len(raw_polygons) > 0 else 0
+            
+            stats.update({
+                'raw_polygon_count': len(raw_polygons),
+                'merged_polygon_count': len(merged_polygons),
+                'polygon_processing_time': polygon_time,
+                'polygon_optimization': {
+                    'compression_ratio': compression_ratio,
+                    'polygons_eliminated': len(raw_polygons) - len(merged_polygons),
+                    'efficiency_gain': compression_ratio / 100 if compression_ratio > 0 else 0
+                }
+            })
             
             if not merged_polygons:
                 return self._handle_no_polygons(stats)
             
             # Stage 5: 轻量化Polygon查询 (仅返回轨迹点！)
+            query_start = time.time()
             logger.info(f"⚡ Stage 5: 基于 {len(merged_polygons)} 个Polygon查询轨迹点...")
             trajectory_points = self._execute_lightweight_polygon_query(merged_polygons)
-            stats['discovered_points_count'] = len(trajectory_points) if trajectory_points is not None else 0
+            
+            # 增强查询结果统计
+            query_time = time.time() - query_start
+            points_count = len(trajectory_points) if trajectory_points is not None else 0
+            
+            stats.update({
+                'discovered_points_count': points_count,
+                'trajectory_query_time': query_time,
+                'query_performance': {
+                    'points_per_polygon': points_count / len(merged_polygons) if len(merged_polygons) > 0 else 0,
+                    'points_per_second': points_count / query_time if query_time > 0 else 0,
+                    'unique_datasets_discovered': trajectory_points['dataset_name'].nunique() if trajectory_points is not None and not trajectory_points.empty else 0
+                }
+            })
             
             # Stage 6: 轻量化结果输出
             logger.info("💾 Stage 6: 轻量化结果输出...")
@@ -482,58 +545,214 @@ class MultimodalTrajectoryWorkflow:
         return stats
     
     def _fetch_aggregated_trajectories(self, aggregated_queries: Dict[str, Dict]) -> List[Dict]:
-        """基于聚合结果获取轨迹数据 - 减少重复查询
+        """基于聚合结果获取轨迹数据 - 复用现有的完整轨迹查询功能
         
-        注意：这里应该调用现有的轨迹查询方法，暂时返回模拟数据
+        复用HighPerformancePolygonTrajectoryQuery._fetch_complete_trajectories方法
+        确保80%+代码复用原则
         """
-        # TODO: 集成现有的轨迹查询功能
-        logger.info("🔧 轨迹数据获取功能待集成...")
+        if not aggregated_queries:
+            logger.warning("⚠️ 没有聚合查询数据")
+            return []
         
-        # 模拟返回数据结构
-        all_trajectory_data = []
-        for dataset_name, time_range in aggregated_queries.items():
-            # 这里应该调用现有的dataset查询方法
-            # 暂时创建模拟的LineString
+        logger.info(f"🚀 开始获取轨迹数据: {len(aggregated_queries)} 个数据集")
+        
+        try:
+            # 构建模拟的intersection_result_df，让现有方法能处理
+            dataset_names = list(aggregated_queries.keys())
+            
+            # 创建简单的DataFrame来触发现有的轨迹查询功能
+            import pandas as pd
+            intersection_result_df = pd.DataFrame({
+                'dataset_name': dataset_names,
+                'timestamp': [time_range.get('start_time', 0) for time_range in aggregated_queries.values()]
+            })
+            
+            logger.info(f"📋 复用现有轨迹查询方法获取 {len(dataset_names)} 个数据集轨迹...")
+            
+            # 复用现有的完整轨迹查询功能 - 80%复用原则
+            complete_trajectory_df, complete_stats = self.polygon_processor._fetch_complete_trajectories(intersection_result_df)
+            
+            if complete_trajectory_df.empty:
+                logger.warning("⚠️ 未获取到任何轨迹数据")
+                return []
+            
+            logger.info(f"✅ 轨迹数据获取成功: {len(complete_trajectory_df)} 个轨迹点")
+            logger.info(f"📊 获取统计: 数据集数={complete_stats.get('complete_datasets', 0)}, "
+                       f"轨迹点数={complete_stats.get('complete_points', 0)}, "
+                       f"用时={complete_stats.get('complete_query_time', 0):.2f}s")
+            
+            # 将DataFrame转换为LineString列表
+            all_trajectory_data = self._convert_dataframe_to_linestrings(complete_trajectory_df, aggregated_queries)
+            
+            return all_trajectory_data
+            
+        except Exception as e:
+            logger.error(f"❌ 轨迹数据获取失败: {e}")
+            return []
+    
+    def _convert_dataframe_to_linestrings(self, trajectory_df: pd.DataFrame, 
+                                        aggregated_queries: Dict[str, Dict]) -> List[Dict]:
+        """将轨迹DataFrame转换为LineString列表
+        
+        Args:
+            trajectory_df: 从数据库查询到的轨迹点DataFrame
+            aggregated_queries: 聚合查询参数
+            
+        Returns:
+            包含LineString几何的轨迹数据列表
+        """
+        if trajectory_df.empty:
+            return []
+        
+        logger.info(f"🔄 开始转换 {len(trajectory_df)} 个轨迹点为LineString...")
+        
+        try:
             from shapely.geometry import LineString
             
-            # 模拟轨迹点（实际应该从数据库查询）
-            mock_coords = [
-                (116.3, 39.9), (116.31, 39.91), (116.32, 39.92)  # 北京附近坐标
-            ]
-            trajectory_linestring = LineString(mock_coords)
+            all_trajectory_data = []
             
-            all_trajectory_data.append({
-                'dataset_name': dataset_name,
-                'linestring': trajectory_linestring,
-                'time_range': time_range,
-                'point_count': len(mock_coords)
-            })
-        
-        return all_trajectory_data
+            # 按dataset_name分组处理
+            grouped = trajectory_df.groupby('dataset_name')
+            
+            for dataset_name, group in grouped:
+                if len(group) < 2:
+                    logger.debug(f"⚠️ 数据集 {dataset_name} 点数量不足({len(group)})，跳过LineString构建")
+                    continue
+                
+                # 按时间排序
+                group = group.sort_values('timestamp')
+                
+                # 提取坐标点
+                coordinates = list(zip(group['longitude'], group['latitude']))
+                
+                # 创建LineString
+                trajectory_linestring = LineString(coordinates)
+                
+                # 获取时间范围信息
+                time_range = aggregated_queries.get(dataset_name, {})
+                
+                # 构建轨迹数据
+                trajectory_data = {
+                    'dataset_name': dataset_name,
+                    'linestring': trajectory_linestring,
+                    'time_range': time_range,
+                    'point_count': len(group),
+                    'start_time': int(group['timestamp'].min()),
+                    'end_time': int(group['timestamp'].max()),
+                    'duration': int(group['timestamp'].max() - group['timestamp'].min())
+                }
+                
+                all_trajectory_data.append(trajectory_data)
+                
+                logger.debug(f"✅ 转换轨迹: {dataset_name}, 点数: {len(group)}, "
+                           f"时长: {trajectory_data['duration']//1000:.1f}s")
+            
+            logger.info(f"✅ LineString转换完成: {len(all_trajectory_data)} 条轨迹")
+            
+            return all_trajectory_data
+            
+        except Exception as e:
+            logger.error(f"❌ LineString转换失败: {e}")
+            return []
     
     def _execute_lightweight_polygon_query(self, merged_polygons: List[Dict]) -> Optional[pd.DataFrame]:
-        """轻量化Polygon查询 - 仅返回轨迹点，不构建完整轨迹
+        """轻量化Polygon查询 - 复用现有高性能查询引擎
         
-        注意：这里应该调用现有的高性能查询引擎，暂时返回模拟数据
+        复用HighPerformancePolygonTrajectoryQuery.query_intersecting_trajectory_points方法
+        确保80%+代码复用原则
         """
         if not merged_polygons:
+            logger.warning("⚠️ 没有polygon数据需要查询")
             return None
         
-        logger.info("🔧 轻量化Polygon查询功能待集成...")
+        logger.info(f"⚡ 开始轻量化Polygon查询: {len(merged_polygons)} 个polygon")
         
-        # TODO: 调用现有的HighPerformancePolygonTrajectoryQuery
-        # points_df, query_stats = self.polygon_processor.query_intersecting_trajectory_points(merged_polygons)
+        try:
+            # 复用现有的高性能查询引擎 - 80%复用原则
+            points_df, query_stats = self.polygon_processor.query_intersecting_trajectory_points(merged_polygons)
+            
+            if points_df.empty:
+                logger.warning("⚠️ 未查询到相交的轨迹点")
+                return None
+            
+            logger.info(f"✅ 轻量化查询成功: {len(points_df)} 个轨迹点")
+            logger.info(f"📊 查询统计: 策略={query_stats.get('strategy', 'unknown')}, "
+                       f"用时={query_stats.get('query_time', 0):.2f}s, "
+                       f"数据集数={query_stats.get('unique_datasets', 0)}")
+            
+            # 添加源polygon映射信息
+            points_df = self._add_polygon_mapping(points_df, merged_polygons)
+            
+            return points_df
+            
+        except Exception as e:
+            logger.error(f"❌ 轻量化Polygon查询失败: {e}")
+            # 如果查询失败，返回None而不是mock数据
+            return None
+    
+    def _add_polygon_mapping(self, points_df: pd.DataFrame, merged_polygons: List[Dict]) -> pd.DataFrame:
+        """为轨迹点添加源polygon映射信息
         
-        # 模拟返回轨迹点数据
-        mock_data = {
-            'dataset_name': ['dataset_1', 'dataset_2'],
-            'timestamp': [1739958971349, 1739958971350],
-            'longitude': [116.3, 116.31],
-            'latitude': [39.9, 39.91],
-            'source_polygon_id': ['merged_polygon_0', 'merged_polygon_0']
-        }
+        Args:
+            points_df: 查询到的轨迹点DataFrame
+            merged_polygons: 合并后的polygon列表
+            
+        Returns:
+            添加了source_polygons字段的DataFrame
+        """
+        if points_df.empty or not merged_polygons:
+            return points_df
         
-        return pd.DataFrame(mock_data)
+        logger.info(f"🔗 开始计算轨迹点到polygon的映射关系...")
+        
+        try:
+            from shapely.geometry import Point
+            
+            # 为每个轨迹点创建Point几何
+            points_geometry = [Point(row['longitude'], row['latitude']) 
+                             for _, row in points_df.iterrows()]
+            
+            # 初始化source_polygons列
+            source_polygons = []
+            
+            for i, point_geom in enumerate(points_geometry):
+                matched_sources = []
+                
+                # 检查与哪些polygon相交
+                for polygon_data in merged_polygons:
+                    polygon_geom = polygon_data['geometry']
+                    
+                    # 空间相交检查
+                    if point_geom.within(polygon_geom) or point_geom.intersects(polygon_geom):
+                        # 获取源数据信息
+                        sources = polygon_data.get('sources', [])
+                        for source in sources:
+                            dataset_name = source.get('dataset_name', 'unknown')
+                            timestamp = source.get('timestamp', 0)
+                            matched_sources.append(f"{dataset_name}:{timestamp}")
+                
+                # 格式化映射信息
+                if matched_sources:
+                    source_polygons.append(','.join(matched_sources))
+                else:
+                    # 如果没有精确匹配，使用polygon ID作为后备
+                    polygon_id = merged_polygons[0].get('id', 'unknown_polygon')
+                    source_polygons.append(f"polygon_{polygon_id}")
+            
+            # 添加到DataFrame
+            points_df = points_df.copy()
+            points_df['source_polygons'] = source_polygons
+            
+            logger.info(f"✅ 映射关系计算完成: {len(points_df)} 个轨迹点已添加polygon映射信息")
+            
+            return points_df
+            
+        except Exception as e:
+            logger.error(f"❌ 添加polygon映射失败: {e}")
+            # 添加默认映射信息
+            points_df = points_df.copy()
+            points_df['source_polygons'] = 'mapping_failed'
+            return points_df
     
     def _finalize_lightweight_results(self, trajectory_points: Optional[pd.DataFrame], 
                                      merged_polygons: List[Dict], stats: Dict) -> Dict:
