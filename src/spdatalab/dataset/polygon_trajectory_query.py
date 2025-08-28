@@ -819,6 +819,11 @@ class HighPerformancePolygonTrajectoryQuery:
                     std_speed numeric(8,2),
                     avp_ratio numeric(5,3),
                     polygon_ids text[],
+                    query_type text,
+                    query_content text,
+                    collection varchar(255),
+                    source_polygons text,
+                    optimization_ratio text,
                     created_at timestamp DEFAULT CURRENT_TIMESTAMP
                 );
             """)
