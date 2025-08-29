@@ -428,7 +428,7 @@ class TrajectoryToPolygonConverter:
     def __init__(self, buffer_distance: float = 10.0):
         self.buffer_distance = buffer_distance  # 默认10米，适合精确分析
         self.simplify_tolerance = 2.0           # 固定简化容差
-        self.min_area = 50.0                    # 固定最小面积（平方米）
+        self.min_area = 0.1                     # 最小面积（平方米），几乎不限制
     
     def convert_trajectory_to_polygon(self, trajectory_linestring: LineString) -> Optional[Polygon]:
         """轨迹转polygon的简化算法（研发分析专用）
