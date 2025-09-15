@@ -39,8 +39,8 @@ def generate_scene_list(index_file: str, output: str):
 @cli.command()
 @click.option('--index-file', help='索引文件路径（txt格式）')
 @click.option('--training-dataset-json', help='训练数据集JSON文件路径')
-@click.option('--dataset-name', help='数据集名称（使用JSON输入时可选，优先使用JSON中的名称）')
-@click.option('--description', default='', help='数据集描述（使用JSON输入时可选，优先使用JSON中的描述）')
+@click.option('--dataset-name', help='数据集名称')
+@click.option('--description', default='', help='数据集描述')
 @click.option('--output', required=True, help='输出文件路径')
 @click.option('--format', type=click.Choice(['json', 'parquet']), default='json', help='输出格式')
 @click.option('--defect-mode', is_flag=True, help='启用问题单模式（处理问题单URL）')
@@ -48,35 +48,21 @@ def build_dataset(index_file: str, training_dataset_json: str, dataset_name: str
     """构建数据集结构。
     
     支持两种输入格式：
-    1. 索引文件输入（txt格式）：从索引文件读取数据源信息
-    2. 训练数据集JSON输入：从结构化JSON文件读取数据集信息（推荐）
+    1. txt索引文件：每行格式为 obs_path@duplicateN
+    2. JSON文件：结构化的数据集元信息（推荐）
     
-    支持两种处理模式：
-    1. 标准模式：处理OBS路径格式的训练数据（默认）
-    2. 问题单模式：处理问题单URL数据（使用--defect-mode）
+    支持标准模式和问题单模式处理。
     
-    Args:
-        index_file: 索引文件路径（txt格式）
-                   标准模式：每行格式为 obs_path@duplicateN
-                   问题单模式：每行为问题单URL或URL|属性
-        training_dataset_json: 训练数据集JSON文件路径，包含完整的数据集元信息
-        dataset_name: 数据集名称（使用JSON输入时可选，优先使用JSON中的名称）
-        description: 数据集描述（使用JSON输入时可选，优先使用JSON中的描述）
-        output: 输出文件路径，保存为指定格式
-        format: 输出格式，json 或 parquet
-        defect_mode: 是否启用问题单处理模式
-        
     Examples:
-        # 使用JSON格式输入（推荐）
+        # JSON格式输入
         python -m spdatalab.cli build-dataset \\
             --training-dataset-json training_dataset.json \\
             --output datasets/dataset.json
             
-        # 使用传统txt格式输入
+        # txt格式输入
         python -m spdatalab.cli build-dataset \\
             --index-file data/index.txt \\
             --dataset-name "Dataset" \\
-            --description "GOD E2E training dataset" \\
             --output datasets/dataset.json
     """
     setup_logging()
@@ -98,12 +84,12 @@ def build_dataset(index_file: str, training_dataset_json: str, dataset_name: str
         if training_dataset_json:
             # 使用 JSON 格式输入
             dataset = manager.build_dataset_from_training_json(
-                training_dataset_json, dataset_name, description
+                training_dataset_json, dataset_name, description, defect_mode
             )
             input_type = "JSON格式"
         else:
             # 使用传统 txt 格式输入
-            dataset = manager.build_dataset_from_index(index_file, dataset_name, description)
+            dataset = manager.build_dataset_from_index(index_file, dataset_name, description, defect_mode)
             input_type = "txt格式"
         
         manager.save_dataset(dataset, output, format=format)

@@ -2,44 +2,54 @@
 
 ## 📋 实现概述
 
-本次实现添加了对training_dataset.json格式输入的支持，允许用户使用结构化JSON文件来构建数据集，而不仅仅是传统的txt索引文件。
+本次实现添加了对training_dataset.json格式输入的支持，提供**显性声明的数据源格式**，避免了从路径解析名称和从@符号解析倍增因子的复杂性。
 
-## 🚀 新增功能
+## 🚀 核心改进
 
-### 1. CLI命令行支持
-- 新增 `--training-dataset-json` 参数支持JSON格式输入
-- 保持对原有 `--index-file` 参数的完全兼容性
-- 智能参数验证：两种输入格式互斥，使用txt格式时dataset-name必需
+### 1. 简化的数据源格式
+**JSON格式提供显性声明**：
+- `name`: 直接声明子数据集名称（无需从路径解析）
+- `duplicate`: 直接声明倍增因子（无需从@duplicate解析）
+- `obs_path`: 纯净的OBS路径
 
-### 2. DatasetManager API扩展
-- 新增 `build_dataset_from_training_json()` 方法
-- 支持JSON元信息的完整解析和映射
-- 优先级机制：JSON中的信息优先，命令行参数作为fallback
+### 2. 统一的处理逻辑
+- **重构代码架构**：创建共享的 `_build_dataset_from_items` 处理逻辑
+- **完全相同的数据结构**：JSON和txt输入生成完全相同的Dataset对象
+- **无额外字段**：移除了多余的metadata字段，确保兼容性
 
-### 3. 文档更新
-- 更新 `docs/dataset_management.md`，添加JSON格式使用指南
-- 提供完整的JSON格式示例和命令行用法
-- 详细的参数说明和优先级规则
+### 3. 完整的功能支持
+- **defect_mode支持**：JSON输入现在完全支持问题单模式
+- **参数验证**：智能的参数验证和错误提示
+- **向后兼容**：现有txt格式功能不受任何影响
 
-## 📊 数据映射关系
+## 📊 数据处理流程
 
-### JSON -> Dataset 映射
+### 1. JSON输入处理流程
 ```
-meta.release_name      -> dataset.name (优先)
-meta.description       -> dataset.description (优先)  
-meta.created_at        -> dataset.created_at
-meta.version           -> dataset.metadata.version
-meta.consumer_version  -> dataset.metadata.consumer_version
-meta.bundle_versions   -> dataset.metadata.bundle_versions
+1. 解析JSON文件 -> 提取meta和dataset_index
+2. 优先级处理 -> meta.release_name > --dataset-name
+3. 数据转换 -> 转换为统一的items格式
+4. 共享处理 -> 调用_build_dataset_from_items_standard_mode
+5. 生成Dataset -> 与txt输入完全相同的结构
 ```
 
-### JSON -> SubDataset 映射
+### 2. txt输入处理流程  
 ```
-dataset_index[].name            -> SubDataset.name
-dataset_index[].obs_path        -> SubDataset.obs_path
-dataset_index[].duplicate       -> SubDataset.duplication_factor
-dataset_index[].bundle_versions -> SubDataset.metadata.bundle_versions
+1. 解析txt文件 -> 按行解析obs_path@duplicate格式
+2. 路径解析 -> 从obs_path中提取subdataset名称
+3. 数据转换 -> 转换为统一的items格式
+4. 共享处理 -> 调用_build_dataset_from_items_standard_mode
+5. 生成Dataset -> 标准的Dataset结构
 ```
+
+### 3. 关键差异对比
+
+| 方面 | txt输入 | JSON输入 |
+|------|---------|----------|
+| 子数据集名称 | 从路径解析 | 直接声明 |
+| 倍增因子 | 从@duplicate解析 | 直接声明 |
+| 数据集名称 | 命令行必需 | JSON优先，命令行fallback |
+| 最终结构 | SubDataset对象 | **完全相同**的SubDataset对象 |
 
 ## 💡 使用示例
 

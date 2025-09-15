@@ -192,20 +192,17 @@ python -m spdatalab.cli build-dataset \
 
 ## 命令参数说明
 
-### JSON格式输入参数
-- `--training-dataset-json`: 训练数据集JSON文件路径（必需）
-- `--dataset-name`: 数据集名称（可选，优先使用JSON中的`meta.release_name`）
-- `--description`: 数据集描述（可选，优先使用JSON中的`meta.description`）
-- `--output`: 输出文件路径（必需）
-- `--format`: 输出格式，`json` 或 `parquet`（默认：`json`）
+### 命令行参数
 
-### txt格式输入参数
-- `--index-file`: 索引文件路径（必需）
-- `--dataset-name`: 数据集名称（必需）
+- `--training-dataset-json`: 训练数据集JSON文件路径
+- `--index-file`: 索引文件路径（txt格式）
+- `--dataset-name`: 数据集名称
 - `--description`: 数据集描述（可选）
 - `--output`: 输出文件路径（必需）
 - `--format`: 输出格式，`json` 或 `parquet`（默认：`json`）
 - `--defect-mode`: 启用问题单模式（可选）
+
+**注意**: `--training-dataset-json` 和 `--index-file` 二选一
 
 ### 优先级说明
 当使用JSON格式输入时：
@@ -216,42 +213,29 @@ python -m spdatalab.cli build-dataset \
 
 ## 使用Python API
 
-### JSON格式输入 API
+### Python API 使用
+
 ```python
 from spdatalab.dataset.dataset_manager import DatasetManager
 
 manager = DatasetManager()
 
-# 从JSON文件构建数据集（推荐）
+# JSON格式输入（推荐）
 dataset = manager.build_dataset_from_training_json(
-    "training_dataset.json"
-    # dataset_name 和 description 可选，优先使用JSON中的值
+    json_file="training_dataset.json",
+    dataset_name="可选，优先使用JSON中的名称",
+    description="可选，优先使用JSON中的描述"
 )
 
-# 保存为JSON格式
-manager.save_dataset(dataset, "datasets/dataset.json", format='json')
-
-# 保存为Parquet格式（推荐用于大数据集）
-manager.save_dataset(dataset, "datasets/dataset.parquet", format='parquet')
-```
-
-### 传统txt格式输入 API
-```python
-from spdatalab.dataset.dataset_manager import DatasetManager
-
-manager = DatasetManager()
-
-# 从索引文件构建数据集
+# txt格式输入
 dataset = manager.build_dataset_from_index(
-    "data/index.txt",
-    "Dataset", 
-    "GOD E2E training dataset"
+    index_file="data/index.txt",
+    dataset_name="必需",
+    description="可选"
 )
 
-# 保存为JSON格式
+# 保存数据集
 manager.save_dataset(dataset, "datasets/dataset.json", format='json')
-
-# 保存为Parquet格式（推荐用于大数据集）
 manager.save_dataset(dataset, "datasets/dataset.parquet", format='parquet')
 ```
 

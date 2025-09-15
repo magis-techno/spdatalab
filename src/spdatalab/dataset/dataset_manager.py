@@ -393,13 +393,14 @@ class DatasetManager:
         return scene_ids
         
     def build_dataset_from_training_json(self, json_file: str, dataset_name: str = None, 
-                                        description: str = "") -> Dataset:
+                                        description: str = "", defect_mode: bool = None) -> Dataset:
         """从训练数据集JSON文件构建数据集。
         
         Args:
             json_file: 训练数据集JSON文件路径
             dataset_name: 数据集名称（可选，优先使用JSON中的名称）
             description: 数据集描述（可选，优先使用JSON中的描述）
+            defect_mode: 是否启用问题单模式，None表示使用初始化时的设置
             
         Returns:
             Dataset对象
@@ -428,21 +429,8 @@ class DatasetManager:
         if not final_name:
             raise ValueError("数据集名称不能为空，请在JSON的meta.release_name中指定或使用--dataset-name参数")
         
-        # 创建Dataset对象
-        dataset = Dataset(
-            name=final_name,
-            description=final_description,
-            created_at=meta.get('created_at', datetime.now().isoformat()),
-            metadata={
-                'version': meta.get('version'),
-                'consumer_version': meta.get('consumer_version'),
-                'bundle_versions': meta.get('bundle_versions', []),
-                'source_format': 'training_json',
-                'original_meta': meta
-            }
-        )
-        
-        # 处理每个数据集条目
+        # 转换JSON数据为统一格式，然后复用处理逻辑
+        converted_items = []
         for idx, item in enumerate(dataset_index):
             if not isinstance(item, dict):
                 logger.warning(f"数据集索引第 {idx+1} 项格式错误，跳过")
@@ -456,41 +444,103 @@ class DatasetManager:
                 logger.warning(f"数据集索引第 {idx+1} 项缺少必需字段 (name/obs_path)，跳过")
                 continue
             
+            converted_items.append({
+                'name': name,
+                'obs_path': obs_path,
+                'duplication_factor': duplicate
+            })
+        
+        # 调用统一的处理逻辑
+        return self._build_dataset_from_items(
+            items=converted_items,
+            dataset_name=final_name,
+            description=final_description,
+            defect_mode=defect_mode
+        )
+
+    def _build_dataset_from_items(self, items: List[Dict], dataset_name: str, 
+                                 description: str = "", defect_mode: bool = None) -> Dataset:
+        """从已转换的数据项构建数据集（共享处理逻辑）。
+        
+        Args:
+            items: 数据项列表，每项包含 name, obs_path, duplication_factor
+            dataset_name: 数据集名称
+            description: 数据集描述
+            defect_mode: 是否启用问题单模式，None表示使用初始化时的设置
+            
+        Returns:
+            Dataset对象
+        """
+        # 确定处理模式
+        use_defect_mode = defect_mode if defect_mode is not None else self.defect_mode
+        
+        if use_defect_mode:
+            logger.info("使用问题单模式处理数据项")
+            # 问题单模式下，需要特殊处理
+            # 这里可以扩展问题单模式的处理逻辑
+            return self._build_dataset_from_items_defect_mode(items, dataset_name, description)
+        else:
+            logger.info("使用标准模式处理数据项")
+            return self._build_dataset_from_items_standard_mode(items, dataset_name, description)
+    
+    def _build_dataset_from_items_standard_mode(self, items: List[Dict], dataset_name: str, 
+                                               description: str = "") -> Dataset:
+        """标准模式下从数据项构建数据集。"""
+        dataset = Dataset(name=dataset_name, description=description)
+        
+        for item in items:
+            subdataset_name = item['name']
+            obs_path = item['obs_path']
+            factor = item['duplication_factor']
+            
             self.stats['total_files'] += 1
             
-            # 创建SubDataset对象
-            subdataset = SubDataset(
-                name=name,
-                obs_path=obs_path,
-                duplication_factor=duplicate,
-                metadata={
-                    'bundle_versions': item.get('bundle_versions', [])
-                }
-            )
+            # 提取场景ID
+            scene_ids = self.extract_scene_ids_from_file(obs_path)
+            scene_count = len(scene_ids)
             
-            # 获取场景ID列表（与原始txt输入方式保持一致）
-            try:
-                subdataset.scene_ids = self.extract_scene_ids_from_file(obs_path)
-                subdataset.scene_count = len(subdataset.scene_ids)
+            if scene_count > 0:
                 self.stats['processed_files'] += 1
-                self.stats['total_scenes'] += subdataset.scene_count
-            except Exception as e:
-                logger.warning(f"获取场景信息失败 {obs_path}: {str(e)}")
+                self.stats['total_scenes'] += scene_count
+                self.stats['total_subdatasets'] += 1
+                
+                # 创建子数据集（与txt方式完全相同的结构）
+                subdataset = SubDataset(
+                    name=subdataset_name,
+                    obs_path=obs_path,
+                    duplication_factor=factor,
+                    scene_count=scene_count,
+                    scene_ids=scene_ids
+                    # 不添加任何额外的metadata字段
+                )
+                
+                dataset.subdatasets.append(subdataset)
+                dataset.total_unique_scenes += scene_count
+                dataset.total_scenes += scene_count * factor
+                
+                logger.info(f"添加子数据集: {subdataset_name}, 场景数: {scene_count}, 倍增因子: {factor}")
+            else:
                 self.stats['failed_files'] += 1
-            
-            dataset.subdatasets.append(subdataset)
+                logger.warning(f"子数据集 {subdataset_name} 没有有效场景")
         
-        # 计算统计信息
-        dataset.total_unique_scenes = sum(len(sub.scene_ids) for sub in dataset.subdatasets)
-        dataset.total_scenes = sum(sub.duplication_factor * len(sub.scene_ids) for sub in dataset.subdatasets)
-        self.stats['total_subdatasets'] = len(dataset.subdatasets)
-        
-        logger.info(f"JSON数据集构建完成: {final_name}")
-        logger.info(f"  - 子数据集数量: {len(dataset.subdatasets)}")
-        logger.info(f"  - 总唯一场景数: {dataset.total_unique_scenes}")
-        logger.info(f"  - 总场景数(含倍增): {dataset.total_scenes}")
+        # 输出统计信息
+        logger.info(f"数据集构建完成:")
+        logger.info(f"- 数据集名称: {dataset.name}")
+        logger.info(f"- 子数据集数量: {len(dataset.subdatasets)}")
+        logger.info(f"- 总唯一场景数: {dataset.total_unique_scenes}")
+        logger.info(f"- 总场景数(含倍增): {dataset.total_scenes}")
+        logger.info(f"- 成功处理文件数: {self.stats['processed_files']}")
+        logger.info(f"- 失败文件数: {self.stats['failed_files']}")
         
         return dataset
+    
+    def _build_dataset_from_items_defect_mode(self, items: List[Dict], dataset_name: str, 
+                                             description: str = "") -> Dataset:
+        """问题单模式下从数据项构建数据集。"""
+        # 问题单模式的具体实现可以后续扩展
+        # 目前先调用标准模式处理
+        logger.warning("问题单模式对JSON输入的支持尚未完全实现，使用标准模式处理")
+        return self._build_dataset_from_items_standard_mode(items, dataset_name, description)
 
     def build_dataset_from_index(self, index_file: str, dataset_name: str, 
                                 description: str = "", defect_mode: bool = None) -> Dataset:
@@ -527,7 +577,8 @@ class DatasetManager:
         Returns:
             Dataset对象
         """
-        dataset = Dataset(name=dataset_name, description=description)
+        # 解析txt文件，转换为统一格式
+        converted_items = []
         
         try:
             with open_file(index_file, 'r') as f:
@@ -538,52 +589,22 @@ class DatasetManager:
                         continue
                         
                     obs_path, factor = result
-                    self.stats['total_files'] += 1
                     
-                    # 提取子数据集名称
+                    # 提取子数据集名称（从路径解析）
                     subdataset_name = self.extract_subdataset_name(obs_path)
                     
-                    # 提取场景ID
-                    scene_ids = self.extract_scene_ids_from_file(obs_path)
-                    scene_count = len(scene_ids)
-                    
-                    if scene_count > 0:
-                        self.stats['processed_files'] += 1
-                        self.stats['total_scenes'] += scene_count
-                        self.stats['total_subdatasets'] += 1
-                        
-                        # 创建子数据集
-                        subdataset = SubDataset(
-                            name=subdataset_name,
-                            obs_path=obs_path,
-                            duplication_factor=factor,
-                            scene_count=scene_count,
-                            scene_ids=scene_ids
-                        )
-                        
-                        dataset.subdatasets.append(subdataset)
-                        dataset.total_unique_scenes += scene_count
-                        dataset.total_scenes += scene_count * factor
-                        
-                        logger.info(f"添加子数据集: {subdataset_name}, 场景数: {scene_count}, 倍增因子: {factor}")
-                    else:
-                        self.stats['failed_files'] += 1
-                        logger.warning(f"子数据集 {subdataset_name} 没有有效场景")
+                    converted_items.append({
+                        'name': subdataset_name,
+                        'obs_path': obs_path,
+                        'duplication_factor': factor
+                    })
                         
         except Exception as e:
             logger.error(f"处理索引文件 {index_file} 失败: {str(e)}")
             raise
-            
-        # 输出统计信息
-        logger.info(f"数据集构建完成:")
-        logger.info(f"- 数据集名称: {dataset.name}")
-        logger.info(f"- 子数据集数量: {len(dataset.subdatasets)}")
-        logger.info(f"- 总唯一场景数: {dataset.total_unique_scenes}")
-        logger.info(f"- 总场景数(含倍增): {dataset.total_scenes}")
-        logger.info(f"- 成功处理文件数: {self.stats['processed_files']}")
-        logger.info(f"- 失败文件数: {self.stats['failed_files']}")
         
-        return dataset
+        # 调用统一的处理逻辑
+        return self._build_dataset_from_items_standard_mode(converted_items, dataset_name, description)
         
     def save_dataset(self, dataset: Dataset, output_file: str, format: str = 'json'):
         """保存数据集到文件。
