@@ -392,6 +392,105 @@ class DatasetManager:
             
         return scene_ids
         
+    def build_dataset_from_training_json(self, json_file: str, dataset_name: str = None, 
+                                        description: str = "") -> Dataset:
+        """从训练数据集JSON文件构建数据集。
+        
+        Args:
+            json_file: 训练数据集JSON文件路径
+            dataset_name: 数据集名称（可选，优先使用JSON中的名称）
+            description: 数据集描述（可选，优先使用JSON中的描述）
+            
+        Returns:
+            Dataset对象
+        """
+        logger.info(f"从JSON文件构建数据集: {json_file}")
+        
+        try:
+            with open_file(json_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception as e:
+            raise ValueError(f"读取JSON文件失败: {str(e)}")
+        
+        # 验证JSON结构
+        if 'meta' not in data:
+            raise ValueError("JSON文件缺少必需的 'meta' 字段")
+        if 'dataset_index' not in data:
+            raise ValueError("JSON文件缺少必需的 'dataset_index' 字段")
+        
+        meta = data['meta']
+        dataset_index = data['dataset_index']
+        
+        # 优先使用JSON中的信息，命令行参数作为fallback
+        final_name = meta.get('release_name') or dataset_name
+        final_description = meta.get('description') or description
+        
+        if not final_name:
+            raise ValueError("数据集名称不能为空，请在JSON的meta.release_name中指定或使用--dataset-name参数")
+        
+        # 创建Dataset对象
+        dataset = Dataset(
+            name=final_name,
+            description=final_description,
+            created_at=meta.get('created_at', datetime.now().isoformat()),
+            metadata={
+                'version': meta.get('version'),
+                'consumer_version': meta.get('consumer_version'),
+                'bundle_versions': meta.get('bundle_versions', []),
+                'source_format': 'training_json',
+                'original_meta': meta
+            }
+        )
+        
+        # 处理每个数据集条目
+        for idx, item in enumerate(dataset_index):
+            if not isinstance(item, dict):
+                logger.warning(f"数据集索引第 {idx+1} 项格式错误，跳过")
+                continue
+            
+            name = item.get('name')
+            obs_path = item.get('obs_path')
+            duplicate = item.get('duplicate', 1)
+            
+            if not name or not obs_path:
+                logger.warning(f"数据集索引第 {idx+1} 项缺少必需字段 (name/obs_path)，跳过")
+                continue
+            
+            self.stats['total_files'] += 1
+            
+            # 创建SubDataset对象
+            subdataset = SubDataset(
+                name=name,
+                obs_path=obs_path,
+                duplication_factor=duplicate,
+                metadata={
+                    'bundle_versions': item.get('bundle_versions', [])
+                }
+            )
+            
+            # 如果开启了场景信息获取，则获取场景ID列表
+            if self.include_scene_info:
+                try:
+                    subdataset.scene_ids = self.extract_scene_ids(obs_path)
+                    subdataset.scene_count = len(subdataset.scene_ids)
+                    self.stats['processed_files'] += 1
+                except Exception as e:
+                    logger.warning(f"获取场景信息失败 {obs_path}: {str(e)}")
+                    self.stats['failed_files'] += 1
+            
+            dataset.subdatasets.append(subdataset)
+        
+        # 计算统计信息
+        dataset.total_unique_scenes = sum(len(sub.scene_ids) for sub in dataset.subdatasets)
+        dataset.total_scenes = sum(sub.duplication_factor * len(sub.scene_ids) for sub in dataset.subdatasets)
+        
+        logger.info(f"JSON数据集构建完成: {final_name}")
+        logger.info(f"  - 子数据集数量: {len(dataset.subdatasets)}")
+        logger.info(f"  - 总唯一场景数: {dataset.total_unique_scenes}")
+        logger.info(f"  - 总场景数(含倍增): {dataset.total_scenes}")
+        
+        return dataset
+
     def build_dataset_from_index(self, index_file: str, dataset_name: str, 
                                 description: str = "", defect_mode: bool = None) -> Dataset:
         """从索引文件构建数据集。

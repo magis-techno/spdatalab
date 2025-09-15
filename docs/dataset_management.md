@@ -113,7 +113,66 @@ obs://path/to/subdataset2/file.shrink@duplicate10
 obs://path/to/subdataset3/file.shrink@duplicate5
 ```
 
-使用命令行工具：
+## 输入格式
+
+### 1. 训练数据集JSON格式（推荐）
+
+使用结构化的JSON文件作为输入，包含完整的数据集元信息和索引数据：
+
+**training_dataset.json 格式示例：**
+```json
+{
+    "meta": {
+        "release_name": "JointTrain_20250727",
+        "consumer_version": "v1.2.0",
+        "bundle_versions": ["v1.2.0-20250620-143500"],
+        "created_at": "2025-07-27 15:00:00",
+        "description": "端到端网络联合训练数据集",
+        "version": "v1.2.0"
+    },
+    "dataset_index": [
+        {
+            "name": "enter_waiting_red2green_494",
+            "obs_path": "obs://yw-ads-training-gy1/data/ide/cleantask/cc8c7fed-a3ea-438d-8650-2436001b0ae3/waiting_area/golden0520_pkl7.8_enter_waiting_red2green_clip_494_frame_25252.jsonl.shrink",
+            "bundle_versions": ["v1.2.0-20250620-143500"],
+            "duplicate": 8
+        },
+        {
+            "name": "highway_merge_mixed_dataset",
+            "obs_path": "obs://training-data/highway_merge_mixed.jsonl",
+            "bundle_versions": ["v1.1.0-20250618", "v1.2.0-20250620"],
+            "duplicate": 3
+        }
+    ]
+}
+```
+
+**命令行使用（JSON格式）：**
+```bash
+# 使用JSON格式输入（推荐）
+python -m spdatalab.cli build-dataset \
+    --training-dataset-json training_dataset.json \
+    --output datasets/dataset.json
+
+# 使用JSON格式输入 - Parquet输出
+python -m spdatalab.cli build-dataset \
+    --training-dataset-json training_dataset.json \
+    --output datasets/dataset.parquet \
+    --format parquet
+```
+
+### 2. 传统txt索引文件格式
+
+使用文本文件格式的索引文件，每行包含一个数据源路径和倍增因子：
+
+**index.txt 格式示例：**
+```
+obs://path/to/subdataset1/file.shrink@duplicate20
+obs://path/to/subdataset2/file.shrink@duplicate10
+obs://path/to/subdataset3/file.shrink@duplicate5
+```
+
+**命令行使用（txt格式）：**
 ```bash
 # 构建数据集 - JSON格式（默认）
 python -m spdatalab.cli build-dataset \
@@ -131,11 +190,58 @@ python -m spdatalab.cli build-dataset \
     --format parquet
 ```
 
-使用Python API：
+## 命令参数说明
+
+### JSON格式输入参数
+- `--training-dataset-json`: 训练数据集JSON文件路径（必需）
+- `--dataset-name`: 数据集名称（可选，优先使用JSON中的`meta.release_name`）
+- `--description`: 数据集描述（可选，优先使用JSON中的`meta.description`）
+- `--output`: 输出文件路径（必需）
+- `--format`: 输出格式，`json` 或 `parquet`（默认：`json`）
+
+### txt格式输入参数
+- `--index-file`: 索引文件路径（必需）
+- `--dataset-name`: 数据集名称（必需）
+- `--description`: 数据集描述（可选）
+- `--output`: 输出文件路径（必需）
+- `--format`: 输出格式，`json` 或 `parquet`（默认：`json`）
+- `--defect-mode`: 启用问题单模式（可选）
+
+### 优先级说明
+当使用JSON格式输入时：
+1. **数据集名称**: 优先使用 `meta.release_name`，如果为空则使用 `--dataset-name` 参数
+2. **数据集描述**: 优先使用 `meta.description`，如果为空则使用 `--description` 参数  
+3. **版本信息**: 从 `meta.version`、`meta.consumer_version` 等字段获取
+4. **创建时间**: 使用 `meta.created_at`，如果为空则使用当前时间
+
+## 使用Python API
+
+### JSON格式输入 API
 ```python
 from spdatalab.dataset.dataset_manager import DatasetManager
 
 manager = DatasetManager()
+
+# 从JSON文件构建数据集（推荐）
+dataset = manager.build_dataset_from_training_json(
+    "training_dataset.json"
+    # dataset_name 和 description 可选，优先使用JSON中的值
+)
+
+# 保存为JSON格式
+manager.save_dataset(dataset, "datasets/dataset.json", format='json')
+
+# 保存为Parquet格式（推荐用于大数据集）
+manager.save_dataset(dataset, "datasets/dataset.parquet", format='parquet')
+```
+
+### 传统txt格式输入 API
+```python
+from spdatalab.dataset.dataset_manager import DatasetManager
+
+manager = DatasetManager()
+
+# 从索引文件构建数据集
 dataset = manager.build_dataset_from_index(
     "data/index.txt",
     "Dataset", 
