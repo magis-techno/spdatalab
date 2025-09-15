@@ -31,8 +31,12 @@ spdatalab build-dataset --index-file data.jsonl --dataset-name my_dataset --outp
 # 边界框处理
 spdatalab process-bbox --input dataset.json --batch 1000
 
-# 完整工作流程
-spdatalab build-dataset-with-bbox --index-file data.jsonl --dataset-name my_dataset --output dataset.json
+# 完整工作流程（两阶段处理）
+# 第一阶段：构建数据集
+spdatalab build_dataset --input data.jsonl --dataset-name my_dataset --output dataset.json
+
+# 第二阶段：处理边界框
+spdatalab process_bbox --input dataset.json
 
 # 空间连接分析
 spdatalab spatial-join --left-table clips_bbox --right-table intersections
@@ -78,7 +82,11 @@ result, stats = quick_spatial_join(num_bbox=100)
 
 3. **日常数据处理**：
    ```bash
-   spdatalab build-dataset-with-bbox [参数]
+   # 第一阶段：构建数据集
+   spdatalab build_dataset [参数]
+   
+   # 第二阶段：处理边界框
+   spdatalab process_bbox [参数]
    ```
 
 ## 🚫 **废弃功能**

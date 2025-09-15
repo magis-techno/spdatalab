@@ -141,18 +141,18 @@ def build_dataset(index_file: str, training_dataset_json: str, dataset_name: str
 @click.option('--retry-failed', is_flag=True, help='只重试失败的数据')
 @click.option('--show-stats', is_flag=True, help='显示处理统计信息并退出')
 @click.option('--create-table', is_flag=True, default=True, help='是否创建表（如果不存在）')
-@click.option('--use-partitioning', is_flag=True, help='使用分表模式处理（按子数据集分表存储）')
+@click.option('--no-partitioning', is_flag=True, help='禁用分表模式（默认启用分表以获得最佳性能）')
 @click.option('--create-unified-view', is_flag=True, default=True, help='分表模式下是否创建统一视图')
 @click.option('--maintain-view-only', is_flag=True, help='仅维护统一视图，不处理数据')
-def process_bbox(input: str, batch: int, insert_batch: int, work_dir: str, retry_failed: bool, show_stats: bool, create_table: bool, use_partitioning: bool, create_unified_view: bool, maintain_view_only: bool):
-    """处理边界框数据。
+@click.option('--parallel', is_flag=True, help='启用并行处理')
+@click.option('--workers', type=int, help='并行worker数量（默认=CPU核心数）')
+def process_bbox(input: str, batch: int, insert_batch: int, work_dir: str, retry_failed: bool, show_stats: bool, create_table: bool, no_partitioning: bool, create_unified_view: bool, maintain_view_only: bool, parallel: bool, workers: int):
+    """处理边界框数据（第二阶段）
     
     从数据集文件中加载场景ID，获取边界框信息并插入到PostGIS数据库中。
     支持JSON、Parquet和文本格式的数据集文件。
     
-    支持两种模式：
-    1. 传统模式：插入到单表clips_bbox（默认）
-    2. 分表模式：按子数据集分表存储，可选择创建统一视图
+    默认使用分表模式以获得最佳性能，支持并行处理。
     
     Args:
         input: 输入文件路径，支持JSON/Parquet/文本格式
@@ -162,14 +162,18 @@ def process_bbox(input: str, batch: int, insert_batch: int, work_dir: str, retry
         retry_failed: 是否只重试失败的数据
         show_stats: 是否显示统计信息并退出
         create_table: 是否创建表（如果不存在）
-        use_partitioning: 是否使用分表模式处理
+        no_partitioning: 是否禁用分表模式（默认启用分表）
         create_unified_view: 分表模式下是否创建统一视图
         maintain_view_only: 是否仅维护统一视图，不处理数据
+        parallel: 是否启用并行处理
+        workers: 并行worker数量
     """
     setup_logging()
     
     try:
-        # 根据模式选择不同的运行函数
+        # 根据模式选择不同的运行函数（默认启用分表模式）
+        use_partitioning = not no_partitioning  # 默认启用分表，除非明确禁用
+        
         if use_partitioning:
             from .dataset.bbox import run_with_partitioning
             
@@ -180,6 +184,9 @@ def process_bbox(input: str, batch: int, insert_batch: int, work_dir: str, retry
             click.echo(f"  - 工作目录: {work_dir or './bbox_import_logs'}")
             click.echo(f"  - 创建统一视图: {'是' if create_unified_view else '否'}")
             click.echo(f"  - 仅维护视图: {'是' if maintain_view_only else '否'}")
+            click.echo(f"  - 并行处理: {'启用' if parallel else '禁用'}")
+            if parallel and workers:
+                click.echo(f"  - Worker数量: {workers}")
             
             if show_stats:
                 click.echo("分表模式下显示统计信息功能暂未实现")
@@ -191,7 +198,9 @@ def process_bbox(input: str, batch: int, insert_batch: int, work_dir: str, retry
                 insert_batch=insert_batch,
                 work_dir=work_dir or "./bbox_import_logs",
                 create_unified_view_flag=create_unified_view,
-                maintain_view_only=maintain_view_only
+                maintain_view_only=maintain_view_only,
+                use_parallel=parallel,
+                max_workers=workers
             )
             
             click.echo("✅ 分表模式边界框处理完成")
@@ -324,97 +333,6 @@ def list_bbox_tables():
         logger.error(f"列出bbox表失败: {str(e)}")
         raise
 
-@cli.command()
-@click.option('--index-file', required=True, help='索引文件路径')
-@click.option('--dataset-name', required=True, help='数据集名称')
-@click.option('--description', default='', help='数据集描述')
-@click.option('--output', required=True, help='输出数据集文件路径')
-@click.option('--format', type=click.Choice(['json', 'parquet']), default='json', help='数据集保存格式')
-@click.option('--batch', type=int, default=1000, help='边界框处理批次大小')
-@click.option('--insert-batch', type=int, default=1000, help='边界框插入批次大小')
-@click.option('--buffer-meters', type=int, default=50, help='缓冲区大小（米）')
-@click.option('--precise-buffer', is_flag=True, help='使用精确的米级缓冲区')
-@click.option('--skip-bbox', is_flag=True, help='跳过边界框处理')
-@click.option('--defect-mode', is_flag=True, help='启用问题单模式（处理问题单URL）')
-def build_dataset_with_bbox(index_file: str, dataset_name: str, description: str, output: str, 
-                           format: str, batch: int, insert_batch: int, buffer_meters: int, 
-                           precise_buffer: bool, skip_bbox: bool, defect_mode: bool):
-    """构建数据集并处理边界框（完整工作流程）。
-    
-    从索引文件构建数据集，保存后自动处理边界框数据，提供一键式完整工作流程。
-    
-    支持两种模式：
-    1. 标准模式：处理OBS路径格式的训练数据（默认）
-    2. 问题单模式：处理问题单URL数据（使用--defect-mode）
-    
-    Args:
-        index_file: 索引文件路径
-                   标准模式：每行格式为 obs_path@duplicateN
-                   问题单模式：每行为问题单URL或URL|属性
-        dataset_name: 数据集名称
-        description: 数据集描述
-        output: 输出数据集文件路径
-        format: 数据集保存格式，json 或 parquet
-        batch: 边界框处理批次大小
-        insert_batch: 边界框插入批次大小
-        buffer_meters: 缓冲区大小（米）
-        precise_buffer: 是否使用精确的米级缓冲区
-        skip_bbox: 是否跳过边界框处理
-        defect_mode: 是否启用问题单处理模式
-    """
-    setup_logging()
-    
-    try:
-        # 步骤1：构建数据集
-        click.echo("=== 步骤1: 构建数据集 ===")
-        click.echo(f"   - 处理模式: {'问题单模式' if defect_mode else '标准模式'}")
-        manager = DatasetManager(defect_mode=defect_mode)
-        dataset = manager.build_dataset_from_index(index_file, dataset_name, description)
-        
-        # 显示数据集统计信息
-        stats = manager.get_dataset_stats(dataset)
-        click.echo(f"数据集统计信息:")
-        click.echo(f"  - 数据集名称: {stats['dataset_name']}")
-        click.echo(f"  - 子数据集数量: {stats['subdataset_count']}")
-        click.echo(f"  - 唯一场景数: {stats['total_unique_scenes']}")
-        click.echo(f"  - 总场景数(含倍增): {stats['total_scenes_with_duplicates']}")
-        
-        # 步骤2：保存数据集
-        click.echo("=== 步骤2: 保存数据集 ===")
-        # 确保输出目录存在
-        Path(output).parent.mkdir(parents=True, exist_ok=True)
-        manager.save_dataset(dataset, output, format=format)
-        click.echo(f"✅ 数据集已保存到: {output} ({format}格式)")
-        
-        # 步骤3：处理边界框（如果需要）
-        if not skip_bbox:
-            click.echo("=== 步骤3: 处理边界框 ===")
-            
-            from .dataset.bbox import run as bbox_run
-            
-            click.echo(f"边界框处理配置:")
-            click.echo(f"  - 处理批次: {batch}")
-            click.echo(f"  - 插入批次: {insert_batch}")
-            click.echo(f"  - 缓冲区: {buffer_meters}米")
-            click.echo(f"  - 精确模式: {'是' if precise_buffer else '否'}")
-            
-            bbox_run(
-                input_path=output,
-                batch=batch,
-                insert_batch=insert_batch,
-                buffer_meters=buffer_meters,
-                use_precise_buffer=precise_buffer
-            )
-            
-            click.echo("✅ 边界框处理完成")
-        else:
-            click.echo("=== 步骤3: 跳过边界框处理 ===")
-        
-        click.echo("🎉 完整工作流程完成！")
-        
-    except Exception as e:
-        logger.error(f"完整工作流程失败: {str(e)}")
-        raise
 
 @cli.command()
 @click.option('--dataset-file', required=True, help='数据集文件路径')

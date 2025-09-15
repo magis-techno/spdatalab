@@ -9,8 +9,8 @@
 # 第一阶段：构建数据集
 python -m spdatalab build_dataset --input data/index.txt --dataset-name "my_dataset" --output dataset.json
 
-# 第二阶段：处理边界框
-python src/spdatalab/dataset/bbox.py --input dataset.json --batch 1000
+# 第二阶段：处理边界框（默认启用分表模式）
+python -m spdatalab process_bbox --input dataset.json
 ```
 
 ### 问题单数据集处理
@@ -19,17 +19,9 @@ python src/spdatalab/dataset/bbox.py --input dataset.json --batch 1000
 python -m spdatalab build_dataset --input defect_urls.txt --dataset-name "defect_dataset" --output defect_dataset.json --defect-mode
 
 # 第二阶段：处理边界框（自动识别并创建动态字段）
-python src/spdatalab/dataset/bbox.py --input defect_dataset.json --batch 500
+python -m spdatalab process_bbox --input defect_dataset.json
 ```
 
-### 一体化命令（推荐）
-```bash
-# 标准数据集一体化处理
-python -m spdatalab build_dataset_with_bbox --input data/index.txt --dataset-name "my_dataset" --use-partitioning
-
-# 问题单数据集一体化处理
-python -m spdatalab build_dataset_with_bbox --input defect_urls.txt --dataset-name "defect_dataset" --defect-mode --use-partitioning
-```
 
 ## 处理流程概述 ⭐ **UPDATED**
 
@@ -106,14 +98,17 @@ python -m spdatalab build_dataset_with_bbox --input defect_urls.txt --dataset-na
 
 #### 基本用法
 ```bash
-# 处理JSON格式的数据集文件
-python src/spdatalab/dataset/bbox.py --input output/dataset.json --batch 1000 --insert-batch 500
+# 处理JSON格式的数据集文件（推荐方式）
+python -m spdatalab process_bbox --input output/dataset.json
+
+# 自定义批次大小
+python -m spdatalab process_bbox --input output/dataset.json --batch 1000 --insert-batch 500
 
 # 处理Parquet格式的数据集文件
-python src/spdatalab/dataset/bbox.py --input output/dataset.parquet --batch 2000 --insert-batch 1000
+python -m spdatalab process_bbox --input output/dataset.parquet --batch 2000 --insert-batch 1000
 
-# 处理文本格式的场景ID列表（向后兼容）
-python src/spdatalab/dataset/bbox.py --input data/scene_ids.txt --batch 500
+# 启用并行处理（高性能）
+python -m spdatalab process_bbox --input output/dataset.json --parallel --workers 4
 ```
 
 #### 问题单数据集处理 ⭐ **NEW**
@@ -126,24 +121,14 @@ python -m spdatalab build_dataset \
     --defect-mode
 
 # 第二步：处理问题单数据集 - 自动识别并创建动态字段
-python src/spdatalab/dataset/bbox.py --input defect_dataset.json --batch 500 --insert-batch 500
+python -m spdatalab process_bbox --input defect_dataset.json --batch 500 --insert-batch 500
 
-# 或者使用一体化命令（包含构建和处理）
-python -m spdatalab build_dataset_with_bbox \
-    --input defect_urls.txt \
-    --dataset-name "defect_analysis_2024" \
-    --defect-mode \
-    --batch 500 \
-    --insert-batch 500 \
-    --use-partitioning \
-    --create-unified-view
 
-# 并行处理已生成的问题单数据集
-python -m spdatalab process-bbox \
+# 并行处理已生成的问题单数据集（高性能模式）
+python -m spdatalab process_bbox \
     --input defect_dataset.json \
-    --use-partitioning \
-    --use-parallel \
-    --max-workers 4 \
+    --parallel \
+    --workers 4 \
     --batch 500 \
     --insert-batch 500
 ```
@@ -151,58 +136,57 @@ python -m spdatalab process-bbox \
 #### 并行处理用法
 
 ```bash
-# 使用默认设置开启并行处理（自动检测CPU核心数）
-python -m spdatalab process-bbox \
+# 基础处理（默认启用分表模式）
+python -m spdatalab process_bbox --input dataset.json
+
+# 启用并行处理（自动检测CPU核心数）
+python -m spdatalab process_bbox \
     --input dataset.json \
-    --use-partitioning \
-    --use-parallel
+    --parallel
 
 # 手动指定使用4个并行worker
-python -m spdatalab process-bbox \
+python -m spdatalab process_bbox \
     --input dataset.json \
-    --use-partitioning \
-    --use-parallel \
-    --max-workers 4
+    --parallel \
+    --workers 4
 
-# 并行处理的完整参数配置
-python -m spdatalab process-bbox \
+# 高性能并行处理完整配置
+python -m spdatalab process_bbox \
     --input dataset.json \
-    --use-partitioning \
-    --use-parallel \
-    --max-workers 6 \
+    --parallel \
+    --workers 6 \
     --batch 2000 \
     --insert-batch 1000 \
-    --create-unified-view \
     --work-dir ./parallel_logs
 
-# 传统顺序处理（对比）
-python -m spdatalab process-bbox \
+# 禁用分表模式（不推荐，仅用于兼容）
+python -m spdatalab process_bbox \
     --input dataset.json \
-    --use-partitioning
+    --no-partitioning
 ```
 
 #### 进度跟踪和恢复
 ```bash
 # 指定工作目录（存储进度文件）
-python src/spdatalab/dataset/bbox.py \
+python -m spdatalab process_bbox \
   --input output/large_dataset.json \
   --batch 1000 \
   --work-dir ./logs/bbox_import_20231201
 
 # 程序中断后，重新运行相同命令即可自动续传
-python src/spdatalab/dataset/bbox.py \
+python -m spdatalab process_bbox \
   --input output/large_dataset.json \
   --batch 1000 \
   --work-dir ./logs/bbox_import_20231201
 
 # 只重试失败的数据
-python src/spdatalab/dataset/bbox.py \
+python -m spdatalab process_bbox \
   --input output/large_dataset.json \
   --retry-failed \
   --work-dir ./logs/bbox_import_20231201
 
 # 查看处理统计信息
-python src/spdatalab/dataset/bbox.py \
+python -m spdatalab process_bbox \
   --input output/large_dataset.json \
   --show-stats \
   --work-dir ./logs/bbox_import_20231201
@@ -816,7 +800,7 @@ mkdir -p logs/imports/validation_20231201
 mkdir -p logs/imports/test_20231201
 
 # 使用时间戳避免冲突
-python bbox.py --input dataset.json --work-dir "./logs/imports/$(date +%Y%m%d_%H%M%S)"
+python -m spdatalab process_bbox --input dataset.json --work-dir "./logs/imports/$(date +%Y%m%d_%H%M%S)"
 ```
 
 ### 3. 并行处理（推荐）
@@ -930,7 +914,7 @@ for i, part in enumerate(parts):
 
 1. **查看统计信息**：
    ```bash
-   python bbox.py --input dataset.json --show-stats --work-dir ./logs
+   python -m spdatalab process_bbox --input dataset.json --show-stats --work-dir ./logs
    ```
 
 2. **检查失败记录**：
@@ -942,7 +926,7 @@ for i, part in enumerate(parts):
 
 3. **重试失败数据**：
    ```bash
-   python bbox.py --input dataset.json --retry-failed --work-dir ./logs --batch 500
+   python -m spdatalab process_bbox --input dataset.json --retry-failed --work-dir ./logs --batch 500
    ```
 
 ## 监控和日志
@@ -1283,5 +1267,4 @@ python demo_parallel_commands.py
 
 #### CLI命令
 - **构建数据集**: `python -m spdatalab build_dataset` - DatasetManager命令行接口
-- **处理边界框**: `python -m spdatalab process-bbox` - BBox模块命令行接口
-- **一体化处理**: `python -m spdatalab build_dataset_with_bbox` - 两阶段一体化命令 
+- **处理边界框**: `python -m spdatalab process-bbox` - BBox模块命令行接口 

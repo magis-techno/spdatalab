@@ -146,34 +146,7 @@ python -m spdatalab.cli process-bbox \
   --work-dir ./logs/phase1
 ```
 
-### 3. `build-dataset-with-bbox` - 一键式完整工作流程 ⭐
-
-构建数据集并自动处理边界框，提供最便捷的使用方式。
-
-```bash
-python -m spdatalab.cli build-dataset-with-bbox \
-  --index-file data/train_index.txt \
-  --dataset-name "complete_training_v1" \
-  --description "完整训练数据集" \
-  --output output/complete_dataset.json \
-  --format json \
-  --batch 1000 \
-  --insert-batch 500 \
-  --buffer-meters 50 \
-  --precise-buffer
-```
-
-**跳过边界框处理：**
-```bash
-# 只构建数据集，不处理边界框
-python -m spdatalab.cli build-dataset-with-bbox \
-  --index-file data/test_index.txt \
-  --dataset-name "test_dataset" \
-  --output output/test_dataset.json \
-  --skip-bbox
-```
-
-### 4. `dataset-info` - 查看数据集信息
+### 3. `dataset-info` - 查看数据集信息
 
 显示数据集的详细统计信息。
 
@@ -182,7 +155,7 @@ python -m spdatalab.cli dataset-info \
   --dataset-file output/train_dataset.json
 ```
 
-### 5. `list-scenes` - 列出场景ID
+### 4. `list-scenes` - 列出场景ID
 
 列出数据集中的场景ID。
 
@@ -202,7 +175,7 @@ python -m spdatalab.cli list-scenes \
   --subdataset "lane_change_1"
 ```
 
-### 6. `generate-scene-ids` - 生成包含倍增的场景ID
+### 5. `generate-scene-ids` - 生成包含倍增的场景ID
 
 生成包含倍增因子的完整场景ID列表。
 
@@ -338,13 +311,21 @@ python -m spdatalab.cli build-dataset \
 # 1. 按子数据集分割索引文件
 split -l 1000 large_index.txt index_part_
 
-# 2. 分别处理各个分片
+# 2. 分别处理各个分片（两阶段方式）
 for part in index_part_*; do
-    python -m spdatalab.cli build-dataset-with-bbox \
-        --index-file "$part" \
-        --dataset-name "dataset_$(basename $part)" \
-        --output "output/dataset_$(basename $part).parquet" \
-        --format parquet \
+    dataset_name="dataset_$(basename $part)"
+    output_file="output/${dataset_name}.parquet"
+    
+    # 第一阶段：构建数据集
+    python -m spdatalab.cli build_dataset \
+        --input "$part" \
+        --dataset-name "$dataset_name" \
+        --output "$output_file" \
+        --format parquet
+        
+    # 第二阶段：处理边界框
+    python -m spdatalab.cli process_bbox \
+        --input "$output_file" \
         --batch 1000 \
         --work-dir "./logs/$(basename $part)"
 done
@@ -449,11 +430,15 @@ scene_id_003
 
 ### 1. 快速开始（小型数据集）
 ```bash
-# 一键完成所有操作
-python -m spdatalab.cli build-dataset-with-bbox \
-  --index-file data/index.txt \
+# 第一阶段：构建数据集
+python -m spdatalab.cli build_dataset \
+  --input data/index.txt \
   --dataset-name "my_dataset" \
-  --output output/my_dataset.json \
+  --output output/my_dataset.json
+
+# 第二阶段：处理边界框（默认启用分表模式）
+python -m spdatalab.cli process_bbox \
+  --input output/my_dataset.json \
   --work-dir ./logs/quick_start
 ```
 

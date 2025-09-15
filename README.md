@@ -51,11 +51,17 @@ python -m spdatalab.cli process-bbox \
   --batch 1000 \
   --work-dir ./logs/bbox_processing
 
-# 一键式完整工作流程
-python -m spdatalab.cli build-dataset-with-bbox \
-  --index-file data/index.txt \
+# 两阶段完整工作流程
+# 第一阶段：构建数据集
+python -m spdatalab.cli build_dataset \
+  --input data/index.txt \
   --dataset-name "complete_dataset" \
   --output complete_dataset.parquet \
+  --format parquet
+
+# 第二阶段：处理边界框（默认启用分表模式）
+python -m spdatalab.cli process_bbox \
+  --input complete_dataset.parquet \
   --batch 1000
 ```
 
