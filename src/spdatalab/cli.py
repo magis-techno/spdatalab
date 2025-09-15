@@ -42,7 +42,7 @@ def generate_scene_list(index_file: str, output: str):
 @click.option('--dataset-name', help='数据集名称')
 @click.option('--description', default='', help='数据集描述')
 @click.option('--output', required=True, help='输出文件路径')
-@click.option('--format', type=click.Choice(['json', 'parquet']), default='json', help='输出格式')
+@click.option('--format', type=click.Choice(['json', 'parquet']), help='输出格式（可选，默认从文件扩展名推断）')
 @click.option('--defect-mode', is_flag=True, help='启用问题单模式（处理问题单URL）')
 def build_dataset(index_file: str, training_dataset_json: str, dataset_name: str, description: str, output: str, format: str, defect_mode: bool):
     """构建数据集结构。
@@ -94,13 +94,19 @@ def build_dataset(index_file: str, training_dataset_json: str, dataset_name: str
         
         manager.save_dataset(dataset, output, format=format)
         
+        # 确定实际使用的格式
+        if format is None:
+            actual_format = 'parquet' if output.endswith('.parquet') else 'json'
+        else:
+            actual_format = format
+        
         click.echo(f"✅ 数据集构建完成: {dataset.name}")
         click.echo(f"   - 输入格式: {input_type}")
         click.echo(f"   - 处理模式: {'问题单模式' if defect_mode else '标准模式'}")
         click.echo(f"   - 子数据集数量: {len(dataset.subdatasets)}")
         click.echo(f"   - 总唯一场景数: {dataset.total_unique_scenes}")
         click.echo(f"   - 总场景数(含倍增): {dataset.total_scenes}")
-        click.echo(f"   - 已保存到: {output} ({format}格式)")
+        click.echo(f"   - 已保存到: {output} ({actual_format}格式)")
         
         if defect_mode:
             # 显示问题单处理统计
@@ -112,7 +118,7 @@ def build_dataset(index_file: str, training_dataset_json: str, dataset_name: str
             if stats['defect_no_scene'] > 0:
                 click.echo(f"   - 无scene_id: {stats['defect_no_scene']} 个")
         
-        if format == 'parquet':
+        if actual_format == 'parquet':
             click.echo(f"   - 推荐安装: pip install pandas pyarrow")
             
     except Exception as e:

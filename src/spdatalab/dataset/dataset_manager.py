@@ -606,15 +606,27 @@ class DatasetManager:
         # 调用统一的处理逻辑
         return self._build_dataset_from_items_standard_mode(converted_items, dataset_name, description)
         
-    def save_dataset(self, dataset: Dataset, output_file: str, format: str = 'json'):
+    def save_dataset(self, dataset: Dataset, output_file: str, format: str = None):
         """保存数据集到文件。
         
         Args:
             dataset: Dataset对象
             output_file: 输出文件路径
-            format: 保存格式，'json' 或 'parquet'
+            format: 保存格式，'json' 或 'parquet'，如果不指定则从文件扩展名自动推断
         """
         ensure_dir(Path(output_file).parent)
+        
+        # 自动从文件扩展名推断格式
+        if format is None:
+            file_ext = Path(output_file).suffix.lower()
+            if file_ext == '.parquet':
+                format = 'parquet'
+            elif file_ext == '.json':
+                format = 'json'
+            else:
+                # 默认使用JSON格式
+                format = 'json'
+                logger.warning(f"无法从文件扩展名推断格式，使用默认JSON格式: {output_file}")
         
         if format.lower() == 'json':
             self._save_dataset_json(dataset, output_file)
