@@ -59,7 +59,7 @@ def test_json_input():
         print(f"✅ 创建测试JSON文件: {json_file}")
         
         # 测试DatasetManager.build_dataset_from_training_json
-        manager = DatasetManager(include_scene_info=False)  # 关闭场景信息获取以避免网络依赖
+        manager = DatasetManager()  # 使用默认配置
         
         print("📖 从JSON文件构建数据集...")
         dataset = manager.build_dataset_from_training_json(json_file)

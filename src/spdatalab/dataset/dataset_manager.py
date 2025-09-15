@@ -468,21 +468,22 @@ class DatasetManager:
                 }
             )
             
-            # 如果开启了场景信息获取，则获取场景ID列表
-            if self.include_scene_info:
-                try:
-                    subdataset.scene_ids = self.extract_scene_ids(obs_path)
-                    subdataset.scene_count = len(subdataset.scene_ids)
-                    self.stats['processed_files'] += 1
-                except Exception as e:
-                    logger.warning(f"获取场景信息失败 {obs_path}: {str(e)}")
-                    self.stats['failed_files'] += 1
+            # 获取场景ID列表（与原始txt输入方式保持一致）
+            try:
+                subdataset.scene_ids = self.extract_scene_ids_from_file(obs_path)
+                subdataset.scene_count = len(subdataset.scene_ids)
+                self.stats['processed_files'] += 1
+                self.stats['total_scenes'] += subdataset.scene_count
+            except Exception as e:
+                logger.warning(f"获取场景信息失败 {obs_path}: {str(e)}")
+                self.stats['failed_files'] += 1
             
             dataset.subdatasets.append(subdataset)
         
         # 计算统计信息
         dataset.total_unique_scenes = sum(len(sub.scene_ids) for sub in dataset.subdatasets)
         dataset.total_scenes = sum(sub.duplication_factor * len(sub.scene_ids) for sub in dataset.subdatasets)
+        self.stats['total_subdatasets'] = len(dataset.subdatasets)
         
         logger.info(f"JSON数据集构建完成: {final_name}")
         logger.info(f"  - 子数据集数量: {len(dataset.subdatasets)}")

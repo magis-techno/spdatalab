@@ -110,7 +110,21 @@ python test_training_dataset_json.py
 ### 测试环境要求
 - Python 3.7+
 - 项目依赖已安装
-- 无需外部网络连接（测试时关闭scene_info获取）
+- 需要访问数据库以获取场景信息（与原有txt输入保持一致）
+
+## 🔧 问题修复
+
+### 修复1: encoding参数问题
+**问题**: `open_file()` 函数不支持 `encoding` 参数  
+**解决**: 移除 `encoding='utf-8'` 参数
+
+### 修复2: include_scene_info属性问题
+**问题**: `DatasetManager` 没有 `include_scene_info` 属性  
+**解决**: 移除条件判断，直接获取场景信息（与原有行为保持一致）
+
+### 修复3: 方法名错误
+**问题**: 使用了不存在的 `extract_scene_ids` 方法  
+**解决**: 使用正确的 `extract_scene_ids_from_file` 方法
 
 ## ✅ 向后兼容性
 
