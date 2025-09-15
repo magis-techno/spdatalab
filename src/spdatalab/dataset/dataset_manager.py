@@ -7,6 +7,10 @@ import json
 import re
 from dataclasses import dataclass, asdict
 from datetime import datetime
+import hashlib
+import pickle
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 try:
     import pandas as pd
@@ -18,6 +22,15 @@ except ImportError:
     pd = None
     pa = None
     pq = None
+
+try:
+    from tqdm import tqdm
+    TQDM_AVAILABLE = True
+except ImportError:
+    TQDM_AVAILABLE = False
+    # 简单的fallback
+    def tqdm(iterable, **kwargs):
+        return iterable
 
 # 只在类型检查时导入pandas类型
 if TYPE_CHECKING and PARQUET_AVAILABLE:
@@ -83,6 +96,9 @@ class DatasetManager:
             'defect_query_failed': 0,
             'defect_no_scene': 0
         }
+        # 初始化缓存目录
+        self._cache_dir = Path(".cache/scene_ids")
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
         
     def parse_defect_url(self, url: str) -> Optional[str]:
         """从问题单URL中提取数据名称。
@@ -373,6 +389,19 @@ class DatasetManager:
         Returns:
             scene_id列表
         """
+        # 检查缓存
+        cache_key = hashlib.md5(file_path.encode()).hexdigest()
+        cache_file = self._cache_dir / f"{cache_key}.pkl"
+        
+        if cache_file.exists():
+            try:
+                with open(cache_file, 'rb') as f:
+                    cached_scene_ids = pickle.load(f)
+                logger.debug(f"从缓存加载 {file_path}: {len(cached_scene_ids)} 个scene_id")
+                return cached_scene_ids
+            except Exception as e:
+                logger.warning(f"读取缓存失败 {cache_file}: {e}")
+        
         from .scene_list_generator import SceneListGenerator
         
         scene_ids = []
@@ -385,6 +414,14 @@ class DatasetManager:
                     scene_ids.append(scene_id)
                     
             logger.info(f"从 {file_path} 提取到 {len(scene_ids)} 个scene_id")
+            
+            # 保存缓存
+            try:
+                with open(cache_file, 'wb') as f:
+                    pickle.dump(scene_ids, f)
+                logger.debug(f"已缓存 {file_path}")
+            except Exception as e:
+                logger.warning(f"保存缓存失败 {cache_file}: {e}")
             
         except Exception as e:
             logger.error(f"提取scene_id失败: {file_path}, 错误: {str(e)}")
@@ -483,21 +520,48 @@ class DatasetManager:
             logger.info("使用标准模式处理数据项")
             return self._build_dataset_from_items_standard_mode(items, dataset_name, description)
     
+    def _process_single_item(self, item: Dict) -> Tuple[Dict, List[str], int]:
+        """处理单个数据项（用于并行处理）。
+        
+        Args:
+            item: 数据项
+            
+        Returns:
+            (item, scene_ids, scene_count) 元组
+        """
+        obs_path = item['obs_path']
+        scene_ids = self.extract_scene_ids_from_file(obs_path)
+        scene_count = len(scene_ids)
+        return item, scene_ids, scene_count
+
     def _build_dataset_from_items_standard_mode(self, items: List[Dict], dataset_name: str, 
                                                description: str = "") -> Dataset:
         """标准模式下从数据项构建数据集。"""
         dataset = Dataset(name=dataset_name, description=description)
         
-        for item in items:
+        logger.info(f"开始并行处理 {len(items)} 个数据项...")
+        
+        # 并行处理所有文件
+        max_workers = min(16, len(items))  # 限制最大线程数
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 使用进度条包装结果迭代器
+            if TQDM_AVAILABLE:
+                results = list(tqdm(
+                    executor.map(self._process_single_item, items),
+                    total=len(items),
+                    desc="处理数据集文件"
+                ))
+            else:
+                results = list(executor.map(self._process_single_item, items))
+                logger.info(f"处理完成 {len(results)} 个文件")
+        
+        # 处理结果
+        for item, scene_ids, scene_count in results:
             subdataset_name = item['name']
             obs_path = item['obs_path']
             factor = item['duplication_factor']
             
             self.stats['total_files'] += 1
-            
-            # 提取场景ID
-            scene_ids = self.extract_scene_ids_from_file(obs_path)
-            scene_count = len(scene_ids)
             
             if scene_count > 0:
                 self.stats['processed_files'] += 1
