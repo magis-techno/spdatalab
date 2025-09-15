@@ -407,7 +407,7 @@ class DatasetManager:
         logger.info(f"从JSON文件构建数据集: {json_file}")
         
         try:
-            with open_file(json_file, 'r', encoding='utf-8') as f:
+            with open_file(json_file, 'r') as f:
                 data = json.load(f)
         except Exception as e:
             raise ValueError(f"读取JSON文件失败: {str(e)}")
