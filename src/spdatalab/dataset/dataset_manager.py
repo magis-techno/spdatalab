@@ -654,6 +654,10 @@ class DatasetManager:
                     'metadata': json.dumps(subdataset.metadata)
                 })
         
+        # 验证数据
+        if not data_rows:
+            raise ValueError(f"数据集为空，无法保存为Parquet格式。数据集 '{dataset.name}' 包含 {len(dataset.subdatasets)} 个子数据集，但没有有效的场景ID。")
+        
         # 创建DataFrame
         df = pd.DataFrame(data_rows)
         
