@@ -40,10 +40,17 @@ import json
 import logging
 from typing import Dict, List, Any, Optional
 
-# 添加项目路径
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+# 添加项目路径，支持多种环境
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
 
-from examples.dataset.bbox_examples.bbox_overlap_analysis import BBoxOverlapAnalyzer
+# 尝试导入分析器
+try:
+    from examples.dataset.bbox_examples.bbox_overlap_analysis import BBoxOverlapAnalyzer
+except ImportError:
+    # 如果失败，尝试添加src路径后再导入
+    sys.path.insert(0, str(project_root / "src"))
+    from examples.dataset.bbox_examples.bbox_overlap_analysis import BBoxOverlapAnalyzer
 
 # 设置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

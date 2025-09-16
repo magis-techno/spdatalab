@@ -34,15 +34,27 @@ import pandas as pd
 import logging
 from typing import Optional, List, Dict, Any
 
-# 添加项目路径
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+# 添加项目路径，支持多种环境
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+# 尝试直接导入，如果失败则添加src路径
+try:
+    from spdatalab.dataset.bbox import (
+        create_qgis_compatible_unified_view,
+        list_bbox_tables,
+        LOCAL_DSN
+    )
+except ImportError:
+    # 如果直接导入失败，尝试添加src路径
+    sys.path.insert(0, str(project_root / "src"))
+    from spdatalab.dataset.bbox import (
+        create_qgis_compatible_unified_view,
+        list_bbox_tables,
+        LOCAL_DSN
+    )
 
 from sqlalchemy import create_engine, text
-from src.spdatalab.dataset.bbox import (
-    create_qgis_compatible_unified_view,
-    list_bbox_tables,
-    LOCAL_DSN
-)
 
 # 设置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
