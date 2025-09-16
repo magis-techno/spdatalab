@@ -114,5 +114,13 @@ SELECT
     COUNT(*) as current_records
 FROM bbox_overlap_analysis_results;
 
--- 显示表结构信息
-\d+ bbox_overlap_analysis_results;
+-- 显示表结构信息（使用标准SQL替代psql命令）
+SELECT 
+    column_name,
+    data_type,
+    is_nullable,
+    column_default
+FROM information_schema.columns 
+WHERE table_name = 'bbox_overlap_analysis_results' 
+    AND table_schema = 'public'
+ORDER BY ordinal_position;

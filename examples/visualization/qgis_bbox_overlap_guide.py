@@ -76,8 +76,8 @@ class QGISBBoxOverlapGuide:
             analysis_id = f"demo_overlap_{timestamp}"
         
         try:
-            # 确保环境准备就绪
-            if not self.analyzer.ensure_unified_view():
+            # 确保环境准备就绪（对于demo，不强制刷新以节省时间）
+            if not self.analyzer.ensure_unified_view(force_refresh=False):
                 raise Exception("统一视图准备失败")
             
             if not self.analyzer.create_analysis_table():

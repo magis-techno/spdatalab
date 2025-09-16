@@ -59,41 +59,108 @@ class BBoxOverlapAnalyzer:
         self.unified_view = "clips_bbox_unified_qgis"
         self.qgis_view = "qgis_bbox_overlap_hotspots"
         
-    def ensure_unified_view(self) -> bool:
-        """确保统一视图存在"""
+    def ensure_unified_view(self, force_refresh: bool = False) -> bool:
+        """确保统一视图存在并且是最新的
+        
+        Args:
+            force_refresh: 是否强制刷新视图
+        """
         print("🔍 检查bbox统一视图...")
         
         try:
-            # 检查视图是否存在
-            check_view_sql = text(f"""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.views 
-                    WHERE table_schema = 'public' 
-                    AND table_name = '{self.unified_view}'
-                );
-            """)
-            
             with self.engine.connect() as conn:
+                # 1. 检查视图是否存在
+                check_view_sql = text(f"""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.views 
+                        WHERE table_schema = 'public' 
+                        AND table_name = '{self.unified_view}'
+                    );
+                """)
+                
                 result = conn.execute(check_view_sql)
                 view_exists = result.scalar()
                 
+                # 2. 获取当前分表数量
+                current_tables = list_bbox_tables(self.engine)
+                bbox_partition_tables = [t for t in current_tables if t.startswith('clips_bbox_') and t != 'clips_bbox']
+                current_table_count = len(bbox_partition_tables)
+                
+                print(f"📋 发现 {current_table_count} 个bbox分表")
+                
+                # 3. 检查视图是否需要更新
+                view_needs_update = False
+                
                 if not view_exists:
-                    print(f"视图 {self.unified_view} 不存在，正在创建...")
+                    print(f"📌 视图 {self.unified_view} 不存在，需要创建")
+                    view_needs_update = True
+                elif force_refresh:
+                    print(f"🔄 强制刷新模式，将重新创建视图")
+                    view_needs_update = True
+                elif current_table_count == 0:
+                    print(f"⚠️ 没有发现bbox分表，无法创建统一视图")
+                    return False
+                else:
+                    # 检查视图的表数量是否匹配当前分表数量
+                    try:
+                        # 尝试从视图定义中获取表数量（简化检查）
+                        check_count_sql = text(f"SELECT COUNT(DISTINCT source_table) FROM {self.unified_view} LIMIT 1;")
+                        view_table_result = conn.execute(check_count_sql)
+                        view_table_count = view_table_result.scalar()
+                        
+                        if view_table_count != current_table_count:
+                            print(f"🔄 视图包含 {view_table_count} 个表，当前有 {current_table_count} 个分表，需要更新")
+                            view_needs_update = True
+                    except Exception as e:
+                        print(f"⚠️ 检查视图状态失败: {str(e)[:100]}...")
+                        print(f"🔄 为安全起见，将重新创建视图")
+                        view_needs_update = True
+                
+                # 4. 创建或更新视图
+                if view_needs_update:
+                    if current_table_count == 0:
+                        print(f"❌ 无法创建视图：没有可用的bbox分表")
+                        return False
+                    
+                    print(f"🛠️ 正在创建/更新统一视图...")
                     success = create_qgis_compatible_unified_view(self.engine, self.unified_view)
                     if not success:
                         print("❌ 创建统一视图失败")
                         return False
-                    print(f"✅ 统一视图 {self.unified_view} 创建成功")
+                    print(f"✅ 统一视图 {self.unified_view} 创建/更新成功")
                 else:
-                    print(f"✅ 统一视图 {self.unified_view} 已存在")
+                    print(f"✅ 统一视图 {self.unified_view} 已是最新状态")
                 
-                # 检查视图中的数据量
-                count_sql = text(f"SELECT COUNT(*) FROM {self.unified_view};")
-                count_result = conn.execute(count_sql)
-                row_count = count_result.scalar()
-                print(f"📊 统一视图包含 {row_count:,} 条bbox记录")
-                
-                return row_count > 0
+                # 5. 验证视图数据
+                try:
+                    count_sql = text(f"SELECT COUNT(*) FROM {self.unified_view};")
+                    count_result = conn.execute(count_sql)
+                    row_count = count_result.scalar()
+                    print(f"📊 统一视图包含 {row_count:,} 条bbox记录")
+                    
+                    if row_count == 0:
+                        print(f"⚠️ 统一视图为空，可能分表中没有数据")
+                        return False
+                    
+                    # 显示数据分布概况
+                    sample_sql = text(f"""
+                        SELECT 
+                            COUNT(DISTINCT subdataset_name) as subdataset_count,
+                            COUNT(DISTINCT city_id) as city_count,
+                            MIN(created_at) as earliest_data,
+                            MAX(created_at) as latest_data
+                        FROM {self.unified_view} 
+                        WHERE created_at IS NOT NULL;
+                    """)
+                    sample_result = conn.execute(sample_sql).fetchone()
+                    if sample_result:
+                        print(f"📈 数据概况: {sample_result.subdataset_count} 个子数据集, {sample_result.city_count} 个城市")
+                    
+                    return True
+                    
+                except Exception as e:
+                    print(f"⚠️ 视图数据验证失败: {str(e)[:100]}...")
+                    return False
                 
         except Exception as e:
             print(f"❌ 检查统一视图失败: {str(e)}")
@@ -386,6 +453,7 @@ def main():
     parser.add_argument('--min-overlap-area', type=float, default=0.0, help='最小重叠面积阈值')
     parser.add_argument('--top-n', type=int, default=20, help='返回的热点数量')
     parser.add_argument('--analysis-id', help='自定义分析ID')
+    parser.add_argument('--refresh-view', action='store_true', help='强制刷新统一视图（适用于数据更新后）')
     
     args = parser.parse_args()
     
@@ -398,7 +466,9 @@ def main():
     try:
         # 1. 确保统一视图存在
         print("\n📋 步骤1: 检查数据准备")
-        if not analyzer.ensure_unified_view():
+        # 对于大量数据的情况，我们优先使用现有视图，只在必要时刷新
+        force_refresh = args.refresh_view
+        if not analyzer.ensure_unified_view(force_refresh=force_refresh):
             print("❌ 统一视图检查失败，退出")
             return
         
