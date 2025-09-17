@@ -73,53 +73,39 @@ overlapping_pairs AS (
         {where_clause}
 ),
 
--- Step 2: 基于相交关系的智能聚合
--- 使用ST_ClusterIntersecting将相交的重叠区域聚合在一起
-clustered_overlaps AS (
+-- Step 2: 单独处理每个重叠对，不进行空间聚合（避免错误聚合bug）
+individual_overlaps AS (
     SELECT 
-        *,
-        -- 对相交的重叠几何进行聚类，相交的重叠会分到同一组
-        ST_ClusterIntersecting(overlap_geometry) OVER () as cluster_group
+        -- 每个重叠对作为独立的热点
+        overlap_geometry as hotspot_geometry,
+        
+        -- 单个重叠的统计
+        1 as overlap_count,
+        
+        -- 涉及的子数据集
+        ARRAY[subdataset_a, subdataset_b] as all_subdatasets,
+        
+        -- 涉及的场景token
+        ARRAY[scene_a, scene_b] as all_scenes,
+        
+        -- 涉及的数据名称
+        ARRAY[data_name_a, data_name_b] as all_data_names,
+        
+        -- 重叠面积（就是单个重叠的面积）
+        overlap_area as total_overlap_area,
+        overlap_area as avg_overlap_area,
+        overlap_area as max_overlap_area,
+        
+        -- 重叠比例
+        GREATEST(overlap_ratio_a, overlap_ratio_b) as avg_max_overlap_ratio,
+        
+        -- 城市信息
+        ARRAY[city_a, city_b] as involved_cities,
+        
+        -- 重叠对的唯一标识
+        CONCAT(bbox_a_id, '_', bbox_b_id) as pair_id
+        
     FROM overlapping_pairs
-),
-
--- Step 3: 按聚类组聚合重叠数据
-intersection_hotspots AS (
-    SELECT 
-        -- 合并相交的重叠几何
-        ST_Union(overlap_geometry) as hotspot_geometry,
-        
-        -- 统计聚类中的重叠数量
-        COUNT(*) as overlap_count,
-        
-        -- 收集涉及的子数据集（去重）
-        ARRAY_AGG(DISTINCT subdataset_a) || ARRAY_AGG(DISTINCT subdataset_b) as all_subdatasets,
-        
-        -- 收集涉及的场景token（去重）  
-        ARRAY_AGG(DISTINCT scene_a) || ARRAY_AGG(DISTINCT scene_b) as all_scenes,
-        
-        -- 收集涉及的数据名称（去重）
-        ARRAY_AGG(DISTINCT data_name_a) || ARRAY_AGG(DISTINCT data_name_b) as all_data_names,
-        
-        -- 统计面积信息
-        SUM(overlap_area) as total_overlap_area,
-        AVG(overlap_area) as avg_overlap_area,
-        MAX(overlap_area) as max_overlap_area,
-        
-        -- 统计重叠比例
-        AVG(GREATEST(overlap_ratio_a, overlap_ratio_b)) as avg_max_overlap_ratio,
-        
-        -- 收集城市信息
-        ARRAY_AGG(DISTINCT city_a) || ARRAY_AGG(DISTINCT city_b) as involved_cities,
-        
-        -- 聚类信息
-        cluster_group,
-        
-        -- 聚类中包含的重叠对列表
-        STRING_AGG(DISTINCT CONCAT(bbox_a_id, '_', bbox_b_id), ',') as involved_pairs
-        
-    FROM clustered_overlaps
-    GROUP BY cluster_group
 ),
 
 -- Step 3: 清理和标准化数据
@@ -139,7 +125,7 @@ final_hotspots AS (
         max_overlap_area,
         avg_max_overlap_ratio
         
-    FROM intersection_hotspots
+    FROM individual_overlaps
 )
 
 -- Step 4: 插入最终结果到分析表
@@ -159,7 +145,7 @@ INSERT INTO {analysis_table} (
 SELECT 
     '{analysis_id}' as analysis_id,
     'bbox_overlap' as analysis_type,
-    ROW_NUMBER() OVER (ORDER BY overlap_count DESC, total_overlap_area DESC) as hotspot_rank,
+    ROW_NUMBER() OVER (ORDER BY total_overlap_area DESC, avg_max_overlap_ratio DESC) as hotspot_rank,
     overlap_count,
     ROUND(total_overlap_area::numeric, 6) as total_overlap_area,
     ARRAY_LENGTH(involved_subdatasets, 1) as subdataset_count,
@@ -183,7 +169,7 @@ SELECT
     )::text as analysis_params
     
 FROM final_hotspots
-ORDER BY overlap_count DESC, total_overlap_area DESC
+ORDER BY total_overlap_area DESC, avg_max_overlap_ratio DESC
 LIMIT {top_n};
 
 -- 显示插入结果的摘要
