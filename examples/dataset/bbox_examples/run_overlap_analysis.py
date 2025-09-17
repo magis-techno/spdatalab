@@ -124,6 +124,8 @@ def main():
         parser.add_argument('--analysis-id', help='自定义分析ID')
         parser.add_argument('--refresh-view', action='store_true', help='强制刷新统一视图')
         parser.add_argument('--test-only', action='store_true', help='只运行测试，不执行分析')
+        parser.add_argument('--suggest-city', action='store_true', help='显示城市分析建议并退出')
+        parser.add_argument('--estimate-time', action='store_true', help='估算分析时间并退出')
         
         args = parser.parse_args()
         
@@ -195,6 +197,91 @@ def main():
         if args.test_only:
             print(f"\n✅ 测试模式完成，所有检查通过！")
             print(f"💡 移除 --test-only 参数可以执行完整分析")
+            return
+        
+        # 如果用户想查看城市建议
+        if args.suggest_city:
+            print(f"\n🏙️ 城市分析建议")
+            print("-" * 40)
+            
+            city_stats_sql = f"""
+            SELECT 
+                city_id,
+                COUNT(*) as total_count,
+                COUNT(*) FILTER (WHERE all_good = true) as good_count,
+                ROUND(100.0 * COUNT(*) FILTER (WHERE all_good = true) / COUNT(*), 1) as good_percent,
+                CASE 
+                    WHEN COUNT(*) FILTER (WHERE all_good = true) > 50000 THEN '> 10分钟'
+                    WHEN COUNT(*) FILTER (WHERE all_good = true) > 10000 THEN '2-10分钟'
+                    WHEN COUNT(*) FILTER (WHERE all_good = true) > 1000 THEN '< 2分钟'
+                    ELSE '< 30秒'
+                END as estimated_time,
+                CASE 
+                    WHEN COUNT(*) FILTER (WHERE all_good = true) BETWEEN 1000 AND 20000 AND 
+                         100.0 * COUNT(*) FILTER (WHERE all_good = true) / COUNT(*) > 90 THEN '⭐⭐⭐ 推荐'
+                    WHEN COUNT(*) FILTER (WHERE all_good = true) BETWEEN 500 AND 50000 AND 
+                         100.0 * COUNT(*) FILTER (WHERE all_good = true) / COUNT(*) > 85 THEN '⭐⭐ 较好'
+                    WHEN COUNT(*) FILTER (WHERE all_good = true) > 100 THEN '⭐ 可用'
+                    ELSE '❌ 不建议'
+                END as recommendation
+            FROM {view_name}
+            WHERE city_id IS NOT NULL
+            GROUP BY city_id
+            HAVING COUNT(*) FILTER (WHERE all_good = true) > 0
+            ORDER BY 
+                CASE 
+                    WHEN COUNT(*) FILTER (WHERE all_good = true) BETWEEN 1000 AND 20000 AND 
+                         100.0 * COUNT(*) FILTER (WHERE all_good = true) / COUNT(*) > 90 THEN 1
+                    WHEN COUNT(*) FILTER (WHERE all_good = true) BETWEEN 500 AND 50000 AND 
+                         100.0 * COUNT(*) FILTER (WHERE all_good = true) / COUNT(*) > 85 THEN 2
+                    WHEN COUNT(*) FILTER (WHERE all_good = true) > 100 THEN 3
+                    ELSE 4
+                END,
+                COUNT(*) FILTER (WHERE all_good = true) DESC;
+            """
+            
+            city_df = pd.read_sql(city_stats_sql, engine)
+            if not city_df.empty:
+                print("📊 城市分析建议表:")
+                print(city_df.to_string(index=False))
+                
+                recommended = city_df[city_df['recommendation'].str.contains('⭐⭐⭐')]
+                if not recommended.empty:
+                    best_city = recommended.iloc[0]['city_id']
+                    print(f"\n💡 推荐城市: {best_city}")
+                    print(f"   - 建议命令: --city {best_city}")
+            else:
+                print("❌ 未找到可用的城市数据")
+            return
+        
+        # 如果用户想估算时间
+        if args.estimate_time:
+            print(f"\n⏱️ 分析时间估算")
+            print("-" * 40)
+            
+            where_condition = f"WHERE city_id = '{args.city}'" if args.city else "WHERE city_id IS NOT NULL"
+            time_estimate_sql = f"""
+            SELECT 
+                COUNT(*) FILTER (WHERE all_good = true) as analyzable_count,
+                CASE 
+                    WHEN COUNT(*) FILTER (WHERE all_good = true) > 100000 THEN '⚠️ 很长 (>30分钟)'
+                    WHEN COUNT(*) FILTER (WHERE all_good = true) > 50000 THEN '⏳ 较长 (10-30分钟)'
+                    WHEN COUNT(*) FILTER (WHERE all_good = true) > 10000 THEN '⏰ 中等 (2-10分钟)'
+                    WHEN COUNT(*) FILTER (WHERE all_good = true) > 1000 THEN '⚡ 较快 (<2分钟)'
+                    ELSE '🚀 很快 (<30秒)'
+                END as time_estimate,
+                '{args.city if args.city else "全部城市"}' as scope
+            FROM {view_name}
+            {where_condition};
+            """
+            
+            estimate_result = conn.execute(text(time_estimate_sql)).fetchone()
+            print(f"📊 分析范围: {estimate_result.scope}")
+            print(f"📈 可分析数据: {estimate_result.analyzable_count:,} 个bbox")
+            print(f"⏱️ 预估时间: {estimate_result.time_estimate}")
+            
+            if estimate_result.analyzable_count > 50000:
+                print(f"💡 建议: 数据量较大，建议指定具体城市进行分析")
             return
         
         # 创建分析结果表
@@ -287,6 +374,13 @@ def main():
             JOIN {view_name} b ON a.qgis_id < b.qgis_id
             WHERE ST_Intersects(a.geometry, b.geometry)
             AND ST_Area(ST_Intersection(a.geometry, b.geometry)) > {args.min_overlap_area}
+            AND NOT ST_Equals(a.geometry, b.geometry)
+            -- 🎯 只分析相同城市的bbox（性能和逻辑优化）
+            AND a.city_id = b.city_id
+            AND a.city_id IS NOT NULL
+            -- 🎯 只分析质量合格的数据（all_good=true）
+            AND a.all_good = true
+            AND b.all_good = true
             {where_clause}
         ),
         overlap_hotspots AS (

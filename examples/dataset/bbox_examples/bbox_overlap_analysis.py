@@ -159,14 +159,38 @@ class BBoxOverlapAnalyzer:
                         SELECT 
                             COUNT(DISTINCT subdataset_name) as subdataset_count,
                             COUNT(DISTINCT city_id) as city_count,
+                            COUNT(*) FILTER (WHERE all_good = true) as good_quality_count,
+                            COUNT(*) FILTER (WHERE all_good = false OR all_good IS NULL) as poor_quality_count,
+                            ROUND(100.0 * COUNT(*) FILTER (WHERE all_good = true) / COUNT(*), 2) as good_quality_percent,
                             MIN(created_at) as earliest_data,
                             MAX(created_at) as latest_data
                         FROM {self.unified_view} 
-                        WHERE created_at IS NOT NULL;
+                        WHERE city_id IS NOT NULL;
                     """)
                     sample_result = conn.execute(sample_sql).fetchone()
                     if sample_result:
                         print(f"📈 数据概况: {sample_result.subdataset_count} 个子数据集, {sample_result.city_count} 个城市")
+                        print(f"📊 质量分布: {sample_result.good_quality_count:,} 合格 ({sample_result.good_quality_percent}%), {sample_result.poor_quality_count:,} 不合格")
+                        
+                        # 显示按城市的质量分布
+                        city_quality_sql = text(f"""
+                            SELECT 
+                                city_id,
+                                COUNT(*) as total_count,
+                                COUNT(*) FILTER (WHERE all_good = true) as good_count,
+                                ROUND(100.0 * COUNT(*) FILTER (WHERE all_good = true) / COUNT(*), 1) as good_percent
+                            FROM {self.unified_view} 
+                            WHERE city_id IS NOT NULL
+                            GROUP BY city_id
+                            ORDER BY total_count DESC
+                            LIMIT 5;
+                        """)
+                        city_results = conn.execute(city_quality_sql).fetchall()
+                        if city_results:
+                            print(f"🏙️ TOP 5城市质量分布:")
+                            for city_result in city_results:
+                                print(f"   {city_result.city_id}: {city_result.good_count:,}/{city_result.total_count:,} ({city_result.good_percent}%)")
+                            print(f"💡 只有all_good=true的数据会参与叠置分析")
                     
                     return True
                     
@@ -269,12 +293,17 @@ class BBoxOverlapAnalyzer:
         
         # 构建过滤条件
         where_conditions = []
+        
+        # 🎯 城市过滤（注意：现在基础WHERE条件已包含a.city_id = b.city_id）
         if city_filter:
-            where_conditions.append(f"a.city_id = '{city_filter}' AND b.city_id = '{city_filter}'")
+            # 城市过滤只需要限制其中一个表即可，因为已经有相同城市约束
+            where_conditions.append(f"a.city_id = '{city_filter}'")
+            print(f"🏙️ 城市过滤: {city_filter}")
         
         if subdataset_filter:
             subdataset_list = "', '".join(subdataset_filter)
             where_conditions.append(f"a.subdataset_name IN ('{subdataset_list}') AND b.subdataset_name IN ('{subdataset_list}')")
+            print(f"📦 子数据集过滤: {len(subdataset_filter)} 个")
         
         where_clause = "AND " + " AND ".join(where_conditions) if where_conditions else ""
         
@@ -313,6 +342,13 @@ class BBoxOverlapAnalyzer:
                     JOIN {self.unified_view} b ON a.qgis_id < b.qgis_id
                     WHERE ST_Intersects(a.geometry, b.geometry)
                     AND ST_Area(ST_Intersection(a.geometry, b.geometry)) > {min_overlap_area}
+                    AND NOT ST_Equals(a.geometry, b.geometry)
+                    -- 🎯 只分析相同城市的bbox
+                    AND a.city_id = b.city_id
+                    AND a.city_id IS NOT NULL
+                    -- 🎯 只分析质量合格的数据
+                    AND a.all_good = true
+                    AND b.all_good = true
                     {where_clause}
                 ),
                 overlap_hotspots AS (
@@ -416,6 +452,142 @@ class BBoxOverlapAnalyzer:
             print(f"❌ 创建QGIS视图失败: {str(e)}")
             return False
     
+    def get_city_analysis_suggestions(self) -> pd.DataFrame:
+        """获取城市分析建议，帮助用户选择合适的城市"""
+        print("🔍 分析各城市的数据分布，生成分析建议...")
+        
+        sql = text(f"""
+            WITH city_stats AS (
+                SELECT 
+                    city_id,
+                    COUNT(*) as total_bbox_count,
+                    COUNT(*) FILTER (WHERE all_good = true) as good_bbox_count,
+                    COUNT(DISTINCT subdataset_name) as subdataset_count,
+                    ROUND(100.0 * COUNT(*) FILTER (WHERE all_good = true) / COUNT(*), 1) as good_percent,
+                    -- 估算可能的重叠对数量（基于数据密度）
+                    CASE 
+                        WHEN COUNT(*) FILTER (WHERE all_good = true) > 10000 THEN 'High'
+                        WHEN COUNT(*) FILTER (WHERE all_good = true) > 1000 THEN 'Medium' 
+                        ELSE 'Low'
+                    END as analysis_complexity,
+                    -- 预估分析时间（基于数据量）
+                    CASE 
+                        WHEN COUNT(*) FILTER (WHERE all_good = true) > 50000 THEN '> 10分钟'
+                        WHEN COUNT(*) FILTER (WHERE all_good = true) > 10000 THEN '2-10分钟'
+                        WHEN COUNT(*) FILTER (WHERE all_good = true) > 1000 THEN '< 2分钟'
+                        ELSE '< 30秒'
+                    END as estimated_time
+                FROM {self.unified_view}
+                WHERE city_id IS NOT NULL
+                GROUP BY city_id
+                HAVING COUNT(*) FILTER (WHERE all_good = true) > 0
+            )
+            SELECT 
+                city_id,
+                total_bbox_count,
+                good_bbox_count,
+                subdataset_count,
+                good_percent,
+                analysis_complexity,
+                estimated_time,
+                -- 推荐度评分
+                CASE 
+                    WHEN good_bbox_count BETWEEN 1000 AND 20000 AND good_percent > 90 THEN '⭐⭐⭐ 推荐'
+                    WHEN good_bbox_count BETWEEN 500 AND 50000 AND good_percent > 85 THEN '⭐⭐ 较好'
+                    WHEN good_bbox_count > 100 THEN '⭐ 可用'
+                    ELSE '❌ 不建议'
+                END as recommendation
+            FROM city_stats
+            ORDER BY 
+                CASE 
+                    WHEN good_bbox_count BETWEEN 1000 AND 20000 AND good_percent > 90 THEN 1
+                    WHEN good_bbox_count BETWEEN 500 AND 50000 AND good_percent > 85 THEN 2
+                    WHEN good_bbox_count > 100 THEN 3
+                    ELSE 4
+                END,
+                good_bbox_count DESC;
+        """)
+        
+        try:
+            result_df = pd.read_sql(sql, self.engine)
+            
+            if not result_df.empty:
+                print(f"\n📊 城市分析建议表:")
+                print(result_df.to_string(index=False))
+                
+                # 提供具体建议
+                recommended = result_df[result_df['recommendation'].str.contains('⭐⭐⭐')]
+                if not recommended.empty:
+                    best_city = recommended.iloc[0]['city_id']
+                    print(f"\n💡 推荐城市: {best_city}")
+                    print(f"   - 数据量适中，质量较高")
+                    print(f"   - 预估分析时间: {recommended.iloc[0]['estimated_time']}")
+                    print(f"   - 建议命令: --city {best_city}")
+                
+                return result_df
+            else:
+                print("❌ 未找到可用的城市数据")
+                return pd.DataFrame()
+                
+        except Exception as e:
+            print(f"❌ 获取城市建议失败: {str(e)}")
+            return pd.DataFrame()
+    
+    def estimate_analysis_time(self, city_filter: str = None) -> dict:
+        """估算分析时间和数据量"""
+        print("⏱️ 估算分析时间...")
+        
+        where_condition = f"WHERE city_id = '{city_filter}'" if city_filter else "WHERE city_id IS NOT NULL"
+        
+        sql = text(f"""
+            SELECT 
+                COUNT(*) FILTER (WHERE all_good = true) as analyzable_count,
+                -- 估算可能的重叠对数量（n*(n-1)/2的简化估算）
+                CASE 
+                    WHEN COUNT(*) FILTER (WHERE all_good = true) > 0 THEN
+                        LEAST(
+                            COUNT(*) FILTER (WHERE all_good = true) * (COUNT(*) FILTER (WHERE all_good = true) - 1) / 2,
+                            1000000  -- 限制最大估算数
+                        )
+                    ELSE 0
+                END as estimated_pairs,
+                CASE 
+                    WHEN COUNT(*) FILTER (WHERE all_good = true) > 100000 THEN '⚠️ 很长 (>30分钟)'
+                    WHEN COUNT(*) FILTER (WHERE all_good = true) > 50000 THEN '⏳ 较长 (10-30分钟)'
+                    WHEN COUNT(*) FILTER (WHERE all_good = true) > 10000 THEN '⏰ 中等 (2-10分钟)'
+                    WHEN COUNT(*) FILTER (WHERE all_good = true) > 1000 THEN '⚡ 较快 (<2分钟)'
+                    ELSE '🚀 很快 (<30秒)'
+                END as time_estimate,
+                {f"'{city_filter}'" if city_filter else "'全部城市'"} as scope
+            FROM {self.unified_view}
+            {where_condition};
+        """)
+        
+        try:
+            result = self.engine.execute(sql).fetchone()
+            
+            estimate = {
+                'analyzable_count': result.analyzable_count,
+                'estimated_pairs': result.estimated_pairs,
+                'time_estimate': result.time_estimate,
+                'scope': result.scope
+            }
+            
+            print(f"📊 分析范围: {estimate['scope']}")
+            print(f"📈 可分析数据: {estimate['analyzable_count']:,} 个bbox")
+            print(f"🔗 预估配对数: {estimate['estimated_pairs']:,}")
+            print(f"⏱️ 预估时间: {estimate['time_estimate']}")
+            
+            if estimate['analyzable_count'] > 50000:
+                print(f"💡 建议: 数据量较大，建议指定具体城市进行分析")
+                print(f"💡 命令: --city your_city_name")
+            
+            return estimate
+            
+        except Exception as e:
+            print(f"❌ 时间估算失败: {str(e)}")
+            return {}
+
     def get_analysis_summary(self, analysis_id: str) -> pd.DataFrame:
         """获取分析结果摘要"""
         sql = text(f"""
@@ -466,6 +638,8 @@ def main():
     parser.add_argument('--top-n', type=int, default=20, help='返回的热点数量')
     parser.add_argument('--analysis-id', help='自定义分析ID')
     parser.add_argument('--refresh-view', action='store_true', help='强制刷新统一视图（适用于数据更新后）')
+    parser.add_argument('--suggest-city', action='store_true', help='显示城市分析建议并退出')
+    parser.add_argument('--estimate-time', action='store_true', help='估算分析时间并退出')
     
     args = parser.parse_args()
     
@@ -484,14 +658,46 @@ def main():
             print("❌ 统一视图检查失败，退出")
             return
         
+        # 如果用户只想查看城市建议
+        if args.suggest_city:
+            print("\n🏙️ 城市分析建议")
+            print("-" * 40)
+            analyzer.get_city_analysis_suggestions()
+            return
+        
+        # 如果用户只想估算时间
+        if args.estimate_time:
+            print("\n⏱️ 分析时间估算")
+            print("-" * 40)
+            analyzer.estimate_analysis_time(args.city)
+            return
+        
         # 2. 创建分析结果表
         print("\n🛠️ 步骤2: 准备分析环境")
         if not analyzer.create_analysis_table():
             print("❌ 分析表创建失败，退出")
             return
         
-        # 3. 执行叠置分析
-        print("\n🚀 步骤3: 执行叠置分析")
+        # 3. 分析前的时间估算和确认
+        print("\n⏱️ 步骤3a: 分析前估算")
+        print("-" * 40)
+        estimate = analyzer.estimate_analysis_time(args.city)
+        
+        # 如果数据量很大，给出警告和建议
+        if estimate and estimate.get('analyzable_count', 0) > 50000:
+            print(f"\n⚠️ 数据量警告:")
+            print(f"   当前分析范围包含 {estimate['analyzable_count']:,} 个bbox")
+            print(f"   预估分析时间: {estimate.get('time_estimate', '未知')}")
+            print(f"   💡 建议: 使用 --city 参数缩小分析范围")
+            print(f"   💡 获取城市建议: --suggest-city")
+            
+            if not args.city:
+                print(f"\n🤔 是否继续全量分析？这可能需要很长时间...")
+                print(f"💡 建议先运行: --suggest-city 查看推荐城市")
+        
+        # 3b. 执行叠置分析
+        print(f"\n🚀 步骤3b: 执行叠置分析")
+        print("-" * 40)
         analysis_id = analyzer.run_overlap_analysis(
             analysis_id=args.analysis_id,
             city_filter=args.city,

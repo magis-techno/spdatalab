@@ -63,6 +63,12 @@ overlapping_pairs AS (
         AND ST_Area(ST_Intersection(a.geometry, b.geometry)) > {min_overlap_area}
         -- 排除完全相同的几何对象
         AND NOT ST_Equals(a.geometry, b.geometry)
+        -- 🎯 只分析相同城市的bbox（核心优化）
+        AND a.city_id = b.city_id
+        AND a.city_id IS NOT NULL
+        -- 🎯 只分析质量合格的数据（all_good=true）
+        AND a.all_good = true
+        AND b.all_good = true
         -- 用户自定义过滤条件
         {where_clause}
 ),
