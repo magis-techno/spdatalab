@@ -27,6 +27,8 @@ BBox叠置分析示例
 
 import sys
 import os
+import signal
+import atexit
 from pathlib import Path
 import argparse
 from datetime import datetime
@@ -70,6 +72,71 @@ class BBoxOverlapAnalyzer:
         self.analysis_table = "bbox_overlap_analysis_results"
         self.unified_view = "clips_bbox_unified_qgis"
         self.qgis_view = "qgis_bbox_overlap_hotspots"
+        
+        # 优雅退出控制
+        self.shutdown_requested = False
+        self.current_connection = None
+        self.current_analysis_id = None
+        self.analysis_start_time = None
+        
+        # 注册信号处理器和清理函数
+        self._setup_signal_handlers()
+        atexit.register(self._cleanup_on_exit)
+    
+    def _setup_signal_handlers(self):
+        """设置信号处理器"""
+        def signal_handler(signum, frame):
+            print(f"\n\n🛑 收到退出信号 ({signal.Signals(signum).name})")
+            self._initiate_graceful_shutdown()
+        
+        # 注册常见的退出信号
+        try:
+            signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
+            signal.signal(signal.SIGTERM, signal_handler)  # 终止信号
+            if hasattr(signal, 'SIGBREAK'):  # Windows
+                signal.signal(signal.SIGBREAK, signal_handler)
+        except ValueError:
+            # 在某些环境中可能无法注册信号
+            logger.warning("无法注册信号处理器")
+    
+    def _initiate_graceful_shutdown(self):
+        """启动优雅退出流程"""
+        self.shutdown_requested = True
+        print(f"🔄 正在安全退出...")
+        
+        if self.current_analysis_id:
+            print(f"📝 当前分析ID: {self.current_analysis_id}")
+            
+        if self.analysis_start_time:
+            elapsed = datetime.now() - self.analysis_start_time
+            print(f"⏱️ 已运行时间: {elapsed}")
+        
+        print(f"🧹 清理资源中...")
+        self._cleanup_resources()
+        
+        print(f"✅ 优雅退出完成")
+        sys.exit(0)
+    
+    def _cleanup_resources(self):
+        """清理资源"""
+        try:
+            if self.current_connection:
+                self.current_connection.close()
+                print(f"✅ 数据库连接已关闭")
+                self.current_connection = None
+        except Exception as e:
+            print(f"⚠️ 关闭连接时出错: {e}")
+    
+    def _cleanup_on_exit(self):
+        """程序退出时的清理函数"""
+        if not self.shutdown_requested:
+            self._cleanup_resources()
+    
+    def _check_shutdown(self):
+        """检查是否需要退出"""
+        if self.shutdown_requested:
+            print(f"🛑 检测到退出请求，停止执行")
+            raise KeyboardInterrupt("用户请求退出")
         
     def ensure_unified_view(self, force_refresh: bool = False) -> bool:
         """确保统一视图存在并且是最新的
@@ -288,8 +355,16 @@ class BBoxOverlapAnalyzer:
         if not analysis_id:
             analysis_id = f"bbox_overlap_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
+        # 设置当前分析状态
+        self.current_analysis_id = analysis_id
+        self.analysis_start_time = datetime.now()
+        
         print(f"🚀 开始叠置分析: {analysis_id}")
         print(f"参数: city_filter={city_filter}, min_overlap_area={min_overlap_area}, top_n={top_n}")
+        print(f"💡 可以使用 Ctrl+C 安全退出")
+        
+        # 检查是否需要退出
+        self._check_shutdown()
         
         # 构建过滤条件
         where_conditions = []
@@ -381,16 +456,28 @@ class BBoxOverlapAnalyzer:
                 LIMIT {top_n};
                 """
             
+            print(f"⚡ 执行空间叠置分析SQL...")
+            self._check_shutdown()  # 执行前检查
+            
             with self.engine.connect() as conn:
+                self.current_connection = conn  # 保存连接引用
+                
                 result = conn.execute(text(analysis_sql))
+                self._check_shutdown()  # SQL执行后检查
+                
                 conn.commit()
+                print(f"✅ SQL执行完成，正在统计结果...")
                 
                 # 获取插入的记录数
                 count_sql = text(f"SELECT COUNT(*) FROM {self.analysis_table} WHERE analysis_id = '{analysis_id}';")
                 count_result = conn.execute(count_sql)
                 inserted_count = count_result.scalar()
                 
+                self.current_connection = None  # 清除连接引用
+                
             print(f"✅ 叠置分析完成，发现 {inserted_count} 个重叠热点")
+            elapsed = datetime.now() - self.analysis_start_time
+            print(f"⏱️ 总耗时: {elapsed}")
             return analysis_id
             
         except Exception as e:
@@ -627,6 +714,217 @@ class BBoxOverlapAnalyzer:
                 'filter_column': 'analysis_id'
             }
         }
+    
+    def list_analysis_results(self, pattern: str = None) -> pd.DataFrame:
+        """列出所有分析结果
+        
+        Args:
+            pattern: 可选的analysis_id过滤模式（支持SQL LIKE语法）
+            
+        Returns:
+            包含分析结果摘要的DataFrame
+        """
+        print("📋 查询分析结果...")
+        
+        where_clause = ""
+        if pattern:
+            where_clause = f"WHERE analysis_id LIKE '{pattern}'"
+            print(f"🔍 过滤条件: analysis_id LIKE '{pattern}'")
+        
+        sql = text(f"""
+            SELECT 
+                analysis_id,
+                analysis_type,
+                analysis_time,
+                COUNT(*) as hotspot_count,
+                MAX(hotspot_rank) as max_rank,
+                SUM(overlap_count) as total_overlaps,
+                ROUND(SUM(total_overlap_area)::numeric, 6) as total_area,
+                STRING_AGG(DISTINCT UNNEST(involved_subdatasets), ', ') as subdatasets,
+                MIN(created_at) as created_at
+            FROM {self.analysis_table}
+            {where_clause}
+            GROUP BY analysis_id, analysis_type, analysis_time
+            ORDER BY created_at DESC;
+        """)
+        
+        try:
+            with self.engine.connect() as conn:
+                result_df = pd.read_sql(sql, conn)
+                
+                if not result_df.empty:
+                    print(f"📊 找到 {len(result_df)} 个分析结果:")
+                    print(result_df.to_string(index=False))
+                else:
+                    print("📭 没有找到分析结果")
+                
+                return result_df
+                
+        except Exception as e:
+            print(f"❌ 查询分析结果失败: {str(e)}")
+            return pd.DataFrame()
+    
+    def cleanup_analysis_results(
+        self, 
+        analysis_ids: Optional[List[str]] = None,
+        pattern: str = None,
+        older_than_days: int = None,
+        dry_run: bool = True
+    ) -> Dict[str, Any]:
+        """清理分析结果
+        
+        Args:
+            analysis_ids: 指定要删除的analysis_id列表
+            pattern: 按模式删除（支持SQL LIKE语法，如'bbox_overlap_2023%'）
+            older_than_days: 删除N天前的结果
+            dry_run: 是否为试运行模式（不实际删除）
+            
+        Returns:
+            清理结果统计
+        """
+        print("🧹 开始清理分析结果...")
+        
+        # 构建删除条件
+        where_conditions = []
+        
+        if analysis_ids:
+            id_list = "', '".join(analysis_ids)
+            where_conditions.append(f"analysis_id IN ('{id_list}')")
+            print(f"🎯 按ID删除: {len(analysis_ids)} 个")
+            
+        if pattern:
+            where_conditions.append(f"analysis_id LIKE '{pattern}'")
+            print(f"🔍 按模式删除: '{pattern}'")
+            
+        if older_than_days:
+            where_conditions.append(f"created_at < NOW() - INTERVAL '{older_than_days} days'")
+            print(f"📅 删除 {older_than_days} 天前的结果")
+        
+        if not where_conditions:
+            print("⚠️ 未指定删除条件，为安全起见不执行清理")
+            return {"deleted_count": 0, "error": "未指定删除条件"}
+        
+        where_clause = "WHERE " + " AND ".join(where_conditions)
+        
+        try:
+            with self.engine.connect() as conn:
+                # 先查询要删除的记录
+                preview_sql = text(f"""
+                    SELECT 
+                        analysis_id,
+                        analysis_type,
+                        COUNT(*) as record_count,
+                        MIN(created_at) as earliest,
+                        MAX(created_at) as latest
+                    FROM {self.analysis_table}
+                    {where_clause}
+                    GROUP BY analysis_id, analysis_type
+                    ORDER BY earliest DESC;
+                """)
+                
+                preview_df = pd.read_sql(preview_sql, conn)
+                
+                if preview_df.empty:
+                    print("📭 没有找到匹配的记录")
+                    return {"deleted_count": 0, "preview": preview_df}
+                
+                print(f"\n📋 将要清理的记录:")
+                print(preview_df.to_string(index=False))
+                
+                total_records = preview_df['record_count'].sum()
+                total_analyses = len(preview_df)
+                
+                print(f"\n📊 清理摘要:")
+                print(f"   分析数量: {total_analyses}")
+                print(f"   记录总数: {total_records}")
+                
+                if dry_run:
+                    print(f"\n🧪 试运行模式 - 未实际删除")
+                    print(f"💡 使用 dry_run=False 执行实际删除")
+                    return {
+                        "deleted_count": 0,
+                        "would_delete": total_records,
+                        "analysis_count": total_analyses,
+                        "preview": preview_df
+                    }
+                
+                # 实际删除
+                print(f"\n🗑️ 执行删除...")
+                delete_sql = text(f"DELETE FROM {self.analysis_table} {where_clause};")
+                result = conn.execute(delete_sql)
+                deleted_count = result.rowcount
+                conn.commit()
+                
+                print(f"✅ 清理完成，删除了 {deleted_count} 条记录")
+                
+                return {
+                    "deleted_count": deleted_count,
+                    "analysis_count": total_analyses,
+                    "preview": preview_df
+                }
+                
+        except Exception as e:
+            print(f"❌ 清理失败: {str(e)}")
+            return {"deleted_count": 0, "error": str(e)}
+    
+    def cleanup_qgis_views(self, confirm: bool = False) -> bool:
+        """清理QGIS视图
+        
+        Args:
+            confirm: 是否确认删除
+            
+        Returns:
+            是否成功
+        """
+        print("🎨 清理QGIS视图...")
+        
+        views_to_check = [
+            self.qgis_view,
+            "qgis_bbox_overlap_hotspots"
+        ]
+        
+        try:
+            with self.engine.connect() as conn:
+                existing_views = []
+                
+                for view_name in views_to_check:
+                    check_sql = text(f"""
+                        SELECT EXISTS (
+                            SELECT FROM information_schema.views 
+                            WHERE table_schema = 'public' 
+                            AND table_name = '{view_name}'
+                        );
+                    """)
+                    
+                    if conn.execute(check_sql).scalar():
+                        existing_views.append(view_name)
+                
+                if not existing_views:
+                    print("📭 没有找到相关的QGIS视图")
+                    return True
+                
+                print(f"📋 找到以下视图:")
+                for view in existing_views:
+                    print(f"   - {view}")
+                
+                if not confirm:
+                    print(f"\n🧪 试运行模式 - 未实际删除")
+                    print(f"💡 使用 confirm=True 执行实际删除")
+                    return False
+                
+                # 删除视图
+                for view_name in existing_views:
+                    drop_sql = text(f"DROP VIEW IF EXISTS {view_name};")
+                    conn.execute(drop_sql)
+                    print(f"✅ 删除视图: {view_name}")
+                
+                conn.commit()
+                print(f"✅ 清理完成，删除了 {len(existing_views)} 个视图")
+                return True
+                
+        except Exception as e:
+            print(f"❌ 清理视图失败: {str(e)}")
+            return False
 
 
 def main():
@@ -640,6 +938,15 @@ def main():
     parser.add_argument('--refresh-view', action='store_true', help='强制刷新统一视图（适用于数据更新后）')
     parser.add_argument('--suggest-city', action='store_true', help='显示城市分析建议并退出')
     parser.add_argument('--estimate-time', action='store_true', help='估算分析时间并退出')
+    
+    # 清理相关参数
+    parser.add_argument('--list-results', action='store_true', help='列出所有分析结果')
+    parser.add_argument('--cleanup', action='store_true', help='清理分析结果')
+    parser.add_argument('--cleanup-pattern', help='按模式清理（如"bbox_overlap_2023%"）')
+    parser.add_argument('--cleanup-ids', nargs='+', help='按ID清理（可指定多个）')
+    parser.add_argument('--cleanup-older-than', type=int, help='清理N天前的结果')
+    parser.add_argument('--cleanup-views', action='store_true', help='清理QGIS视图')
+    parser.add_argument('--confirm-cleanup', action='store_true', help='确认执行清理（默认为试运行）')
     
     args = parser.parse_args()
     
@@ -670,6 +977,37 @@ def main():
             print("\n⏱️ 分析时间估算")
             print("-" * 40)
             analyzer.estimate_analysis_time(args.city)
+            return
+        
+        # 如果用户想列出分析结果
+        if args.list_results:
+            print("\n📋 分析结果列表")
+            print("-" * 40)
+            analyzer.list_analysis_results(args.cleanup_pattern)
+            return
+        
+        # 如果用户想清理分析结果
+        if args.cleanup:
+            print("\n🧹 清理分析结果")
+            print("-" * 40)
+            
+            result = analyzer.cleanup_analysis_results(
+                analysis_ids=args.cleanup_ids,
+                pattern=args.cleanup_pattern,
+                older_than_days=args.cleanup_older_than,
+                dry_run=not args.confirm_cleanup
+            )
+            
+            if not args.confirm_cleanup and result.get("would_delete", 0) > 0:
+                print(f"\n💡 如要实际执行删除，请添加 --confirm-cleanup 参数")
+            
+            return
+        
+        # 如果用户想清理QGIS视图
+        if args.cleanup_views:
+            print("\n🎨 清理QGIS视图")
+            print("-" * 40)
+            analyzer.cleanup_qgis_views(confirm=args.confirm_cleanup)
             return
         
         # 2. 创建分析结果表

@@ -34,6 +34,7 @@ bbox_examples/
 - **多层次可视化**：底图、热点、详情三层展示
 - **智能分级**：自动按密度和面积分级
 - **专业样式**：内置推荐的颜色方案和符号设置
+- **🛡️ 优雅退出**：支持 `Ctrl+C` 安全中断，自动清理资源
 
 ## 🚀 快速开始
 
@@ -130,6 +131,102 @@ psql -d postgres -f sql/qgis_views.sql
 2. 使用 `--estimate-time` 预估分析时间
 3. 优先分析数据量适中、质量较高的城市
 4. 避免全量分析，除非确实需要
+5. **长时间分析可使用 `Ctrl+C` 安全退出**
+
+### 🛡️ 优雅退出功能
+
+当分析任务运行时间较长时，支持安全中断：
+
+```bash
+# 启动分析
+python examples/dataset/bbox_examples/bbox_overlap_analysis.py --city beijing
+
+# 输出示例：
+# 🚀 开始叠置分析: bbox_overlap_20231217_143025
+# 💡 可以使用 Ctrl+C 安全退出
+# ⚡ 执行空间叠置分析SQL...
+
+# 使用 Ctrl+C 中断时：
+# 🛑 收到退出信号 (SIGINT)
+# 🔄 正在安全退出...
+# 📝 当前分析ID: bbox_overlap_20231217_143025
+# ⏱️ 已运行时间: 0:02:15.123456
+# 🧹 清理资源中...
+# ✅ 数据库连接已关闭
+# ✅ 优雅退出完成
+```
+
+**退出处理特性**：
+- ✅ **安全清理**：自动关闭数据库连接
+- ✅ **状态保存**：显示当前分析ID和运行时间
+- ✅ **跨平台支持**：Windows、Linux、MacOS
+- ✅ **多信号支持**：`SIGINT`、`SIGTERM`、`SIGBREAK`
+- ✅ **资源监控**：确保无资源泄漏
+
+## 🧹 数据清理管理
+
+### 清理功能概览
+
+为方便管理分析结果和释放存储空间，提供了完整的清理工具：
+
+#### **1. 列出分析结果**
+```bash
+# 列出所有分析结果
+python examples/dataset/bbox_examples/bbox_overlap_analysis.py --list-results
+
+# 按模式过滤
+python examples/dataset/bbox_examples/bbox_overlap_analysis.py --list-results --cleanup-pattern "test%"
+```
+
+#### **2. 清理分析结果**
+```bash
+# 试运行模式（安全预览）
+python examples/dataset/bbox_examples/bbox_overlap_analysis.py --cleanup --cleanup-pattern "test%"
+
+# 实际执行清理
+python examples/dataset/bbox_examples/bbox_overlap_analysis.py --cleanup --cleanup-pattern "test%" --confirm-cleanup
+
+# 按ID清理
+python examples/dataset/bbox_examples/bbox_overlap_analysis.py --cleanup --cleanup-ids "bbox_overlap_20231201_100000" --confirm-cleanup
+
+# 清理7天前的数据
+python examples/dataset/bbox_examples/bbox_overlap_analysis.py --cleanup --cleanup-older-than 7 --confirm-cleanup
+```
+
+#### **3. 清理QGIS视图**
+```bash
+# 试运行模式
+python examples/dataset/bbox_examples/bbox_overlap_analysis.py --cleanup-views
+
+# 实际执行
+python examples/dataset/bbox_examples/bbox_overlap_analysis.py --cleanup-views --confirm-cleanup
+```
+
+### 专用清理工具
+
+提供了独立的清理脚本：`cleanup_analysis_data.py`
+
+```bash
+# 列出所有分析结果
+python examples/dataset/bbox_examples/cleanup_analysis_data.py --list
+
+# 按模式清理（试运行）
+python examples/dataset/bbox_examples/cleanup_analysis_data.py --cleanup-results --pattern "test%" --dry-run
+
+# 实际执行清理
+python examples/dataset/bbox_examples/cleanup_analysis_data.py --cleanup-results --pattern "test%" --confirm
+
+# 清理QGIS视图
+python examples/dataset/bbox_examples/cleanup_analysis_data.py --cleanup-views --confirm
+```
+
+### 安全特性
+
+- 🛡️ **默认试运行**：所有清理操作默认为预览模式
+- 📋 **详细预览**：显示将要删除的具体内容
+- 🔍 **多种过滤**：支持按ID、模式、时间过滤
+- ✅ **确认机制**：必须明确使用`--confirm`才实际删除
+- 📊 **清理统计**：显示详细的删除统计信息
 
 ## 📊 输出结果
 
