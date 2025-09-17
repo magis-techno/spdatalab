@@ -167,6 +167,9 @@ def main():
         parser.add_argument('--test-only', action='store_true', help='只运行测试，不执行分析')
         parser.add_argument('--suggest-city', action='store_true', help='显示城市分析建议并退出')
         parser.add_argument('--estimate-time', action='store_true', help='估算分析时间并退出')
+        parser.add_argument('--debug', action='store_true', help='开启调试模式，显示详细分析信息')
+        parser.add_argument('--intersect-only', action='store_true', help='仅检测相交（忽略面积阈值）')
+        parser.add_argument('--sample-check', type=int, default=0, help='调试采样数量（配合--debug使用）')
         
         args = parser.parse_args()
         
@@ -175,6 +178,12 @@ def main():
         print(f"   最小重叠面积: {args.min_overlap_area}")
         print(f"   返回数量: {args.top_n}")
         print(f"   强制刷新视图: {args.refresh_view}")
+        if args.debug:
+            print(f"   调试模式: 开启")
+            if args.sample_check > 0:
+                print(f"   调试采样: {args.sample_check}")
+        if args.intersect_only:
+            print(f"   相交模式: 忽略面积阈值，只要相交就算重叠")
         
         # 创建数据库连接
         print(f"\n🔌 连接数据库...")
@@ -407,6 +416,63 @@ def main():
         
         where_clause = "AND " + " AND ".join(where_conditions) if where_conditions else ""
         
+        # 调试模式：显示数据统计信息
+        if args.debug:
+            print(f"\n🔍 调试模式：分析数据分布")
+            print("-" * 40)
+            
+            debug_sql = f"""
+            SELECT 
+                COUNT(*) as total_count,
+                COUNT(*) FILTER (WHERE all_good = true) as good_count,
+                COUNT(DISTINCT city_id) as city_count,
+                COUNT(DISTINCT subdataset_name) as subdataset_count,
+                ROUND(AVG(ST_Area(geometry))::numeric, 10) as avg_area,
+                ROUND(MIN(ST_Area(geometry))::numeric, 10) as min_area,
+                ROUND(MAX(ST_Area(geometry))::numeric, 10) as max_area
+            FROM {view_name}
+            WHERE city_id IS NOT NULL
+            {f"AND city_id = '{args.city}'" if args.city else ""};
+            """
+            
+            debug_result = conn.execute(text(debug_sql)).fetchone()
+            print(f"📊 数据统计:")
+            print(f"   总数量: {debug_result.total_count:,}")
+            print(f"   质量良好: {debug_result.good_count:,}")
+            print(f"   城市数: {debug_result.city_count}")
+            print(f"   子数据集数: {debug_result.subdataset_count}")
+            print(f"   平均面积: {debug_result.avg_area}")
+            print(f"   面积范围: {debug_result.min_area} ~ {debug_result.max_area}")
+            
+            # 采样检查
+            if args.sample_check > 0:
+                print(f"\n🎲 随机采样 ({args.sample_check} 个):")
+                sample_sql = f"""
+                SELECT 
+                    qgis_id,
+                    subdataset_name,
+                    scene_token,
+                    ROUND(ST_Area(geometry)::numeric, 10) as area,
+                    ST_AsText(ST_Centroid(geometry)) as centroid
+                FROM {view_name}
+                WHERE all_good = true
+                {f"AND city_id = '{args.city}'" if args.city else ""}
+                ORDER BY RANDOM()
+                LIMIT {args.sample_check};
+                """
+                
+                sample_results = conn.execute(text(sample_sql)).fetchall()
+                for i, row in enumerate(sample_results, 1):
+                    print(f"   {i}. ID:{row.qgis_id} 面积:{row.area} 中心:{row.centroid}")
+        
+        # 根据模式决定面积条件
+        if args.intersect_only:
+            area_condition = "-- 相交模式：忽略面积阈值，只要相交就算重叠"
+            print(f"🔍 使用相交模式：只要几何体相交就算重叠（忽略面积阈值）")
+        else:
+            area_condition = f"AND ST_Area(ST_Intersection(a.geometry, b.geometry)) > {args.min_overlap_area}"
+            print(f"📏 使用面积模式：重叠面积必须大于 {args.min_overlap_area}")
+        
         # 执行分析
         analysis_sql = f"""
         WITH overlapping_pairs AS (
@@ -422,7 +488,7 @@ def main():
             FROM {view_name} a
             JOIN {view_name} b ON a.qgis_id < b.qgis_id
             WHERE ST_Intersects(a.geometry, b.geometry)
-            AND ST_Area(ST_Intersection(a.geometry, b.geometry)) > {args.min_overlap_area}
+            {area_condition}
             AND NOT ST_Equals(a.geometry, b.geometry)
             -- 🎯 只分析相同城市的bbox（性能和逻辑优化）
             AND a.city_id = b.city_id
