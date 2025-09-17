@@ -457,16 +457,15 @@ class BBoxOverlapAnalyzer:
                     AND b.all_good = true
                     {where_clause}
                 ),
-                overlap_hotspots AS (
+                individual_overlaps AS (
                     SELECT 
-                        ST_Union(overlap_geometry) as hotspot_geometry,
-                        COUNT(*) as overlap_count,
-                        ARRAY_AGG(DISTINCT subdataset_a) || ARRAY_AGG(DISTINCT subdataset_b) as involved_subdatasets,
-                        ARRAY_AGG(DISTINCT scene_a) || ARRAY_AGG(DISTINCT scene_b) as involved_scenes,
-                        SUM(overlap_area) as total_overlap_area
+                        overlap_geometry as hotspot_geometry,
+                        1 as overlap_count,
+                        ARRAY[subdataset_a, subdataset_b] as involved_subdatasets,
+                        ARRAY[scene_a, scene_b] as involved_scenes,
+                        overlap_area as total_overlap_area,
+                        CONCAT(bbox_a_id, '_', bbox_b_id) as pair_id
                     FROM overlapping_areas
-                    GROUP BY ST_SnapToGrid(overlap_geometry, 0.001)
-                    HAVING COUNT(*) >= 2
                 )
                 INSERT INTO {self.analysis_table} 
                 (analysis_id, hotspot_rank, overlap_count, total_overlap_area, 
@@ -482,8 +481,8 @@ class BBoxOverlapAnalyzer:
                     involved_scenes,
                     hotspot_geometry as geometry,
                     '{{"city_filter": "{city_filter}", "min_overlap_area": {min_overlap_area}, "top_n": {top_n}}}' as analysis_params
-                FROM overlap_hotspots
-                ORDER BY overlap_count DESC
+                FROM individual_overlaps
+                ORDER BY total_overlap_area DESC
                 LIMIT {top_n};
                 """
             
