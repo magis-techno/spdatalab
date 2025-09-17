@@ -515,19 +515,11 @@ class BBoxOverlapAnalyzer:
             print(f"❌ 叠置分析失败: {str(e)}")
             raise
     
-    def create_qgis_table(self, analysis_id: Optional[str] = None, force_refresh: bool = False) -> bool:
-        """直接创建QGIS兼容表，避免视图兼容性问题
-        
-        Args:
-            analysis_id: 分析ID，如果为None则处理所有结果
-            force_refresh: 是否强制刷新表
-            
-        Returns:
-            是否成功
-        """
+    def create_qgis_view(self, analysis_id: Optional[str] = None) -> bool:
+        """创建QGIS兼容对象（实际创建表而非视图，但保持方法名兼容性）"""
         print("🎨 创建QGIS兼容表...")
         
-        # QGIS表名
+        # QGIS表名（保持与原有视图名的兼容性）
         qgis_table = "qgis_bbox_overlap_hotspots"
         
         where_clause = ""
@@ -548,8 +540,7 @@ class BBoxOverlapAnalyzer:
                 
                 table_exists = conn.execute(check_table_sql).scalar()
                 
-                if table_exists and not force_refresh:
-                    print(f"📋 表 {qgis_table} 已存在")
+                if table_exists:
                     if analysis_id:
                         # 检查是否包含当前分析结果
                         check_analysis_sql = text(f"""
@@ -599,14 +590,8 @@ class BBoxOverlapAnalyzer:
                             print(f"✅ 新分析结果已追加: {new_count} 条记录")
                             return True
                     else:
-                        print(f"💡 使用 force_refresh=True 重新创建完整表")
+                        print(f"📋 表 {qgis_table} 已存在，包含所有历史分析结果")
                         return True
-                
-                # 删除旧表（如果存在且需要刷新）
-                if table_exists and force_refresh:
-                    print(f"🗑️ 删除旧表...")
-                    drop_sql = text(f"DROP TABLE {qgis_table};")
-                    conn.execute(drop_sql)
                 
                 # 创建新表
                 print(f"📋 创建QGIS兼容表...")
@@ -680,7 +665,7 @@ class BBoxOverlapAnalyzer:
                 # 添加注释
                 comment_sql = text(f"""
                     COMMENT ON TABLE {qgis_table} IS 
-                    'QGIS兼容的bbox重叠热点表，直接从分析结果生成，无视图依赖';
+                    'QGIS兼容的bbox重叠热点表，从分析结果生成（替代视图方案）';
                 """)
                 conn.execute(comment_sql)
                 
@@ -705,7 +690,7 @@ class BBoxOverlapAnalyzer:
                 return True
                 
         except Exception as e:
-            print(f"❌ 创建QGIS表失败: {str(e)}")
+            print(f"❌ 创建QGIS对象失败: {str(e)}")
             return False
     
     def get_city_analysis_suggestions(self) -> pd.DataFrame:
@@ -1036,7 +1021,7 @@ class BBoxOverlapAnalyzer:
             print(f"❌ 清理失败: {str(e)}")
             return {"deleted_count": 0, "error": str(e)}
     
-    def cleanup_qgis_objects(self, confirm: bool = False) -> bool:
+    def cleanup_qgis_views(self, confirm: bool = False) -> bool:
         """清理QGIS相关对象（表和视图）
         
         Args:
@@ -1696,7 +1681,7 @@ def main():
     parser.add_argument('--cleanup-pattern', help='按模式清理（如"bbox_overlap_2023%"）')
     parser.add_argument('--cleanup-ids', nargs='+', help='按ID清理（可指定多个）')
     parser.add_argument('--cleanup-older-than', type=int, help='清理N天前的结果')
-    parser.add_argument('--cleanup-views', action='store_true', help='清理QGIS对象（表和视图）')
+    parser.add_argument('--cleanup-views', action='store_true', help='清理QGIS视图')
     parser.add_argument('--confirm-cleanup', action='store_true', help='确认执行清理（默认为试运行）')
     
     # 调试和模式参数
@@ -1765,11 +1750,11 @@ def main():
             
             return
         
-        # 如果用户想清理QGIS对象
+        # 如果用户想清理QGIS视图
         if args.cleanup_views:
-            print("\n🎨 清理QGIS对象")
+            print("\n🎨 清理QGIS视图")
             print("-" * 40)
-            analyzer.cleanup_qgis_objects(confirm=args.confirm_cleanup)
+            analyzer.cleanup_qgis_views(confirm=args.confirm_cleanup)
             return
         
         # 2. 创建分析结果表
@@ -1809,10 +1794,10 @@ def main():
             sample_check=args.sample_check
         )
         
-        # 4. 创建QGIS表
-        print("\n🎨 步骤4: 创建QGIS表")
-        if not analyzer.create_qgis_table(analysis_id):
-            print("❌ QGIS表创建失败")
+        # 4. 创建QGIS视图
+        print("\n🎨 步骤4: 创建QGIS视图")
+        if not analyzer.create_qgis_view(analysis_id):
+            print("❌ QGIS视图创建失败")
             return
         
         # 5. 显示分析结果摘要
@@ -1855,9 +1840,9 @@ def main():
         qgis_info = analyzer.export_for_qgis(analysis_id)
         
         print(f"\n📋 QGIS可视化方案:")
-        print(f"   方案1: 📋 连接数据库表 'qgis_bbox_overlap_hotspots'（主要方案）")
+        print(f"   方案1: 📋 连接数据库表 'qgis_bbox_overlap_hotspots'")
         print(f"   方案2: 📁 直接拖拽GeoJSON文件到QGIS")
-        print(f"   方案3: 📋 连接物化表 'qgis_bbox_overlap_hotspots_table'（可选）")
+        print(f"   方案3: 🎨 连接视图 '{qgis_info['qgis_view']}'（如果支持）")
         
         print(f"\n📋 数据库连接信息:")
         conn_info = qgis_info['connection_info']
