@@ -473,6 +473,8 @@ def main():
             area_condition = f"AND ST_Area(ST_Intersection(a.geometry, b.geometry)) > {args.min_overlap_area}"
             print(f"📏 使用面积模式：重叠面积必须大于 {args.min_overlap_area}")
         
+        print(f"🎯 聚合策略：基于相交关系智能聚合（ST_ClusterIntersecting）")
+        
         # 执行分析
         analysis_sql = f"""
         WITH overlapping_pairs AS (
@@ -498,15 +500,30 @@ def main():
             AND b.all_good = true
             {where_clause}
         ),
-        individual_overlaps AS (
+        -- 使用空间聚类将相交的重叠区域聚合在一起
+        clustered_overlaps AS (
             SELECT 
-                overlap_geometry as hotspot_geometry,
-                1 as overlap_count,
-                ARRAY[subdataset_a, subdataset_b] as involved_subdatasets,
-                ARRAY[scene_a, scene_b] as involved_scenes,
-                overlap_area as total_overlap_area,
-                CONCAT(bbox_a_id, '_', bbox_b_id) as pair_id
+                *,
+                -- 使用ST_ClusterIntersecting对相交的重叠几何进行聚类
+                ST_ClusterIntersecting(overlap_geometry) OVER () as cluster_group
             FROM overlapping_pairs
+        ),
+        -- 按聚类组聚合重叠数据
+        intersection_hotspots AS (
+            SELECT 
+                -- 合并相交的重叠几何
+                ST_Union(overlap_geometry) as hotspot_geometry,
+                COUNT(*) as overlap_count,
+                ARRAY_AGG(DISTINCT subdataset_a) || ARRAY_AGG(DISTINCT subdataset_b) as involved_subdatasets,
+                ARRAY_AGG(DISTINCT scene_a) || ARRAY_AGG(DISTINCT scene_b) as involved_scenes,
+                SUM(overlap_area) as total_overlap_area,
+                AVG(overlap_area) as avg_overlap_area,
+                MAX(overlap_area) as max_overlap_area,
+                -- 聚类信息
+                cluster_group,
+                STRING_AGG(DISTINCT CONCAT(bbox_a_id, '_', bbox_b_id), ',') as involved_pairs
+            FROM clustered_overlaps
+            GROUP BY cluster_group
         )
         INSERT INTO {analysis_table} 
         (analysis_id, hotspot_rank, overlap_count, total_overlap_area, 
@@ -522,8 +539,8 @@ def main():
             involved_scenes,
             hotspot_geometry as geometry,
             '{{"city_filter": "{args.city}", "min_overlap_area": {args.min_overlap_area}, "top_n": {args.top_n}}}' as analysis_params
-        FROM individual_overlaps
-        ORDER BY total_overlap_area DESC
+        FROM intersection_hotspots
+        ORDER BY overlap_count DESC, total_overlap_area DESC
         LIMIT {args.top_n};
         """
         

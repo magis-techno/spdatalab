@@ -457,15 +457,27 @@ class BBoxOverlapAnalyzer:
                     AND b.all_good = true
                     {where_clause}
                 ),
-                individual_overlaps AS (
+                clustered_overlaps AS (
                     SELECT 
-                        overlap_geometry as hotspot_geometry,
-                        1 as overlap_count,
-                        ARRAY[subdataset_a, subdataset_b] as involved_subdatasets,
-                        ARRAY[scene_a, scene_b] as involved_scenes,
-                        overlap_area as total_overlap_area,
-                        CONCAT(bbox_a_id, '_', bbox_b_id) as pair_id
+                        *,
+                        -- 使用ST_ClusterIntersecting对相交的重叠几何进行聚类
+                        ST_ClusterIntersecting(overlap_geometry) OVER () as cluster_group
                     FROM overlapping_areas
+                ),
+                intersection_hotspots AS (
+                    SELECT 
+                        -- 合并相交的重叠几何
+                        ST_Union(overlap_geometry) as hotspot_geometry,
+                        COUNT(*) as overlap_count,
+                        ARRAY_AGG(DISTINCT subdataset_a) || ARRAY_AGG(DISTINCT subdataset_b) as involved_subdatasets,
+                        ARRAY_AGG(DISTINCT scene_a) || ARRAY_AGG(DISTINCT scene_b) as involved_scenes,
+                        SUM(overlap_area) as total_overlap_area,
+                        AVG(overlap_area) as avg_overlap_area,
+                        MAX(overlap_area) as max_overlap_area,
+                        cluster_group,
+                        STRING_AGG(DISTINCT CONCAT(bbox_a_id, '_', bbox_b_id), ',') as involved_pairs
+                    FROM clustered_overlaps
+                    GROUP BY cluster_group
                 )
                 INSERT INTO {self.analysis_table} 
                 (analysis_id, hotspot_rank, overlap_count, total_overlap_area, 
@@ -481,8 +493,8 @@ class BBoxOverlapAnalyzer:
                     involved_scenes,
                     hotspot_geometry as geometry,
                     '{{"city_filter": "{city_filter}", "min_overlap_area": {min_overlap_area}, "top_n": {top_n}}}' as analysis_params
-                FROM individual_overlaps
-                ORDER BY total_overlap_area DESC
+                FROM intersection_hotspots
+                ORDER BY overlap_count DESC, total_overlap_area DESC
                 LIMIT {top_n};
                 """
             
