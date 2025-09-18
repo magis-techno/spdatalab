@@ -879,7 +879,7 @@ class BBoxOverlapAnalyzer:
                 'username': 'postgres'
             },
             'visualization_tips': {
-                'primary_key': 'qgis_id',
+                'primary_key': 'qgis_fid',  # 表的主键
                 'geometry_column': 'geometry',
                 'style_column': 'density_level',
                 'label_column': 'overlap_count',
@@ -1768,9 +1768,9 @@ def main():
             
             return
         
-        # 如果用户想清理QGIS视图
+        # 如果用户想清理QGIS对象
         if args.cleanup_views:
-            print("\n🎨 清理QGIS视图")
+            print("\n🎨 清理QGIS对象")
             print("-" * 40)
             analyzer.cleanup_qgis_views(confirm=args.confirm_cleanup)
             return
@@ -1812,10 +1812,10 @@ def main():
             sample_check=args.sample_check
         )
         
-        # 4. 创建QGIS视图
-        print("\n🎨 步骤4: 创建QGIS视图")
+        # 4. 创建QGIS表
+        print("\n🎨 步骤4: 创建QGIS表")
         if not analyzer.create_qgis_view(analysis_id):
-            print("❌ QGIS视图创建失败")
+            print("❌ QGIS表创建失败")
             return
         
         # 5. 显示分析结果摘要
@@ -1858,9 +1858,9 @@ def main():
         qgis_info = analyzer.export_for_qgis(analysis_id)
         
         print(f"\n📋 QGIS可视化方案:")
-        print(f"   方案1: 📋 连接数据库表 'qgis_bbox_overlap_hotspots'")
+        print(f"   方案1: 📋 连接数据库表 'qgis_bbox_overlap_hotspots'（推荐）")
         print(f"   方案2: 📁 直接拖拽GeoJSON文件到QGIS")
-        print(f"   方案3: 🎨 连接视图 '{qgis_info['qgis_view']}'（如果支持）")
+        print(f"   方案3: 📊 连接原始分析结果表 '{analyzer.analysis_table}'")
         
         print(f"\n📋 数据库连接信息:")
         conn_info = qgis_info['connection_info']
