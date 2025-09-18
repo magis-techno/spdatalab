@@ -457,22 +457,41 @@ class BBoxOverlapAnalyzer:
                     AND b.all_good = true
                     {where_clause}
                 ),
-                individual_overlaps AS (
+                -- 🔧 修复：使用真正的空间连通性聚类
+                overlap_clusters AS (
                     SELECT 
-                        overlap_geometry as hotspot_geometry,
-                        1 as overlap_count,
-                        ARRAY[subdataset_a, subdataset_b] as involved_subdatasets,
-                        ARRAY[scene_a, scene_b] as involved_scenes,
-                        overlap_area as total_overlap_area,
-                        CONCAT(bbox_a_id, '_', bbox_b_id) as pair_id
+                        overlap_geometry,
+                        overlap_area,
+                        subdataset_a,
+                        subdataset_b,
+                        scene_a,
+                        scene_b,
+                        -- 使用 ST_ClusterDBSCAN 进行空间聚类
+                        -- eps=0 表示只有直接相交的几何体才归为一组
+                        -- minpoints=1 表示单个重叠也可以形成热点
+                        ST_ClusterDBSCAN(overlap_geometry, eps := 0, minpoints := 1) OVER() as cluster_id
                     FROM overlapping_areas
+                ),
+                overlap_hotspots AS (
+                    SELECT 
+                        cluster_id,
+                        -- 对每个聚类，合并所有重叠区域
+                        ST_Union(overlap_geometry) as hotspot_geometry,
+                        COUNT(*) as overlap_count,
+                        ARRAY_AGG(DISTINCT subdataset_a) || ARRAY_AGG(DISTINCT subdataset_b) as involved_subdatasets,
+                        ARRAY_AGG(DISTINCT scene_a) || ARRAY_AGG(DISTINCT scene_b) as involved_scenes,
+                        SUM(overlap_area) as total_overlap_area
+                    FROM overlap_clusters
+                    WHERE cluster_id IS NOT NULL  -- 排除噪声点
+                    GROUP BY cluster_id
+                    HAVING COUNT(*) >= 1  -- 至少包含一个重叠区域
                 )
                 INSERT INTO {self.analysis_table} 
                 (analysis_id, hotspot_rank, overlap_count, total_overlap_area, 
                  subdataset_count, scene_count, involved_subdatasets, involved_scenes, geometry, analysis_params)
                 SELECT 
                     '{analysis_id}' as analysis_id,
-                    ROW_NUMBER() OVER (ORDER BY total_overlap_area DESC) as hotspot_rank,
+                    ROW_NUMBER() OVER (ORDER BY overlap_count DESC) as hotspot_rank,
                     overlap_count,
                     total_overlap_area,
                     ARRAY_LENGTH(involved_subdatasets, 1) as subdataset_count,
@@ -481,8 +500,8 @@ class BBoxOverlapAnalyzer:
                     involved_scenes,
                     hotspot_geometry as geometry,
                     '{{"city_filter": "{city_filter}", "min_overlap_area": {min_overlap_area}, "top_n": {top_n}}}' as analysis_params
-                FROM individual_overlaps
-                ORDER BY total_overlap_area DESC
+                FROM overlap_hotspots
+                ORDER BY overlap_count DESC
                 LIMIT {top_n};
                 """
             
