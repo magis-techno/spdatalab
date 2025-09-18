@@ -472,7 +472,7 @@ class BBoxOverlapAnalyzer:
                  subdataset_count, scene_count, involved_subdatasets, involved_scenes, geometry, analysis_params)
                 SELECT 
                     '{analysis_id}' as analysis_id,
-                    ROW_NUMBER() OVER (ORDER BY overlap_count DESC) as hotspot_rank,
+                    ROW_NUMBER() OVER (ORDER BY total_overlap_area DESC) as hotspot_rank,
                     overlap_count,
                     total_overlap_area,
                     ARRAY_LENGTH(involved_subdatasets, 1) as subdataset_count,
