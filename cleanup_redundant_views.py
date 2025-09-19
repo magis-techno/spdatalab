@@ -78,7 +78,8 @@ try:
         
         if not base_exists:
             print("⚠️ 基础视图不存在，需要先创建基础视图")
-            return
+            print("💡 请先运行分析命令创建基础视图，然后再清理多余视图")
+            exit(1)
         
         print(f"\n🗑️ 开始删除多余视图:")
         for view_name, view_type in views_to_remove:
