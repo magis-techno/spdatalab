@@ -1684,7 +1684,30 @@ def main():
     analyzer = BBoxOverlapAnalyzer()
     
     try:
-        # 1. 确保统一视图存在
+        # 🚀 优先处理不需要bbox数据的快速命令
+        
+        # 如果用户想简单列出分析结果（无需bbox数据）
+        if args.list_simple:
+            print("\n📋 分析结果列表（简单模式）")
+            print("-" * 40)
+            analyzer.list_simple()
+            return
+        
+        # 如果用户想清理所有分析数据（无需bbox数据）
+        if args.cleanup_all:
+            print("\n🧹 全量清理分析数据")
+            print("-" * 40)
+            analyzer.cleanup_all(confirm=args.force)
+            return
+        
+        # 如果用户想清理QGIS对象（无需bbox数据）
+        if args.cleanup_views:
+            print("\n🎨 清理QGIS对象")
+            print("-" * 40)
+            analyzer.cleanup_qgis_views(confirm=args.force)
+            return
+        
+        # 1. 确保统一视图存在（需要bbox数据的命令才执行）
         print("\n📋 步骤1: 检查数据准备")
         # 对于大量数据的情况，我们优先使用现有视图，只在必要时刷新
         force_refresh = args.refresh_view
@@ -1704,27 +1727,6 @@ def main():
             print("\n⏱️ 分析时间估算")
             print("-" * 40)
             analyzer.estimate_analysis_time(args.city)
-            return
-        
-        # 如果用户想简单列出分析结果
-        if args.list_simple:
-            print("\n📋 分析结果列表（简单模式）")
-            print("-" * 40)
-            analyzer.list_simple()
-            return
-        
-        # 如果用户想清理所有分析数据
-        if args.cleanup_all:
-            print("\n🧹 全量清理分析数据")
-            print("-" * 40)
-            analyzer.cleanup_all(confirm=args.force)
-            return
-        
-        # 如果用户想清理QGIS对象
-        if args.cleanup_views:
-            print("\n🎨 清理QGIS对象")
-            print("-" * 40)
-            analyzer.cleanup_qgis_views(confirm=args.force)
             return
         
         # 2. 创建分析结果表
