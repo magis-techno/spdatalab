@@ -43,7 +43,7 @@ sys.path.insert(0, str(project_root))
 # 尝试直接导入，如果失败则添加src路径
 try:
     from spdatalab.dataset.bbox import (
-        create_qgis_compatible_unified_view,
+        create_unified_view,
         list_bbox_tables,
         LOCAL_DSN
     )
@@ -51,7 +51,7 @@ except ImportError:
     # 如果直接导入失败，尝试添加src路径
     sys.path.insert(0, str(project_root / "src"))
     from spdatalab.dataset.bbox import (
-        create_qgis_compatible_unified_view,
+        create_unified_view,
         list_bbox_tables,
         LOCAL_DSN
     )
@@ -70,7 +70,7 @@ class BBoxOverlapAnalyzer:
         self.dsn = dsn
         self.engine = create_engine(dsn, future=True)
         self.analysis_table = "bbox_overlap_analysis_results"
-        self.unified_view = "clips_bbox_unified_qgis"
+        self.unified_view = "clips_bbox_unified"
         self.qgis_view = "qgis_bbox_overlap_hotspots"
         
         # 优雅退出控制
@@ -205,7 +205,7 @@ class BBoxOverlapAnalyzer:
                         return False
                     
                     print(f"🛠️ 正在创建/更新统一视图...")
-                    success = create_qgis_compatible_unified_view(self.engine, self.unified_view)
+                    success = create_unified_view(self.engine, self.unified_view)
                     if not success:
                         print("❌ 创建统一视图失败")
                         return False
@@ -213,54 +213,15 @@ class BBoxOverlapAnalyzer:
                 else:
                     print(f"✅ 统一视图 {self.unified_view} 已是最新状态")
                 
-                # 5. 验证视图数据
+                # 5. 跳过耗时的数据统计，直接验证可用性
                 try:
-                    count_sql = text(f"SELECT COUNT(*) FROM {self.unified_view};")
-                    count_result = conn.execute(count_sql)
-                    row_count = count_result.scalar()
-                    print(f"📊 统一视图包含 {row_count:,} 条bbox记录")
+                    # 快速检查：只查看视图是否可访问
+                    sample_sql = text(f"SELECT 1 FROM {self.unified_view} LIMIT 1;")
+                    conn.execute(sample_sql)
+                    print(f"📊 统一视图已就绪且可访问")
                     
-                    if row_count == 0:
-                        print(f"⚠️ 统一视图为空，可能分表中没有数据")
-                        return False
-                    
-                    # 显示数据分布概况
-                    sample_sql = text(f"""
-                        SELECT 
-                            COUNT(DISTINCT subdataset_name) as subdataset_count,
-                            COUNT(DISTINCT city_id) as city_count,
-                            COUNT(*) FILTER (WHERE all_good = true) as good_quality_count,
-                            COUNT(*) FILTER (WHERE all_good = false OR all_good IS NULL) as poor_quality_count,
-                            ROUND(100.0 * COUNT(*) FILTER (WHERE all_good = true) / COUNT(*), 2) as good_quality_percent,
-                            MIN(created_at) as earliest_data,
-                            MAX(created_at) as latest_data
-                        FROM {self.unified_view} 
-                        WHERE city_id IS NOT NULL;
-                    """)
-                    sample_result = conn.execute(sample_sql).fetchone()
-                    if sample_result:
-                        print(f"📈 数据概况: {sample_result.subdataset_count} 个子数据集, {sample_result.city_count} 个城市")
-                        print(f"📊 质量分布: {sample_result.good_quality_count:,} 合格 ({sample_result.good_quality_percent}%), {sample_result.poor_quality_count:,} 不合格")
-                        
-                        # 显示按城市的质量分布
-                        city_quality_sql = text(f"""
-                            SELECT 
-                                city_id,
-                                COUNT(*) as total_count,
-                                COUNT(*) FILTER (WHERE all_good = true) as good_count,
-                                ROUND(100.0 * COUNT(*) FILTER (WHERE all_good = true) / COUNT(*), 1) as good_percent
-                            FROM {self.unified_view} 
-                            WHERE city_id IS NOT NULL
-                            GROUP BY city_id
-                            ORDER BY total_count DESC
-                            LIMIT 5;
-                        """)
-                        city_results = conn.execute(city_quality_sql).fetchall()
-                        if city_results:
-                            print(f"🏙️ TOP 5城市质量分布:")
-                            for city_result in city_results:
-                                print(f"   {city_result.city_id}: {city_result.good_count:,}/{city_result.total_count:,} ({city_result.good_percent}%)")
-                            print(f"💡 只有all_good=true的数据会参与叠置分析")
+                    # 跳过耗时的数据统计
+                    print(f"💡 统一视图已就绪，跳过数据统计以节省时间")
                     
                     return True
                     

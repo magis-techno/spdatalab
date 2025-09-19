@@ -140,13 +140,13 @@ def main():
         # 尝试导入分析器
         try:
             from spdatalab.dataset.bbox import (
-                create_qgis_compatible_unified_view,
+                create_unified_view,
                 list_bbox_tables,
                 LOCAL_DSN
             )
         except ImportError:
             from src.spdatalab.dataset.bbox import (
-                create_qgis_compatible_unified_view,
+                create_unified_view,
                 list_bbox_tables,
                 LOCAL_DSN
             )
@@ -205,7 +205,7 @@ def main():
         
         # 检查统一视图
         print(f"\n🔍 检查统一视图...")
-        view_name = "clips_bbox_unified_qgis"
+        view_name = "clips_bbox_unified"
         
         check_view_sql = text(f"""
             SELECT EXISTS (
@@ -228,7 +228,7 @@ def main():
                 else:
                     print(f"📌 视图不存在，创建新视图...")
                 
-                success = create_qgis_compatible_unified_view(engine, view_name)
+                success = create_unified_view(engine, view_name)
                 if not success:
                     print("❌ 统一视图创建失败")
                     return
@@ -236,15 +236,8 @@ def main():
             else:
                 print(f"✅ 统一视图已存在")
             
-            # 检查数据量
-            count_sql = text(f"SELECT COUNT(*) FROM {view_name};")
-            count_result = conn.execute(count_sql)
-            row_count = count_result.scalar()
-            print(f"📊 统一视图包含 {row_count:,} 条bbox记录")
-            
-            if row_count == 0:
-                print("⚠️ 统一视图为空，可能分表中没有数据")
-                return
+            # 跳过耗时的COUNT查询，直接开始分析
+            print(f"📊 统一视图已就绪，开始分析...")
             
             # 如果只是测试模式，到这里就结束
             if args.test_only:
