@@ -1010,16 +1010,19 @@ class BBoxOverlapAnalyzer:
                         delete_sql = text(f"DELETE FROM {obj_name};")
                         conn.execute(delete_sql)
                         print(f"✅ 清空表: {obj_name}")
-                    elif obj_type == "table":
-                        # 删除表
-                        drop_sql = text(f"DROP TABLE IF EXISTS {obj_name};")
-                        conn.execute(drop_sql)
-                        print(f"✅ 删除表: {obj_name}")
-                    elif obj_type == "view":
-                        # 删除视图
-                        drop_sql = text(f"DROP VIEW IF EXISTS {obj_name};")
-                        conn.execute(drop_sql)
-                        print(f"✅ 删除视图: {obj_name}")
+                    else:
+                        # 对于QGIS对象，先尝试删除视图，失败则删除表
+                        try:
+                            drop_view_sql = text(f"DROP VIEW IF EXISTS {obj_name};")
+                            conn.execute(drop_view_sql)
+                            print(f"✅ 删除视图: {obj_name}")
+                        except:
+                            try:
+                                drop_table_sql = text(f"DROP TABLE IF EXISTS {obj_name};")
+                                conn.execute(drop_table_sql)
+                                print(f"✅ 删除表: {obj_name}")
+                            except Exception as e:
+                                print(f"⚠️ 无法删除 {obj_name}: {str(e)}")
                 
                 conn.commit()
                 print(f"✅ 全量清理完成")
