@@ -54,6 +54,12 @@ python examples/dataset/bbox_examples/bbox_overlap_analysis.py \
     --min-overlap-area 0.0001 \
     --top-n 15
 
+# 🎯 简化模式：只要相交就算重叠（忽略面积阈值）
+python examples/dataset/bbox_examples/bbox_overlap_analysis.py \
+    --city beijing \
+    --intersect-only \
+    --top-n 15
+
 # ⚠️ 全量分析（不推荐，可能耗时很久）
 python examples/dataset/bbox_examples/bbox_overlap_analysis.py \
     --min-overlap-area 0.0001 \
@@ -101,6 +107,7 @@ psql -d postgres -f sql/qgis_views.sql
 | `--suggest-city` | flag | False | 显示城市分析建议并退出 |
 | `--estimate-time` | flag | False | 估算分析时间并退出 |
 | `--refresh-view` | flag | False | 强制刷新统一视图 |
+| `--intersect-only` | flag | False | 🎯 简化模式：只要相交就算重叠 |
 
 ### 分析参数解释
 
@@ -115,6 +122,37 @@ psql -d postgres -f sql/qgis_views.sql
 - **数据质量过滤**：`a.all_good = true AND b.all_good = true` - 只分析质量合格的数据
 - **几何有效性**：排除完全相同的几何对象，确保是真实的重叠而非重复数据
 - **空值处理**：排除city_id为NULL的记录，确保地理位置明确
+
+### 🎯 简化重叠模式
+
+当使用`--intersect-only`参数时，启用简化重叠检测：
+
+**标准模式**：
+```sql
+WHERE ST_Intersects(a.geometry, b.geometry)
+AND ST_Area(ST_Intersection(a.geometry, b.geometry)) > min_overlap_area
+```
+
+**简化模式**：
+```sql
+WHERE ST_Intersects(a.geometry, b.geometry)
+-- 忽略面积阈值条件
+```
+
+**适用场景**：
+- 🔍 **调试分析**：快速检查是否有任何空间重叠
+- 🚀 **初步探索**：了解数据分布和重叠模式
+- ⚡ **性能优化**：减少复杂的面积计算
+- 🧪 **问题排查**：排除面积阈值过滤导致的结果为空
+
+**使用建议**：
+```bash
+# 先用简化模式快速检查
+python bbox_overlap_analysis.py --city A263 --intersect-only --top-n 5
+
+# 如果有结果，再用标准模式精细分析
+python bbox_overlap_analysis.py --city A263 --min-overlap-area 0.0001 --top-n 20
+```
 
 ### ⚡ 性能优化建议
 

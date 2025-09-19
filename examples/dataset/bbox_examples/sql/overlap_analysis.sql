@@ -59,8 +59,8 @@ overlapping_pairs AS (
     WHERE 
         -- 基本空间相交条件
         ST_Intersects(a.geometry, b.geometry)
-        -- 重叠面积大于阈值
-        AND ST_Area(ST_Intersection(a.geometry, b.geometry)) > {min_overlap_area}
+        -- 🎯 简化重叠条件：只要相交就算重叠，忽略面积阈值
+        -- AND ST_Area(ST_Intersection(a.geometry, b.geometry)) > {min_overlap_area}
         -- 排除完全相同的几何对象
         AND NOT ST_Equals(a.geometry, b.geometry)
         -- 🎯 只分析相同城市的bbox（核心优化）
