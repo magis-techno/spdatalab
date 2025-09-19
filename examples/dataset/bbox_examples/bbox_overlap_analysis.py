@@ -879,7 +879,7 @@ class BBoxOverlapAnalyzer:
                 'username': 'postgres'
             },
             'visualization_tips': {
-                'primary_key': 'qgis_fid',  # 表的主键
+                'primary_key': 'qgis_id',
                 'geometry_column': 'geometry',
                 'style_column': 'density_level',
                 'label_column': 'overlap_count',
@@ -887,37 +887,23 @@ class BBoxOverlapAnalyzer:
             }
         }
     
-    def list_analysis_results(self, pattern: str = None) -> pd.DataFrame:
-        """列出所有分析结果
+    def list_simple(self) -> pd.DataFrame:
+        """简单列表分析结果（快速查询，无复杂聚合）
         
-        Args:
-            pattern: 可选的analysis_id过滤模式（支持SQL LIKE语法）
-            
         Returns:
-            包含分析结果摘要的DataFrame
+            包含基本分析结果信息的DataFrame
         """
-        print("📋 查询分析结果...")
-        
-        where_clause = ""
-        if pattern:
-            where_clause = f"WHERE analysis_id LIKE '{pattern}'"
-            print(f"🔍 过滤条件: analysis_id LIKE '{pattern}'")
+        print("📋 查询分析结果（简单模式）...")
         
         sql = text(f"""
             SELECT 
                 analysis_id,
-                analysis_type,
-                analysis_time,
                 COUNT(*) as hotspot_count,
-                MAX(hotspot_rank) as max_rank,
-                SUM(overlap_count) as total_overlaps,
-                ROUND(SUM(total_overlap_area)::numeric, 6) as total_area,
-                STRING_AGG(DISTINCT UNNEST(involved_subdatasets), ', ') as subdatasets,
-                MIN(created_at) as created_at
+                MIN(created_at) as created_at,
+                MAX(created_at) as last_updated
             FROM {self.analysis_table}
-            {where_clause}
-            GROUP BY analysis_id, analysis_type, analysis_time
-            ORDER BY created_at DESC;
+            GROUP BY analysis_id
+            ORDER BY MIN(created_at) DESC;
         """)
         
         try:
@@ -926,7 +912,10 @@ class BBoxOverlapAnalyzer:
                 
                 if not result_df.empty:
                     print(f"📊 找到 {len(result_df)} 个分析结果:")
-                    print(result_df.to_string(index=False))
+                    print(f"{'分析ID':<40} {'热点数':<8} {'创建时间':<20}")
+                    print("-" * 70)
+                    for _, row in result_df.iterrows():
+                        print(f"{row['analysis_id']:<40} {row['hotspot_count']:<8} {row['created_at']}")
                 else:
                     print("📭 没有找到分析结果")
                 
@@ -936,108 +925,84 @@ class BBoxOverlapAnalyzer:
             print(f"❌ 查询分析结果失败: {str(e)}")
             return pd.DataFrame()
     
-    def cleanup_analysis_results(
-        self, 
-        analysis_ids: Optional[List[str]] = None,
-        pattern: str = None,
-        older_than_days: int = None,
-        dry_run: bool = True
-    ) -> Dict[str, Any]:
-        """清理分析结果
+    def cleanup_all(self, confirm: bool = False) -> bool:
+        """超简单的全量清理（删除所有分析数据）
         
         Args:
-            analysis_ids: 指定要删除的analysis_id列表
-            pattern: 按模式删除（支持SQL LIKE语法，如'bbox_overlap_2023%'）
-            older_than_days: 删除N天前的结果
-            dry_run: 是否为试运行模式（不实际删除）
+            confirm: 是否确认删除
             
         Returns:
-            清理结果统计
+            是否成功
         """
-        print("🧹 开始清理分析结果...")
+        print("🧹 全量清理分析数据...")
         
-        # 构建删除条件
-        where_conditions = []
-        
-        if analysis_ids:
-            id_list = "', '".join(analysis_ids)
-            where_conditions.append(f"analysis_id IN ('{id_list}')")
-            print(f"🎯 按ID删除: {len(analysis_ids)} 个")
-            
-        if pattern:
-            where_conditions.append(f"analysis_id LIKE '{pattern}'")
-            print(f"🔍 按模式删除: '{pattern}'")
-            
-        if older_than_days:
-            where_conditions.append(f"created_at < NOW() - INTERVAL '{older_than_days} days'")
-            print(f"📅 删除 {older_than_days} 天前的结果")
-        
-        if not where_conditions:
-            print("⚠️ 未指定删除条件，为安全起见不执行清理")
-            return {"deleted_count": 0, "error": "未指定删除条件"}
-        
-        where_clause = "WHERE " + " AND ".join(where_conditions)
+        # 要清理的表
+        tables_to_clean = [
+            "qgis_bbox_overlap_hotspots",  # QGIS表
+            self.analysis_table            # 主分析结果表
+        ]
         
         try:
             with self.engine.connect() as conn:
-                # 先查询要删除的记录
-                preview_sql = text(f"""
-                    SELECT 
-                        analysis_id,
-                        analysis_type,
-                        COUNT(*) as record_count,
-                        MIN(created_at) as earliest,
-                        MAX(created_at) as latest
-                    FROM {self.analysis_table}
-                    {where_clause}
-                    GROUP BY analysis_id, analysis_type
-                    ORDER BY earliest DESC;
-                """)
+                # 先检查数据量
+                total_records = 0
+                existing_tables = []
                 
-                preview_df = pd.read_sql(preview_sql, conn)
+                for table in tables_to_clean:
+                    # 检查表是否存在
+                    check_sql = text(f"""
+                        SELECT EXISTS (
+                            SELECT FROM information_schema.tables 
+                            WHERE table_schema = 'public' 
+                            AND table_name = '{table}'
+                        );
+                    """)
+                    
+                    if conn.execute(check_sql).scalar():
+                        existing_tables.append(table)
+                        # 获取记录数
+                        try:
+                            count_sql = text(f"SELECT COUNT(*) FROM {table};")
+                            count = conn.execute(count_sql).scalar()
+                            total_records += count
+                            print(f"📋 {table}: {count:,} 条记录")
+                        except:
+                            print(f"📋 {table}: 存在（无法统计记录数）")
                 
-                if preview_df.empty:
-                    print("📭 没有找到匹配的记录")
-                    return {"deleted_count": 0, "preview": preview_df}
+                if not existing_tables:
+                    print("📭 没有找到相关表，无需清理")
+                    return True
                 
-                print(f"\n📋 将要清理的记录:")
-                print(preview_df.to_string(index=False))
+                print(f"\n📊 总计: {len(existing_tables)} 个表, {total_records:,} 条记录")
                 
-                total_records = preview_df['record_count'].sum()
-                total_analyses = len(preview_df)
-                
-                print(f"\n📊 清理摘要:")
-                print(f"   分析数量: {total_analyses}")
-                print(f"   记录总数: {total_records}")
-                
-                if dry_run:
+                if not confirm:
                     print(f"\n🧪 试运行模式 - 未实际删除")
-                    print(f"💡 使用 dry_run=False 执行实际删除")
-                    return {
-                        "deleted_count": 0,
-                        "would_delete": total_records,
-                        "analysis_count": total_analyses,
-                        "preview": preview_df
-                    }
+                    print(f"💡 使用 confirm=True 执行实际删除")
+                    return False
                 
-                # 实际删除
-                print(f"\n🗑️ 执行删除...")
-                delete_sql = text(f"DELETE FROM {self.analysis_table} {where_clause};")
-                result = conn.execute(delete_sql)
-                deleted_count = result.rowcount
+                # 执行清理
+                print(f"\n🗑️ 开始删除...")
+                for table in existing_tables:
+                    if table == self.analysis_table:
+                        # 对于主表，使用DELETE而不是DROP
+                        delete_sql = text(f"DELETE FROM {table};")
+                        conn.execute(delete_sql)
+                        print(f"✅ 清空表: {table}")
+                    else:
+                        # 对于QGIS表，直接DROP
+                        drop_sql = text(f"DROP TABLE IF EXISTS {table};")
+                        conn.execute(drop_sql)
+                        print(f"✅ 删除表: {table}")
+                
                 conn.commit()
-                
-                print(f"✅ 清理完成，删除了 {deleted_count} 条记录")
-                
-                return {
-                    "deleted_count": deleted_count,
-                    "analysis_count": total_analyses,
-                    "preview": preview_df
-                }
+                print(f"✅ 全量清理完成")
+                return True
                 
         except Exception as e:
             print(f"❌ 清理失败: {str(e)}")
-            return {"deleted_count": 0, "error": str(e)}
+            return False
+    
+    # 复杂的清理方法已删除，请使用 cleanup_all() 进行全量清理
     
     def cleanup_qgis_views(self, confirm: bool = False) -> bool:
         """清理QGIS相关对象（表和视图）
@@ -1693,14 +1658,11 @@ def main():
     parser.add_argument('--suggest-city', action='store_true', help='显示城市分析建议并退出')
     parser.add_argument('--estimate-time', action='store_true', help='估算分析时间并退出')
     
-    # 清理相关参数
-    parser.add_argument('--list-results', action='store_true', help='列出所有分析结果')
-    parser.add_argument('--cleanup', action='store_true', help='清理分析结果')
-    parser.add_argument('--cleanup-pattern', help='按模式清理（如"bbox_overlap_2023%"）')
-    parser.add_argument('--cleanup-ids', nargs='+', help='按ID清理（可指定多个）')
-    parser.add_argument('--cleanup-older-than', type=int, help='清理N天前的结果')
-    parser.add_argument('--cleanup-views', action='store_true', help='清理QGIS视图')
-    parser.add_argument('--confirm-cleanup', action='store_true', help='确认执行清理（默认为试运行）')
+    # 清理相关参数（简化版）
+    parser.add_argument('--list-simple', action='store_true', help='简单列表分析结果（快速查询）')
+    parser.add_argument('--cleanup-all', action='store_true', help='清理所有分析数据（主表+QGIS表）')
+    parser.add_argument('--cleanup-views', action='store_true', help='清理QGIS对象（表和视图）')
+    parser.add_argument('--force', action='store_true', help='跳过确认，直接执行（与cleanup配合使用）')
     
     # 调试和模式参数
     parser.add_argument('--debug', action='store_true', help='开启调试模式，显示详细分析信息')
@@ -1744,35 +1706,25 @@ def main():
             analyzer.estimate_analysis_time(args.city)
             return
         
-        # 如果用户想列出分析结果
-        if args.list_results:
-            print("\n📋 分析结果列表")
+        # 如果用户想简单列出分析结果
+        if args.list_simple:
+            print("\n📋 分析结果列表（简单模式）")
             print("-" * 40)
-            analyzer.list_analysis_results(args.cleanup_pattern)
+            analyzer.list_simple()
             return
         
-        # 如果用户想清理分析结果
-        if args.cleanup:
-            print("\n🧹 清理分析结果")
+        # 如果用户想清理所有分析数据
+        if args.cleanup_all:
+            print("\n🧹 全量清理分析数据")
             print("-" * 40)
-            
-            result = analyzer.cleanup_analysis_results(
-                analysis_ids=args.cleanup_ids,
-                pattern=args.cleanup_pattern,
-                older_than_days=args.cleanup_older_than,
-                dry_run=not args.confirm_cleanup
-            )
-            
-            if not args.confirm_cleanup and result.get("would_delete", 0) > 0:
-                print(f"\n💡 如要实际执行删除，请添加 --confirm-cleanup 参数")
-            
+            analyzer.cleanup_all(confirm=args.force)
             return
         
         # 如果用户想清理QGIS对象
         if args.cleanup_views:
             print("\n🎨 清理QGIS对象")
             print("-" * 40)
-            analyzer.cleanup_qgis_views(confirm=args.confirm_cleanup)
+            analyzer.cleanup_qgis_views(confirm=args.force)
             return
         
         # 2. 创建分析结果表
@@ -1812,10 +1764,10 @@ def main():
             sample_check=args.sample_check
         )
         
-        # 4. 创建QGIS表
-        print("\n🎨 步骤4: 创建QGIS表")
+        # 4. 创建QGIS视图
+        print("\n🎨 步骤4: 创建QGIS视图")
         if not analyzer.create_qgis_view(analysis_id):
-            print("❌ QGIS表创建失败")
+            print("❌ QGIS视图创建失败")
             return
         
         # 5. 显示分析结果摘要
@@ -1858,9 +1810,9 @@ def main():
         qgis_info = analyzer.export_for_qgis(analysis_id)
         
         print(f"\n📋 QGIS可视化方案:")
-        print(f"   方案1: 📋 连接数据库表 'qgis_bbox_overlap_hotspots'（推荐）")
+        print(f"   方案1: 📋 连接数据库表 'qgis_bbox_overlap_hotspots'")
         print(f"   方案2: 📁 直接拖拽GeoJSON文件到QGIS")
-        print(f"   方案3: 📊 连接原始分析结果表 '{analyzer.analysis_table}'")
+        print(f"   方案3: 🎨 连接视图 '{qgis_info['qgis_view']}'（如果支持）")
         
         print(f"\n📋 数据库连接信息:")
         conn_info = qgis_info['connection_info']
