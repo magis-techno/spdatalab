@@ -397,8 +397,8 @@ class BBoxOverlapAnalyzer:
                 analysis_sql = f"""
                 WITH overlapping_areas AS (
                     SELECT 
-                        ROW_NUMBER() OVER (ORDER BY a.subdataset_name, a.scene_token, a.sample_token) as bbox_a_id,
-                        ROW_NUMBER() OVER (ORDER BY b.subdataset_name, b.scene_token, b.sample_token) as bbox_b_id,
+                        a.id as bbox_a_id,
+                        b.id as bbox_b_id,
                         a.subdataset_name as subdataset_a,
                         b.subdataset_name as subdataset_b,
                         a.scene_token as scene_a,
@@ -406,8 +406,8 @@ class BBoxOverlapAnalyzer:
                         ST_Intersection(a.geometry, b.geometry) as overlap_geometry,
                         ST_Area(ST_Intersection(a.geometry, b.geometry)) as overlap_area
                     FROM {self.unified_view} a
-                    JOIN {self.unified_view} b ON (a.subdataset_name || '|' || a.scene_token || '|' || a.sample_token) < 
-                                                  (b.subdataset_name || '|' || b.scene_token || '|' || b.sample_token)
+                    JOIN {self.unified_view} b ON (a.subdataset_name || '|' || a.scene_token || '|' || a.id::text) < 
+                                                  (b.subdataset_name || '|' || b.scene_token || '|' || b.id::text)
                     WHERE ST_Intersects(a.geometry, b.geometry)
                     AND ST_Area(ST_Intersection(a.geometry, b.geometry)) > {min_overlap_area}
                     AND NOT ST_Equals(a.geometry, b.geometry)
@@ -1184,7 +1184,7 @@ class BBoxOverlapAnalyzer:
                 if sample_size > 0:
                     sample_sql = text(f"""
                         SELECT 
-                            ROW_NUMBER() OVER (ORDER BY subdataset_name, scene_token, sample_token) as bbox_id,
+                            id as bbox_id,
                             subdataset_name,
                             scene_token,
                             ROUND(ST_Area(geometry)::numeric, 10) as area,

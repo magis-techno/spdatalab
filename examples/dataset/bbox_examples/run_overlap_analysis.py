@@ -470,8 +470,8 @@ def main():
         analysis_sql = f"""
         WITH overlapping_pairs AS (
             SELECT 
-                ROW_NUMBER() OVER (ORDER BY a.subdataset_name, a.scene_token, a.sample_token) as bbox_a_id,
-                ROW_NUMBER() OVER (ORDER BY b.subdataset_name, b.scene_token, b.sample_token) as bbox_b_id,
+                a.id as bbox_a_id,
+                b.id as bbox_b_id,
                 a.subdataset_name as subdataset_a,
                 b.subdataset_name as subdataset_b,
                 a.scene_token as scene_a,
@@ -479,8 +479,8 @@ def main():
                 ST_Intersection(a.geometry, b.geometry) as overlap_geometry,
                 ST_Area(ST_Intersection(a.geometry, b.geometry)) as overlap_area
             FROM {view_name} a
-            JOIN {view_name} b ON (a.subdataset_name || '|' || a.scene_token || '|' || a.sample_token) < 
-                                  (b.subdataset_name || '|' || b.scene_token || '|' || b.sample_token)
+            JOIN {view_name} b ON (a.subdataset_name || '|' || a.scene_token || '|' || a.id::text) < 
+                                  (b.subdataset_name || '|' || b.scene_token || '|' || b.id::text)
             WHERE ST_Intersects(a.geometry, b.geometry)
             {area_condition}
             AND NOT ST_Equals(a.geometry, b.geometry)
