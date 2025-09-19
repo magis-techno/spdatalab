@@ -936,44 +936,66 @@ class BBoxOverlapAnalyzer:
         """
         print("🧹 全量清理分析数据...")
         
-        # 要清理的表
-        tables_to_clean = [
-            "qgis_bbox_overlap_hotspots",  # QGIS表
+        # 要清理的对象（表和视图）
+        objects_to_clean = [
+            "qgis_bbox_overlap_hotspots",  # QGIS对象（可能是表或视图）
             self.analysis_table            # 主分析结果表
         ]
         
         try:
             with self.engine.connect() as conn:
-                # 先检查数据量
+                # 先检查数据量和对象类型
                 total_records = 0
-                existing_tables = []
+                existing_objects = []
                 
-                for table in tables_to_clean:
-                    # 检查表是否存在
-                    check_sql = text(f"""
+                for obj_name in objects_to_clean:
+                    # 检查是否为表
+                    check_table_sql = text(f"""
                         SELECT EXISTS (
                             SELECT FROM information_schema.tables 
                             WHERE table_schema = 'public' 
-                            AND table_name = '{table}'
+                            AND table_name = '{obj_name}'
                         );
                     """)
                     
-                    if conn.execute(check_sql).scalar():
-                        existing_tables.append(table)
+                    # 检查是否为视图
+                    check_view_sql = text(f"""
+                        SELECT EXISTS (
+                            SELECT FROM information_schema.views 
+                            WHERE table_schema = 'public' 
+                            AND table_name = '{obj_name}'
+                        );
+                    """)
+                    
+                    is_table = conn.execute(check_table_sql).scalar()
+                    is_view = conn.execute(check_view_sql).scalar()
+                    
+                    if is_table:
+                        existing_objects.append((obj_name, "table"))
                         # 获取记录数
                         try:
-                            count_sql = text(f"SELECT COUNT(*) FROM {table};")
+                            count_sql = text(f"SELECT COUNT(*) FROM {obj_name};")
                             count = conn.execute(count_sql).scalar()
                             total_records += count
-                            print(f"📋 {table}: {count:,} 条记录")
+                            print(f"📋 {obj_name} (表): {count:,} 条记录")
                         except:
-                            print(f"📋 {table}: 存在（无法统计记录数）")
+                            print(f"📋 {obj_name} (表): 存在（无法统计记录数）")
+                    elif is_view:
+                        existing_objects.append((obj_name, "view"))
+                        # 获取记录数
+                        try:
+                            count_sql = text(f"SELECT COUNT(*) FROM {obj_name};")
+                            count = conn.execute(count_sql).scalar()
+                            total_records += count
+                            print(f"📋 {obj_name} (视图): {count:,} 条记录")
+                        except:
+                            print(f"📋 {obj_name} (视图): 存在（无法统计记录数）")
                 
-                if not existing_tables:
-                    print("📭 没有找到相关表，无需清理")
+                if not existing_objects:
+                    print("📭 没有找到相关对象，无需清理")
                     return True
                 
-                print(f"\n📊 总计: {len(existing_tables)} 个表, {total_records:,} 条记录")
+                print(f"\n📊 总计: {len(existing_objects)} 个对象, {total_records:,} 条记录")
                 
                 if not confirm:
                     print(f"\n🧪 试运行模式 - 未实际删除")
@@ -982,17 +1004,22 @@ class BBoxOverlapAnalyzer:
                 
                 # 执行清理
                 print(f"\n🗑️ 开始删除...")
-                for table in existing_tables:
-                    if table == self.analysis_table:
+                for obj_name, obj_type in existing_objects:
+                    if obj_name == self.analysis_table:
                         # 对于主表，使用DELETE而不是DROP
-                        delete_sql = text(f"DELETE FROM {table};")
+                        delete_sql = text(f"DELETE FROM {obj_name};")
                         conn.execute(delete_sql)
-                        print(f"✅ 清空表: {table}")
-                    else:
-                        # 对于QGIS表，直接DROP
-                        drop_sql = text(f"DROP TABLE IF EXISTS {table};")
+                        print(f"✅ 清空表: {obj_name}")
+                    elif obj_type == "table":
+                        # 删除表
+                        drop_sql = text(f"DROP TABLE IF EXISTS {obj_name};")
                         conn.execute(drop_sql)
-                        print(f"✅ 删除表: {table}")
+                        print(f"✅ 删除表: {obj_name}")
+                    elif obj_type == "view":
+                        # 删除视图
+                        drop_sql = text(f"DROP VIEW IF EXISTS {obj_name};")
+                        conn.execute(drop_sql)
+                        print(f"✅ 删除视图: {obj_name}")
                 
                 conn.commit()
                 print(f"✅ 全量清理完成")
