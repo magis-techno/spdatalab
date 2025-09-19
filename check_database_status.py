@@ -9,11 +9,19 @@ from pathlib import Path
 
 # 添加项目根目录到Python路径
 project_root = Path(__file__).parent
-if str(project_root / "src") not in sys.path:
-    sys.path.insert(0, str(project_root / "src"))
+sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(project_root / "src"))
 
-from sqlalchemy import create_engine, text
-from src.spdatalab.common.db import LOCAL_DSN
+try:
+    from sqlalchemy import create_engine, text
+    from src.spdatalab.common.db import LOCAL_DSN
+except ImportError:
+    try:
+        from sqlalchemy import create_engine, text
+        from spdatalab.common.db import LOCAL_DSN
+    except ImportError:
+        print("❌ 无法导入模块，请检查Python路径")
+        sys.exit(1)
 
 def check_database_objects():
     """检查数据库中的对象状态"""
