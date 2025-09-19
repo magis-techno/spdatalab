@@ -167,7 +167,6 @@ def main():
         parser.add_argument('--test-only', action='store_true', help='只运行测试，不执行分析')
         parser.add_argument('--suggest-city', action='store_true', help='显示城市分析建议并退出')
         parser.add_argument('--estimate-time', action='store_true', help='估算分析时间并退出')
-        parser.add_argument('--intersect-only', action='store_true', help='简化模式：只要相交就算重叠，忽略面积阈值')
         
         args = parser.parse_args()
         
@@ -422,9 +421,9 @@ def main():
                 ST_Area(ST_Intersection(a.geometry, b.geometry)) as overlap_area
             FROM {view_name} a
             JOIN {view_name} b ON a.qgis_id < b.qgis_id
-        WHERE ST_Intersects(a.geometry, b.geometry)
-        {"-- 🎯 简化模式：忽略面积阈值" if args.intersect_only else f"AND ST_Area(ST_Intersection(a.geometry, b.geometry)) > {args.min_overlap_area}"}
-        AND NOT ST_Equals(a.geometry, b.geometry)
+            WHERE ST_Intersects(a.geometry, b.geometry)
+            AND ST_Area(ST_Intersection(a.geometry, b.geometry)) > {args.min_overlap_area}
+            AND NOT ST_Equals(a.geometry, b.geometry)
             -- 🎯 只分析相同城市的bbox（性能和逻辑优化）
             AND a.city_id = b.city_id
             AND a.city_id IS NOT NULL

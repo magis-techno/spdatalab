@@ -396,13 +396,10 @@ class BBoxOverlapAnalyzer:
                 
                 # 根据intersect_only参数决定是否使用面积阈值
                 if intersect_only:
-                    # 如果是简化模式，强制使用修改后的SQL（面积阈值已被注释）
-                    pass  # SQL文件中的面积阈值条件已经被注释了
-                else:
-                    # 如果需要面积阈值，动态替换回去
+                    # 如果是简化模式，注释掉面积阈值条件
                     analysis_sql_template = analysis_sql_template.replace(
-                        "-- AND ST_Area(ST_Intersection(a.geometry, b.geometry)) > {min_overlap_area}",
-                        "AND ST_Area(ST_Intersection(a.geometry, b.geometry)) > {min_overlap_area}"
+                        "AND ST_Area(ST_Intersection(a.geometry, b.geometry)) > {min_overlap_area}",
+                        "-- 🎯 简化模式：忽略面积阈值\n        -- AND ST_Area(ST_Intersection(a.geometry, b.geometry)) > {min_overlap_area}"
                     )
                 
                 # 替换参数
@@ -430,7 +427,7 @@ class BBoxOverlapAnalyzer:
                     FROM {self.unified_view} a
                     JOIN {self.unified_view} b ON a.qgis_id < b.qgis_id
                     WHERE ST_Intersects(a.geometry, b.geometry)
-                    {"-- 🎯 简化模式：忽略面积阈值" if intersect_only else f"AND ST_Area(ST_Intersection(a.geometry, b.geometry)) > {min_overlap_area}"}
+                    {"" if intersect_only else f"AND ST_Area(ST_Intersection(a.geometry, b.geometry)) > {min_overlap_area}"}
                     AND NOT ST_Equals(a.geometry, b.geometry)
                     -- 🎯 只分析相同城市的bbox
                     AND a.city_id = b.city_id
@@ -961,9 +958,7 @@ def main():
     parser.add_argument('--cleanup-older-than', type=int, help='清理N天前的结果')
     parser.add_argument('--cleanup-views', action='store_true', help='清理QGIS视图')
     parser.add_argument('--confirm-cleanup', action='store_true', help='确认执行清理（默认为试运行）')
-    
-    # 分析模式参数
-    parser.add_argument('--intersect-only', action='store_true', help='简化模式：只要相交就算重叠，忽略面积阈值')
+    parser.add_argument('--intersect-only', action='store_true', help='简化模式：只要相交就算重叠（忽略面积阈值）')
     
     args = parser.parse_args()
     
