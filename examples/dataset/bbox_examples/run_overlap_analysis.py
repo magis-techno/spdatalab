@@ -801,11 +801,11 @@ def main():
                     SELECT 
                         hotspot_rank as region_rank,
                         overlap_count as total_bbox_count,
-                        ROUND(total_overlap_area::numeric, 4) as region_area,
+                        ROUND(CAST(total_overlap_area AS FLOAT), 4) as region_area,
                         subdataset_count,
                         scene_count,
                         CAST(analysis_params::json->>'grid_count' AS INTEGER) as grid_count,
-                        ROUND(CAST(analysis_params::json->>'avg_grid_density' AS NUMERIC), 1) as avg_density
+                        ROUND(CAST(analysis_params::json->>'avg_grid_density' AS FLOAT), 1) as avg_density
                     FROM {analysis_table}
                     WHERE analysis_id = '{analysis_id}'
                     ORDER BY hotspot_rank
