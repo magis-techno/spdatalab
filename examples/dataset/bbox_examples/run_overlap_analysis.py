@@ -678,9 +678,15 @@ def main():
                     ROUND(AVG(bbox_count_in_grid::numeric), 1) as avg_grid_density,
                     SUM(subdataset_count) as total_subdatasets,
                     SUM(scene_count) as total_scenes,
-                    -- 合并所有涉及的数据集和场景
-                    ARRAY(SELECT DISTINCT unnest(ARRAY_AGG(involved_subdatasets)) ORDER BY 1) as region_subdatasets,
-                    ARRAY(SELECT DISTINCT unnest(ARRAY_AGG(involved_scenes)) ORDER BY 1) as region_scenes,
+                    -- 简化的数据集和场景合并（避免数组维度问题）
+                    string_to_array(
+                        string_agg(DISTINCT array_to_string(involved_subdatasets, ','), ','), 
+                        ','
+                    ) as region_subdatasets,
+                    string_to_array(
+                        string_agg(DISTINCT array_to_string(involved_scenes, ','), ','), 
+                        ','
+                    ) as region_scenes,
                     SUM(total_bbox_area) as region_total_area,
                     -- 区域几何合并
                     CASE 
