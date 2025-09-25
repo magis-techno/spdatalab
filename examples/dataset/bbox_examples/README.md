@@ -52,6 +52,11 @@ python examples/dataset/bbox_examples/run_overlap_analysis.py \
 # 3️⃣ 执行指定城市的bbox密度分析（O(n)复杂度）
 python examples/dataset/bbox_examples/run_overlap_analysis.py \
     --city A263 \
+    --top-percent 10
+
+# 3️⃣b 或者指定固定数量
+python examples/dataset/bbox_examples/run_overlap_analysis.py \
+    --city A263 \
     --top-n 15
 
 # 4️⃣ 诊断数据状态
@@ -94,16 +99,14 @@ psql -d postgres -f sql/qgis_views.sql
 | `--city` | string | None | 城市过滤条件（🎯 强烈推荐） |
 | `--subdatasets` | list | None | 子数据集过滤列表 |
 | `--min-overlap-area` | float | 0.0 | 最小重叠面积阈值（平方度） |
-| `--top-percent` | float | 5 | 返回最密集的前X%网格 |
-| `--max-results` | int | 50 | 最大返回网格数量限制 |
+| `--top-n` | int | 20 | 返回的热点数量 |
 | `--analysis-id` | string | 自动生成 | 自定义分析ID |
 | `--suggest-city` | flag | False | 显示城市分析建议并退出 |
 | `--estimate-time` | flag | False | 估算分析时间并退出 |
 | `--refresh-view` | flag | False | 强制刷新统一视图 |
 | `--calculate-area` | flag | False | 🎯 计算面积并应用min-overlap-area阈值 |
 | `--grid-size` | float | 0.002 | 网格大小（度），约200米 |
-| `--percentile` | float | 90 | 密度阈值分位数（0-100） |
-| `--density-threshold` | int | None | 每网格最小bbox数量阈值（固定阈值，与percentile二选一） |
+| `--density-threshold` | int | 5 | 每网格最小bbox数量阈值 |
 | `--diagnose` | flag | False | 🔍 诊断bbox数据状态并退出 |
 | `--cleanup-views` | flag | False | 🧹 清理旧的bbox视图 |
 
@@ -388,11 +391,14 @@ done
 # 例：只分析特定数据集
 python run_overlap_analysis.py --city A263 --subdatasets lane_change overtaking
 
-# 例：调整网格精度和密度阈值
-python run_overlap_analysis.py --city A263 --grid-size 0.001 --density-threshold 10
+# 例：调整网格精度和密度阈值，返回前20%热点
+python run_overlap_analysis.py --city A263 --grid-size 0.001 --density-threshold 10 --top-percent 20
 
-# 例：启用面积计算和过滤
-python run_overlap_analysis.py --city A263 --calculate-area --min-overlap-area 0.0001
+# 例：启用面积计算和过滤，固定返回15个热点
+python run_overlap_analysis.py --city A263 --calculate-area --min-overlap-area 0.0001 --top-n 15
+
+# 例：高精度分析，返回前5%最密集区域
+python run_overlap_analysis.py --city A263 --grid-size 0.0005 --top-percent 5
 ```
 
 ### 3. 结果导出
