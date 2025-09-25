@@ -160,34 +160,32 @@ def main():
         parser = argparse.ArgumentParser(description='Docker兼容的BBox叠置分析（优化版）')
         parser.add_argument('--city', required=False, help='城市过滤（强烈建议指定以避免性能问题）')
         parser.add_argument('--subdatasets', nargs='+', help='子数据集过滤')
-        parser.add_argument('--min-overlap-area', type=float, default=0.0, help='最小重叠面积阈值（intersect-only模式下忽略）')
+        parser.add_argument('--min-overlap-area', type=float, default=0.0, help='最小重叠面积阈值（只在--calculate-area时生效）')
         parser.add_argument('--top-n', type=int, default=15, help='返回的热点数量')
         parser.add_argument('--analysis-id', help='自定义分析ID')
         parser.add_argument('--refresh-view', action='store_true', help='强制刷新统一视图')
         parser.add_argument('--test-only', action='store_true', help='只运行测试，不执行分析')
         parser.add_argument('--suggest-city', action='store_true', help='显示城市分析建议并退出')
         parser.add_argument('--estimate-time', action='store_true', help='估算分析时间并退出')
-        parser.add_argument('--intersect-only', action='store_true', help='🚀 快速模式：只要相交就算重叠，大幅提升性能（推荐）')
-        
-        # 🔥 网格化分析参数
-        parser.add_argument('--use-grid', action='store_true', help='🔥 使用网格化热点分析，避免连锁聚合问题（推荐）')
-        parser.add_argument('--grid-size', type=int, default=500, help='网格大小（米），默认500m')
+        # 🔥 网格化分析参数（默认启用）
+        parser.add_argument('--grid-size', type=float, default=0.002, help='网格大小（度），默认0.002度约200米')
         parser.add_argument('--density-threshold', type=int, default=5, help='每网格最小重叠数量阈值，默认5')
+        parser.add_argument('--calculate-area', action='store_true', help='计算重叠面积并应用min-overlap-area阈值（默认只检查相交）')
         
         args = parser.parse_args()
         
         print(f"\n📋 分析参数:")
         print(f"   城市过滤: {args.city}")
-        print(f"   最小重叠面积: {args.min_overlap_area}")
         print(f"   返回数量: {args.top_n}")
         print(f"   强制刷新视图: {args.refresh_view}")
-        print(f"   快速模式: {args.intersect_only}")
-        print(f"   🔥 网格化分析: {args.use_grid}")
-        if args.use_grid:
-            print(f"   📏 网格大小: {args.grid_size}m × {args.grid_size}m")
-            print(f"   📊 密度阈值: {args.density_threshold} 重叠/网格")
-        if args.intersect_only:
-            print(f"   🎯 使用快速模式，将跳过面积计算以提升性能")
+        print(f"   🔥 网格化分析: 已启用（默认）")
+        print(f"   📏 网格大小: {args.grid_size}° × {args.grid_size}° (约200m×200m)")
+        print(f"   📊 密度阈值: {args.density_threshold} 重叠/网格")
+        print(f"   🎯 分析模式: {'面积计算模式' if args.calculate_area else '快速相交模式（默认）'}")
+        if args.calculate_area and args.min_overlap_area > 0:
+            print(f"   📐 最小重叠面积: {args.min_overlap_area}")
+        elif args.calculate_area:
+            print(f"   📐 计算面积但不过滤")
         
         # 创建数据库连接
         print(f"\n🔌 连接数据库...")
@@ -428,11 +426,10 @@ def main():
         
         where_clause = "AND " + " AND ".join(where_conditions) if where_conditions else ""
         
-        # 🚀 执行优化后的分析SQL
-        if args.use_grid:
-            # 🔥 网格化分析：避免连锁聚合问题
-            print(f"🔥 使用网格化分析，避免连锁聚合问题...")
-            analysis_sql = f"""
+        # 🚀 执行网格化分析SQL（默认方法）
+        print(f"🔥 使用网格化分析，避免连锁聚合问题...")
+        
+        analysis_sql = f"""
             WITH city_bbox AS (
                 -- 获取城市的边界框
                 SELECT ST_Envelope(ST_Union(geometry)) as city_envelope
@@ -494,13 +491,14 @@ def main():
                     ARRAY_AGG(DISTINCT op.subdataset_a) || ARRAY_AGG(DISTINCT op.subdataset_b) as involved_subdatasets,
                     ARRAY_AGG(DISTINCT op.scene_a) || ARRAY_AGG(DISTINCT op.scene_b) as involved_scenes,
                     CASE 
-                        WHEN {args.intersect_only} THEN COUNT(op.overlap_geom)::float
+                        WHEN {not args.calculate_area} THEN COUNT(op.overlap_geom)::float
                         ELSE COALESCE(SUM(ST_Area(op.overlap_geom)), 0)
                     END as total_overlap_area
                 FROM analysis_grid g
                 LEFT JOIN overlap_pairs op ON ST_Intersects(g.grid_geom, op.overlap_geom)
                 GROUP BY g.grid_id, g.grid_geom
                 HAVING COUNT(op.overlap_geom) >= {args.density_threshold}
+                   AND ({not args.calculate_area} OR COALESCE(SUM(ST_Area(op.overlap_geom)), 0) >= {args.min_overlap_area})
             )
             INSERT INTO {analysis_table} 
             (analysis_id, hotspot_rank, overlap_count, total_overlap_area, 
@@ -515,130 +513,9 @@ def main():
                 involved_subdatasets,
                 involved_scenes,
                 grid_geom as geometry,
-                '{{"city_filter": "{args.city}", "grid_size": {args.grid_size}, "density_threshold": {args.density_threshold}, "intersect_only": {args.intersect_only}}}' as analysis_params
+                '{{"city_filter": "{args.city}", "grid_size": {args.grid_size}, "density_threshold": {args.density_threshold}, "calculate_area": {args.calculate_area}}}' as analysis_params
             FROM grid_overlap_stats
             ORDER BY overlap_count_in_grid DESC
-            LIMIT {args.top_n};
-            """
-        elif args.intersect_only:
-            # 🎯 快速模式：跳过面积计算
-            print(f"🚀 使用快速模式（intersect-only），大幅提升性能...")
-            analysis_sql = f"""
-            WITH candidate_pairs AS (
-                SELECT 
-                    a.id as bbox_a_id,
-                    b.id as bbox_b_id,
-                    a.subdataset_name as subdataset_a,
-                    b.subdataset_name as subdataset_b,
-                    a.scene_token as scene_a,
-                    b.scene_token as scene_b
-                FROM {view_name} a
-                JOIN {view_name} b ON a.id < b.id
-                WHERE a.city_id = '{args.city}'  -- 🚀 优先过滤城市
-                AND b.city_id = '{args.city}'
-                AND a.all_good = true  -- 🚀 优先过滤质量
-                AND b.all_good = true
-                AND a.geometry && b.geometry  -- 🚀 快速边界框检查
-                AND ST_Intersects(a.geometry, b.geometry)  -- 精确相交检查
-                AND NOT ST_Equals(a.geometry, b.geometry)
-                {where_clause}
-            ),
-            overlapping_areas AS (
-                SELECT 
-                    *,
-                    -- 🎯 简化模式：使用虚拟几何和面积
-                    ST_Point(0, 0) as overlap_geometry,
-                    1.0 as overlap_area
-                FROM candidate_pairs
-            ),
-            overlap_hotspots AS (
-                SELECT 
-                    ST_Point(0, 0) as hotspot_geometry,
-                    COUNT(*) as overlap_count,
-                    ARRAY_AGG(DISTINCT subdataset_a) || ARRAY_AGG(DISTINCT subdataset_b) as involved_subdatasets,
-                    ARRAY_AGG(DISTINCT scene_a) || ARRAY_AGG(DISTINCT scene_b) as involved_scenes,
-                    SUM(overlap_area) as total_overlap_area
-                FROM overlapping_areas
-                GROUP BY 1
-                HAVING COUNT(*) >= 1
-            )
-            INSERT INTO {analysis_table} 
-            (analysis_id, hotspot_rank, overlap_count, total_overlap_area, 
-             subdataset_count, scene_count, involved_subdatasets, involved_scenes, geometry, analysis_params)
-            SELECT 
-                '{analysis_id}' as analysis_id,
-                ROW_NUMBER() OVER (ORDER BY overlap_count DESC) as hotspot_rank,
-                overlap_count,
-                total_overlap_area,
-                ARRAY_LENGTH(involved_subdatasets, 1) as subdataset_count,
-                ARRAY_LENGTH(involved_scenes, 1) as scene_count,
-                involved_subdatasets,
-                involved_scenes,
-                hotspot_geometry as geometry,
-                '{{"city_filter": "{args.city}", "min_overlap_area": {args.min_overlap_area}, "top_n": {args.top_n}, "intersect_only": true}}' as analysis_params
-            FROM overlap_hotspots
-            ORDER BY overlap_count DESC
-            LIMIT {args.top_n};
-            """
-        else:
-            # 📊 完整模式：计算实际重叠几何和面积
-            print(f"📊 使用完整模式，计算精确重叠面积...")
-            analysis_sql = f"""
-            WITH intersections_precalc AS (
-                SELECT 
-                    a.id as bbox_a_id,
-                    b.id as bbox_b_id,
-                    a.subdataset_name as subdataset_a,
-                    b.subdataset_name as subdataset_b,
-                    a.scene_token as scene_a,
-                    b.scene_token as scene_b,
-                    ST_Intersection(a.geometry, b.geometry) as overlap_geometry
-                FROM {view_name} a
-                JOIN {view_name} b ON a.id < b.id
-                WHERE a.city_id = '{args.city}'  -- 🚀 优先过滤城市
-                AND b.city_id = '{args.city}'
-                AND a.all_good = true  -- 🚀 优先过滤质量
-                AND b.all_good = true
-                AND a.geometry && b.geometry  -- 🚀 快速边界框检查
-                AND ST_Intersects(a.geometry, b.geometry)  -- 精确相交检查
-                AND NOT ST_Equals(a.geometry, b.geometry)
-                {where_clause}
-            ),
-            overlapping_areas AS (
-                SELECT 
-                    *,
-                    overlap_geometry,
-                    ST_Area(overlap_geometry) as overlap_area  -- 🎯 只计算一次面积
-                FROM intersections_precalc
-                WHERE ST_Area(overlap_geometry) > {args.min_overlap_area}  -- 面积过滤在这里进行
-            ),
-            overlap_hotspots AS (
-                SELECT 
-                    ST_Union(overlap_geometry) as hotspot_geometry,
-                    COUNT(*) as overlap_count,
-                    ARRAY_AGG(DISTINCT subdataset_a) || ARRAY_AGG(DISTINCT subdataset_b) as involved_subdatasets,
-                    ARRAY_AGG(DISTINCT scene_a) || ARRAY_AGG(DISTINCT scene_b) as involved_scenes,
-                    SUM(overlap_area) as total_overlap_area
-                FROM overlapping_areas
-                GROUP BY ST_SnapToGrid(overlap_geometry, 0.001)
-                HAVING COUNT(*) >= 2
-            )
-            INSERT INTO {analysis_table} 
-            (analysis_id, hotspot_rank, overlap_count, total_overlap_area, 
-             subdataset_count, scene_count, involved_subdatasets, involved_scenes, geometry, analysis_params)
-            SELECT 
-                '{analysis_id}' as analysis_id,
-                ROW_NUMBER() OVER (ORDER BY overlap_count DESC) as hotspot_rank,
-                overlap_count,
-                total_overlap_area,
-                ARRAY_LENGTH(involved_subdatasets, 1) as subdataset_count,
-                ARRAY_LENGTH(involved_scenes, 1) as scene_count,
-                involved_subdatasets,
-                involved_scenes,
-                hotspot_geometry as geometry,
-                '{{"city_filter": "{args.city}", "min_overlap_area": {args.min_overlap_area}, "top_n": {args.top_n}, "intersect_only": false}}' as analysis_params
-            FROM overlap_hotspots
-            ORDER BY overlap_count DESC
             LIMIT {args.top_n};
             """
         
@@ -739,13 +616,14 @@ def main():
                 print(f"   • 显示 overlap_count 标签")
                 print(f"   • 使用 analysis_id = '{analysis_id}' 过滤")
                 
-                if args.use_grid:
-                    print(f"\n🔥 网格化分析特别提示:")
-                    print(f"   • 每个热点是 {args.grid_size}m × {args.grid_size}m 的网格")
-                    print(f"   • 颜色深浅代表网格内重叠密度")
-                    print(f"   • 密度阈值: >= {args.density_threshold} 重叠/网格")
-                    print(f"   • 建议使用填充样式 + 透明度 70%")
-                    print(f"   • 可以叠加原始bbox数据对比查看")
+                print(f"\n🔥 网格化分析特别提示:")
+                print(f"   • 每个热点是 {args.grid_size}° × {args.grid_size}° 的网格 (约200m×200m)")
+                print(f"   • 颜色深浅代表网格内重叠密度")
+                print(f"   • 密度阈值: >= {args.density_threshold} 重叠/网格")
+                if args.calculate_area and args.min_overlap_area > 0:
+                    print(f"   • 面积阈值: >= {args.min_overlap_area} 平方度")
+                print(f"   • 建议使用填充样式 + 透明度 70%")
+                print(f"   • 可以叠加原始bbox数据对比查看")
                 
             else:
                 print(f"⚠️ 未发现重叠热点，建议:")
