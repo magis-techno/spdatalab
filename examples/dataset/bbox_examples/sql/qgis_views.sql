@@ -21,7 +21,7 @@
 CREATE OR REPLACE VIEW qgis_bbox_overlap_hotspots AS
 SELECT 
     -- QGIS主键：必须是唯一的整数
-    id as qgis_id,
+    id,
     
     -- 分析标识信息
     analysis_id,
@@ -85,7 +85,7 @@ ORDER BY hotspot_rank;
 CREATE OR REPLACE VIEW qgis_bbox_overlap_summary AS
 SELECT 
     -- 为每个分析ID创建唯一的ID
-    ROW_NUMBER() OVER (ORDER BY analysis_id) as qgis_id,
+    ROW_NUMBER() OVER (ORDER BY analysis_id) as id,
     
     -- 分析基本信息
     analysis_id,
@@ -142,7 +142,7 @@ GROUP BY analysis_id, analysis_type;
 CREATE OR REPLACE VIEW qgis_bbox_overlap_details AS
 SELECT 
     -- 主键和基本信息
-    r.id as qgis_id,
+    r.id,
     r.analysis_id,
     r.hotspot_rank,
     r.overlap_count,

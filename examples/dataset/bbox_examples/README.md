@@ -8,13 +8,10 @@
 bbox_examples/
 ├── README.md                           # 本文档
 ├── run_overlap_analysis.py             # 🎯 主分析脚本（推荐）
-├── bbox_overlap_analysis.py            # ⚠️ 旧版脚本（已弃用）
-├── cleanup_analysis_data.py            # 🧹 独立清理工具
 ├── create_indexes.py                   # 🔧 索引优化工具
 ├── *.sql                               # SQL脚本文件
 └── sql/                                # SQL脚本集合
     ├── create_analysis_tables.sql      # 创建分析结果表
-    ├── overlap_analysis.sql            # 核心叠置分析查询
     └── qgis_views.sql                  # QGIS兼容视图
 ```
 
@@ -64,14 +61,8 @@ python examples/dataset/bbox_examples/run_overlap_analysis.py --diagnose
 python examples/dataset/bbox_examples/run_overlap_analysis.py --cleanup-views
 ```
 
-### 2. 旧版本使用（不推荐）
 
-```bash
-# ⚠️ 旧版本：传统O(n²)重叠分析（已弃用，性能较差）
-python examples/dataset/bbox_examples/bbox_overlap_analysis.py --city beijing
-```
-
-### 3. QGIS可视化
+### 2. QGIS可视化
 
 ```bash
 # 运行QGIS可视化指南（包含演示分析）
@@ -82,7 +73,7 @@ python examples/visualization/qgis_bbox_overlap_guide.py \
     --analysis-id your_analysis_id
 ```
 
-### 4. 手动SQL执行
+### 3. 手动SQL执行
 
 如果你更喜欢直接使用SQL：
 
@@ -90,11 +81,7 @@ python examples/visualization/qgis_bbox_overlap_guide.py \
 # 1. 创建表结构
 psql -d postgres -f sql/create_analysis_tables.sql
 
-# 2. 手动编辑 sql/overlap_analysis.sql 中的参数
-# 3. 执行分析
-psql -d postgres -f sql/overlap_analysis.sql
-
-# 4. 创建QGIS视图
+# 2. 创建QGIS视图
 psql -d postgres -f sql/qgis_views.sql
 ```
 
@@ -379,35 +366,31 @@ TOP 5 重叠热点:
 
 ### 1. 批量分析
 
-```python
-from examples.dataset.bbox_examples.bbox_overlap_analysis import BBoxOverlapAnalyzer
-
-analyzer = BBoxOverlapAnalyzer()
-
+```bash
 # 为不同城市运行分析
-cities = ['beijing', 'shanghai', 'guangzhou']
-for city in cities:
-    analysis_id = analyzer.run_overlap_analysis(
-        city_filter=city,
-        analysis_id=f"overlap_{city}_20241201"
-    )
-    print(f"完成 {city} 分析: {analysis_id}")
+cities=("A263" "A72" "A86")
+for city in "${cities[@]}"; do
+    python examples/dataset/bbox_examples/run_overlap_analysis.py \
+        --city "$city" \
+        --top-n 10 \
+        --analysis-id "overlap_${city}_$(date +%Y%m%d)"
+    echo "完成 $city 分析"
+done
 ```
 
-### 2. 自定义SQL分析
+### 2. 自定义分析
 
-你可以修改 `sql/overlap_analysis.sql` 来实现自定义的分析逻辑：
+你可以修改 `run_overlap_analysis.py` 的SQL来实现自定义的分析逻辑：
 
-```sql
--- 例：只分析特定数据集的重叠
-WHERE a.subdataset_name IN ('lane_change', 'overtaking')
-  AND b.subdataset_name IN ('lane_change', 'overtaking')
+```bash
+# 例：只分析特定数据集
+python run_overlap_analysis.py --city A263 --subdatasets lane_change overtaking
 
--- 例：按时间范围过滤
-WHERE a.timestamp BETWEEN 1640995200 AND 1672531199  -- 2022年
+# 例：调整网格精度和密度阈值
+python run_overlap_analysis.py --city A263 --grid-size 0.001 --density-threshold 10
 
--- 例：更严格的重叠面积阈值
-AND ST_Area(ST_Intersection(a.geometry, b.geometry)) > 0.001
+# 例：启用面积计算和过滤
+python run_overlap_analysis.py --city A263 --calculate-area --min-overlap-area 0.0001
 ```
 
 ### 3. 结果导出
