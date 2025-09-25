@@ -169,21 +169,39 @@ def main():
         parser.add_argument('--estimate-time', action='store_true', help='估算分析时间并退出')
         # 🔥 网格化分析参数（默认启用）
         parser.add_argument('--grid-size', type=float, default=0.002, help='网格大小（度），默认0.002度约200米')
-        parser.add_argument('--density-threshold', type=int, default=5, help='每网格最小重叠数量阈值，默认5')
+        parser.add_argument('--percentile', type=float, default=90, help='密度阈值分位数（0-100），默认90分位数')
+        parser.add_argument('--min-cluster-size', type=int, default=3, help='最小连通区域包含的网格数，默认3')
+        parser.add_argument('--cluster-method', choices=['convex_hull', 'union'], default='convex_hull', 
+                          help='区域合并方法：convex_hull（凸包）或union（几何联合）')
         parser.add_argument('--calculate-area', action='store_true', help='计算重叠面积并应用min-overlap-area阈值（默认只检查相交）')
+        # 兼容旧参数
+        parser.add_argument('--density-threshold', type=int, help='固定密度阈值（已弃用，建议使用--percentile）')
+        parser.add_argument('--top-n', type=int, help='返回数量（已弃用，现在返回所有满足阈值的区域）')
         # 🧹 清理和诊断功能
         parser.add_argument('--diagnose', action='store_true', help='诊断bbox数据状态并退出')
         parser.add_argument('--cleanup-views', action='store_true', help='清理旧的bbox视图')
         
         args = parser.parse_args()
         
+        # 参数兼容性处理
+        if args.density_threshold:
+            print(f"⚠️ 警告: --density-threshold 已弃用，建议使用 --percentile")
+        if args.top_n:
+            print(f"ℹ️ 注意: --top-n 已弃用，现在返回所有满足阈值的连通区域")
+        
         print(f"\n📋 分析参数:")
         print(f"   城市过滤: {args.city}")
-        print(f"   返回数量: {args.top_n}")
         print(f"   强制刷新视图: {args.refresh_view}")
-        print(f"   🔥 网格化分析: 已启用（默认）")
+        print(f"   🔥 智能网格化分析: 已启用")
         print(f"   📏 网格大小: {args.grid_size}° × {args.grid_size}° (约200m×200m)")
-        print(f"   📊 密度阈值: {args.density_threshold} 重叠/网格")
+        
+        if args.density_threshold:
+            print(f"   📊 固定密度阈值: {args.density_threshold} bbox/网格")
+        else:
+            print(f"   📊 动态密度阈值: {args.percentile}分位数")
+        
+        print(f"   🔗 连通区域分析: 最小{args.min_cluster_size}个网格")
+        print(f"   🎯 区域合并方法: {args.cluster_method}")
         print(f"   🎯 分析模式: {'面积计算模式' if args.calculate_area else '快速相交模式（默认）'}")
         if args.calculate_area and args.min_overlap_area > 0:
             print(f"   📐 最小重叠面积: {args.min_overlap_area}")
@@ -536,9 +554,17 @@ def main():
             print(f"📊 网格大小: {args.grid_size}° × {args.grid_size}° (约200m×200m)")
             print(f"🎯 分析方法: bbox密度分析")
         
+        # 确定密度阈值（兼容旧参数）
+        if args.density_threshold:
+            density_threshold_sql = f"AND COUNT(*) >= {args.density_threshold}"
+            print(f"📊 使用固定阈值: {args.density_threshold}")
+        else:
+            density_threshold_sql = f"AND COUNT(*) >= (SELECT PERCENTILE_CONT({args.percentile/100.0}) WITHIN GROUP (ORDER BY grid_density) FROM temp_grid_densities)"
+            print(f"📊 使用动态阈值: {args.percentile}分位数")
+        
         analysis_sql = f"""
             WITH bbox_bounds AS (
-                -- 🚀 第1步：提取bbox边界（一次性几何计算，约11k次）
+                -- 🚀 第1步：提取bbox边界（一次性几何计算）
                 SELECT 
                     id,
                     subdataset_name,
@@ -580,47 +606,149 @@ def main():
                 LATERAL generate_series(min_grid_x, max_grid_x) as grid_x,
                 LATERAL generate_series(min_grid_y, max_grid_y) as grid_y
             ),
-            grid_density_stats AS (
-                -- 📊 第4步：统计每个网格的bbox密度
+            all_grid_densities AS (
+                -- 📊 第4a步：计算所有网格的密度（用于分位数计算）
                 SELECT 
                     grid_x,
                     grid_y,
-                    COUNT(*) as bbox_count_in_grid,
-                    COUNT(DISTINCT subdataset_name) as subdataset_count,
-                    COUNT(DISTINCT scene_token) as scene_count,
-                    ARRAY_AGG(DISTINCT subdataset_name) as involved_subdatasets,
-                    ARRAY_AGG(DISTINCT scene_token) as involved_scenes,
-                    SUM(bbox_area) as total_bbox_area,
-                    -- 🔧 按需生成网格几何
-                    ST_MakeEnvelope(
-                        grid_x * {args.grid_size}, 
-                        grid_y * {args.grid_size},
-                        (grid_x + 1) * {args.grid_size}, 
-                        (grid_y + 1) * {args.grid_size}, 
-                        4326
-                    ) as grid_geom
+                    COUNT(*) as grid_density
                 FROM expanded_grid_coverage
                 GROUP BY grid_x, grid_y
-                HAVING COUNT(*) >= {args.density_threshold}
-                   AND ({not args.calculate_area} OR SUM(bbox_area) >= {args.min_overlap_area})
+            ),
+            temp_grid_densities AS (
+                -- 临时表存储密度值用于分位数计算
+                SELECT grid_density FROM all_grid_densities
+            ),
+            high_density_grids AS (
+                -- 📊 第4b步：筛选高密度网格
+                SELECT 
+                    g.grid_x,
+                    g.grid_y,
+                    g.grid_density as bbox_count_in_grid,
+                    COUNT(DISTINCT e.subdataset_name) as subdataset_count,
+                    COUNT(DISTINCT e.scene_token) as scene_count,
+                    ARRAY_AGG(DISTINCT e.subdataset_name) as involved_subdatasets,
+                    ARRAY_AGG(DISTINCT e.scene_token) as involved_scenes,
+                    SUM(e.bbox_area) as total_bbox_area,
+                    -- 🔧 生成网格几何
+                    ST_MakeEnvelope(
+                        g.grid_x * {args.grid_size}, 
+                        g.grid_y * {args.grid_size},
+                        (g.grid_x + 1) * {args.grid_size}, 
+                        (g.grid_y + 1) * {args.grid_size}, 
+                        4326
+                    ) as grid_geom
+                FROM all_grid_densities g
+                JOIN expanded_grid_coverage e ON (g.grid_x = e.grid_x AND g.grid_y = e.grid_y)
+                WHERE g.grid_density >= COALESCE(
+                    {args.density_threshold if args.density_threshold else 'NULL'},
+                    (SELECT PERCENTILE_CONT({args.percentile/100.0}) WITHIN GROUP (ORDER BY grid_density) FROM temp_grid_densities)
+                )
+                {'AND SUM(e.bbox_area) >= ' + str(args.min_overlap_area) if args.calculate_area and args.min_overlap_area > 0 else ''}
+                GROUP BY g.grid_x, g.grid_y, g.grid_density
+            ),
+            connected_components AS (
+                -- 🔗 第5步：连通性分析，找相邻的高密度网格
+                WITH RECURSIVE grid_clusters AS (
+                    -- 初始化：为每个网格分配唯一cluster_id
+                    SELECT 
+                        grid_x, 
+                        grid_y,
+                        bbox_count_in_grid,
+                        subdataset_count,
+                        scene_count, 
+                        involved_subdatasets,
+                        involved_scenes,
+                        total_bbox_area,
+                        grid_geom,
+                        ROW_NUMBER() OVER (ORDER BY grid_x, grid_y) as cluster_id,
+                        ROW_NUMBER() OVER (ORDER BY grid_x, grid_y) as original_cluster_id
+                    FROM high_density_grids
+                    
+                    UNION ALL
+                    
+                    -- 递归：合并相邻网格的cluster_id
+                    SELECT 
+                        h.grid_x,
+                        h.grid_y, 
+                        h.bbox_count_in_grid,
+                        h.subdataset_count,
+                        h.scene_count,
+                        h.involved_subdatasets,
+                        h.involved_scenes,
+                        h.total_bbox_area,
+                        h.grid_geom,
+                        LEAST(c.cluster_id, h.original_cluster_id) as cluster_id,
+                        h.original_cluster_id
+                    FROM high_density_grids h
+                    JOIN grid_clusters c ON (
+                        -- 8-连通相邻关系
+                        ABS(h.grid_x - c.grid_x) <= 1 
+                        AND ABS(h.grid_y - c.grid_y) <= 1
+                        AND NOT (h.grid_x = c.grid_x AND h.grid_y = c.grid_y)
+                    )
+                    WHERE c.cluster_id < h.original_cluster_id
+                )
+                SELECT DISTINCT ON (grid_x, grid_y)
+                    grid_x, grid_y, bbox_count_in_grid, subdataset_count, scene_count,
+                    involved_subdatasets, involved_scenes, total_bbox_area, grid_geom,
+                    MIN(cluster_id) OVER (PARTITION BY grid_x, grid_y) as final_cluster_id
+                FROM grid_clusters
+            ),
+            density_regions AS (
+                -- 🏗️ 第6步：合并连通网格为区域
+                SELECT 
+                    final_cluster_id as region_id,
+                    COUNT(*) as grid_count,
+                    SUM(bbox_count_in_grid) as total_bbox_count,
+                    MAX(bbox_count_in_grid) as max_grid_density,
+                    ROUND(AVG(bbox_count_in_grid::float), 1) as avg_grid_density,
+                    SUM(subdataset_count) as total_subdatasets,
+                    SUM(scene_count) as total_scenes,
+                    -- 合并所有涉及的数据集和场景
+                    ARRAY(SELECT DISTINCT unnest(ARRAY_AGG(involved_subdatasets)) ORDER BY 1) as region_subdatasets,
+                    ARRAY(SELECT DISTINCT unnest(ARRAY_AGG(involved_scenes)) ORDER BY 1) as region_scenes,
+                    SUM(total_bbox_area) as region_total_area,
+                    -- 区域几何合并
+                    CASE 
+                        WHEN '{args.cluster_method}' = 'convex_hull' THEN
+                            ST_ConvexHull(ST_Collect(ARRAY_AGG(grid_geom)))
+                        ELSE 
+                            ST_Union(ARRAY_AGG(grid_geom))
+                    END as region_geometry
+                FROM connected_components
+                GROUP BY final_cluster_id
+                HAVING COUNT(*) >= {args.min_cluster_size}  -- 最小连通区域大小
             )
             INSERT INTO {analysis_table} 
             (analysis_id, hotspot_rank, overlap_count, total_overlap_area, 
              subdataset_count, scene_count, involved_subdatasets, involved_scenes, geometry, analysis_params)
             SELECT 
                 '{analysis_id}' as analysis_id,
-                ROW_NUMBER() OVER (ORDER BY bbox_count_in_grid DESC) as hotspot_rank,
-                bbox_count_in_grid as overlap_count,
-                total_bbox_area as total_overlap_area,
-                subdataset_count,
-                scene_count,
-                involved_subdatasets,
-                involved_scenes,
-                grid_geom as geometry,
-                '{{"analysis_type": "bbox_density", "city_filter": "{args.city}", "grid_size": {args.grid_size}, "density_threshold": {args.density_threshold}, "calculate_area": {args.calculate_area}, "grid_coords": "(" || grid_x || "," || grid_y || ")"}}' as analysis_params
-            FROM grid_density_stats
-            ORDER BY bbox_count_in_grid DESC
-            LIMIT {args.top_n};
+                ROW_NUMBER() OVER (ORDER BY total_bbox_count DESC, grid_count DESC) as hotspot_rank,
+                total_bbox_count as overlap_count,
+                region_total_area as total_overlap_area,
+                ARRAY_LENGTH(region_subdatasets, 1) as subdataset_count,
+                ARRAY_LENGTH(region_scenes, 1) as scene_count,
+                region_subdatasets as involved_subdatasets,
+                region_scenes as involved_scenes,
+                region_geometry as geometry,
+                json_build_object(
+                    'analysis_type', 'density_regions',
+                    'city_filter', '{args.city}',
+                    'grid_size', {args.grid_size},
+                    'percentile_threshold', {args.percentile if not args.density_threshold else 'null'},
+                    'fixed_threshold', {args.density_threshold if args.density_threshold else 'null'},
+                    'min_cluster_size', {args.min_cluster_size},
+                    'cluster_method', '{args.cluster_method}',
+                    'calculate_area', {str(args.calculate_area).lower()},
+                    'region_id', region_id,
+                    'grid_count', grid_count,
+                    'max_grid_density', max_grid_density,
+                    'avg_grid_density', avg_grid_density
+                )::text as analysis_params
+            FROM density_regions
+            ORDER BY total_bbox_count DESC, grid_count DESC;
             """
         
         print(f"⚡ 执行bbox密度分析SQL...")
@@ -658,7 +786,7 @@ def main():
             # 计算总耗时和性能统计
             total_duration = (commit_time - analysis_start_time).total_seconds()
             
-            print(f"✅ bbox密度分析完成，发现 {inserted_count} 个密度热点")
+            print(f"✅ 智能区域分析完成，发现 {inserted_count} 个连通密集区域")
             print(f"⏱️ 总耗时: {total_duration:.2f}秒 (SQL: {sql_duration:.2f}s + 提交: {commit_duration:.2f}s)")
             
             # 性能统计
@@ -666,24 +794,53 @@ def main():
             if bbox_count > 0:
                 bbox_per_sec = bbox_count / max(sql_duration, 0.001)  # 避免除零
                 print(f"📊 处理速度: {bbox_per_sec:,.0f} bbox/秒")
+                
+            # 显示阈值信息
+            if not args.density_threshold:
+                threshold_info_sql = text(f"""
+                    SELECT PERCENTILE_CONT({args.percentile/100.0}) WITHIN GROUP (ORDER BY grid_density) as threshold
+                    FROM (
+                        SELECT COUNT(*) as grid_density
+                        FROM (
+                            SELECT grid_x, grid_y
+                            FROM (
+                                SELECT 
+                                    floor(ST_XMin(geometry) / {args.grid_size})::int as grid_x,
+                                    floor(ST_YMin(geometry) / {args.grid_size})::int as grid_y
+                                FROM {view_name}
+                                WHERE city_id = '{args.city}' AND all_good = true
+                                {where_clause.replace('a.', '').replace('b.', '').replace(' AND  AND', ' AND')}
+                            ) g1
+                        ) g2
+                        GROUP BY grid_x, grid_y
+                    ) densities;
+                """)
+                try:
+                    threshold_result = conn.execute(threshold_info_sql).scalar()
+                    if threshold_result:
+                        print(f"📊 计算的动态阈值: {threshold_result:.1f} bbox/网格 ({args.percentile}分位数)")
+                except Exception:
+                    pass  # 如果查询失败，跳过阈值显示
             
             if inserted_count > 0:
                 # 显示TOP结果
                 summary_sql = text(f"""
                     SELECT 
-                        hotspot_rank,
-                        overlap_count,
-                        ROUND(total_overlap_area::numeric, 4) as total_overlap_area,
+                        hotspot_rank as region_rank,
+                        overlap_count as total_bbox_count,
+                        ROUND(total_overlap_area::numeric, 4) as region_area,
                         subdataset_count,
-                        scene_count
+                        scene_count,
+                        CAST(analysis_params::json->>'grid_count' AS INTEGER) as grid_count,
+                        ROUND(CAST(analysis_params::json->>'avg_grid_density' AS NUMERIC), 1) as avg_density
                     FROM {analysis_table}
                     WHERE analysis_id = '{analysis_id}'
                     ORDER BY hotspot_rank
-                    LIMIT 5;
+                    LIMIT 10;
                 """)
                 
                 result_df = pd.read_sql(summary_sql, engine)
-                print(f"\n📊 TOP 5 重叠热点:")
+                print(f"\n🏗️ 连通密集区域统计:")
                 print(result_df.to_string(index=False))
                 
                 # 创建QGIS视图
@@ -742,19 +899,34 @@ def main():
                 print(f"   • 显示 overlap_count 标签")
                 print(f"   • 使用 analysis_id = '{analysis_id}' 过滤")
                 
-                print(f"\n🔥 bbox密度分析特别提示:")
-                print(f"   • 每个热点是 {args.grid_size}° × {args.grid_size}° 的网格 (约200m×200m)")
-                print(f"   • overlap_count = 该网格内的bbox数量（密度）")
-                print(f"   • 密度阈值: >= {args.density_threshold} bbox/网格")
+                print(f"\n🔥 智能区域分析特别提示:")
+                print(f"   • 每个区域由多个相邻的高密度网格组成")
+                print(f"   • overlap_count = 该区域内的总bbox数量")
+                
+                if args.density_threshold:
+                    print(f"   • 使用固定阈值: >= {args.density_threshold} bbox/网格")
+                else:
+                    print(f"   • 使用动态阈值: {args.percentile}分位数")
+                    
+                print(f"   • 最小区域大小: >= {args.min_cluster_size} 个网格")
+                print(f"   • 区域合并方法: {args.cluster_method}")
                 if args.calculate_area and args.min_overlap_area > 0:
                     print(f"   • 面积阈值: >= {args.min_overlap_area} 平方度")
-                print(f"   • 🎯 这是密度分析，不是传统重叠分析")
-                print(f"   • 建议使用填充样式 + 透明度 70%")
+                print(f"   • 🎯 这是连通区域分析，识别有意义的空间聚集")
+                print(f"   • 建议使用填充样式 + 边界线 + 透明度 60%")
                 print(f"   • 可以叠加原始bbox数据对比查看")
+                print(f"   • 区域内的网格信息存储在analysis_params中")
                 
             else:
-                print(f"⚠️ 未发现重叠热点，建议:")
-                print(f"   • 降低 --min-overlap-area 阈值")
+                print(f"⚠️ 未发现连通密集区域，建议:")
+                if not args.density_threshold:
+                    print(f"   • 降低分位数阈值: --percentile 75")
+                else:
+                    print(f"   • 降低固定阈值: --density-threshold 3")
+                print(f"   • 减小最小区域大小: --min-cluster-size 2")
+                print(f"   • 增大网格尺寸: --grid-size 0.005")
+                if args.calculate_area and args.min_overlap_area > 0:
+                    print(f"   • 降低面积阈值: --min-overlap-area 0")
                 print(f"   • 检查数据是否在同一区域")
                 print(f"   • 尝试不同的城市过滤条件")
         
