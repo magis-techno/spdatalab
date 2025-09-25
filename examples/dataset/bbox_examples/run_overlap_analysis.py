@@ -651,10 +651,7 @@ def main():
                 grid_geom as geometry,
                 '{{"analysis_type": "bbox_density", "city_filter": "{args.city}", "grid_size": {args.grid_size}, "density_threshold": {args.density_threshold}, "calculate_area": {args.calculate_area}, "grid_coords": "(" || grid_x || "," || grid_y || ")", "total_hotspots": ' || (SELECT total_hotspots FROM hotspot_summary) || ', "max_density": ' || (SELECT max_density FROM hotspot_summary) || ', "avg_density": ' || (SELECT avg_density FROM hotspot_summary) || '}}' as analysis_params
             FROM all_hotspots
-            WHERE density_rank <= CASE 
-                WHEN {args.top_n is not None} THEN {args.top_n}
-                ELSE GREATEST(1, ROUND((SELECT total_hotspots FROM hotspot_summary) * {args.top_percent / 100.0}))
-            END;
+            WHERE density_rank <= {f"{args.top_n}" if args.top_n is not None else f"GREATEST(1, ROUND((SELECT total_hotspots FROM hotspot_summary) * {args.top_percent / 100.0}))"};
             """
         
         print(f"⚡ 执行bbox密度分析SQL...")
