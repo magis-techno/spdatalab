@@ -169,6 +169,11 @@ def main():
         parser.add_argument('--estimate-time', action='store_true', help='估算分析时间并退出')
         parser.add_argument('--intersect-only', action='store_true', help='🚀 快速模式：只要相交就算重叠，大幅提升性能（推荐）')
         
+        # 🔥 网格化分析参数
+        parser.add_argument('--use-grid', action='store_true', help='🔥 使用网格化热点分析，避免连锁聚合问题（推荐）')
+        parser.add_argument('--grid-size', type=int, default=500, help='网格大小（米），默认500m')
+        parser.add_argument('--density-threshold', type=int, default=5, help='每网格最小重叠数量阈值，默认5')
+        
         args = parser.parse_args()
         
         print(f"\n📋 分析参数:")
@@ -177,6 +182,10 @@ def main():
         print(f"   返回数量: {args.top_n}")
         print(f"   强制刷新视图: {args.refresh_view}")
         print(f"   快速模式: {args.intersect_only}")
+        print(f"   🔥 网格化分析: {args.use_grid}")
+        if args.use_grid:
+            print(f"   📏 网格大小: {args.grid_size}m × {args.grid_size}m")
+            print(f"   📊 密度阈值: {args.density_threshold} 重叠/网格")
         if args.intersect_only:
             print(f"   🎯 使用快速模式，将跳过面积计算以提升性能")
         
@@ -420,7 +429,98 @@ def main():
         where_clause = "AND " + " AND ".join(where_conditions) if where_conditions else ""
         
         # 🚀 执行优化后的分析SQL
-        if args.intersect_only:
+        if args.use_grid:
+            # 🔥 网格化分析：避免连锁聚合问题
+            print(f"🔥 使用网格化分析，避免连锁聚合问题...")
+            analysis_sql = f"""
+            WITH city_bbox AS (
+                -- 获取城市的边界框
+                SELECT ST_Envelope(ST_Union(geometry)) as city_envelope
+                FROM {view_name} 
+                WHERE city_id = '{args.city}' AND all_good = true
+            ),
+            analysis_grid AS (
+                -- 创建规则网格覆盖城市区域
+                SELECT 
+                    ROW_NUMBER() OVER() as grid_id,
+                    ST_MakeEnvelope(
+                        x, y, 
+                        x + {args.grid_size}, y + {args.grid_size}, 
+                        4326
+                    ) as grid_geom
+                FROM city_bbox,
+                LATERAL (
+                    SELECT 
+                        generate_series(
+                            floor(ST_XMin(city_envelope) / {args.grid_size}) * {args.grid_size}::int,
+                            ceil(ST_XMax(city_envelope) / {args.grid_size}) * {args.grid_size}::int,
+                            {args.grid_size}
+                        ) as x
+                ) x_series,
+                LATERAL (
+                    SELECT 
+                        generate_series(
+                            floor(ST_YMin(city_envelope) / {args.grid_size}) * {args.grid_size}::int,
+                            ceil(ST_YMax(city_envelope) / {args.grid_size}) * {args.grid_size}::int,
+                            {args.grid_size}
+                        ) as y
+                ) y_series
+            ),
+            overlap_pairs AS (
+                -- 计算重叠对（优化版）
+                SELECT 
+                    a.id as bbox_a_id,
+                    b.id as bbox_b_id,
+                    a.subdataset_name as subdataset_a,
+                    b.subdataset_name as subdataset_b,
+                    a.scene_token as scene_a,
+                    b.scene_token as scene_b,
+                    ST_Intersection(a.geometry, b.geometry) as overlap_geom
+                FROM {view_name} a
+                JOIN {view_name} b ON a.id < b.id
+                WHERE a.city_id = '{args.city}' AND b.city_id = '{args.city}'
+                AND a.all_good = true AND b.all_good = true
+                AND a.geometry && b.geometry  -- 快速边界框检查
+                AND ST_Intersects(a.geometry, b.geometry)
+                AND NOT ST_Equals(a.geometry, b.geometry)
+                {where_clause}
+            ),
+            grid_overlap_stats AS (
+                -- 统计每个网格内的重叠情况
+                SELECT 
+                    g.grid_id,
+                    g.grid_geom,
+                    COUNT(op.overlap_geom) as overlap_count_in_grid,
+                    ARRAY_AGG(DISTINCT op.subdataset_a) || ARRAY_AGG(DISTINCT op.subdataset_b) as involved_subdatasets,
+                    ARRAY_AGG(DISTINCT op.scene_a) || ARRAY_AGG(DISTINCT op.scene_b) as involved_scenes,
+                    CASE 
+                        WHEN {args.intersect_only} THEN COUNT(op.overlap_geom)::float
+                        ELSE COALESCE(SUM(ST_Area(op.overlap_geom)), 0)
+                    END as total_overlap_area
+                FROM analysis_grid g
+                LEFT JOIN overlap_pairs op ON ST_Intersects(g.grid_geom, op.overlap_geom)
+                GROUP BY g.grid_id, g.grid_geom
+                HAVING COUNT(op.overlap_geom) >= {args.density_threshold}
+            )
+            INSERT INTO {analysis_table} 
+            (analysis_id, hotspot_rank, overlap_count, total_overlap_area, 
+             subdataset_count, scene_count, involved_subdatasets, involved_scenes, geometry, analysis_params)
+            SELECT 
+                '{analysis_id}' as analysis_id,
+                ROW_NUMBER() OVER (ORDER BY overlap_count_in_grid DESC) as hotspot_rank,
+                overlap_count_in_grid as overlap_count,
+                total_overlap_area,
+                ARRAY_LENGTH(involved_subdatasets, 1) as subdataset_count,
+                ARRAY_LENGTH(involved_scenes, 1) as scene_count,
+                involved_subdatasets,
+                involved_scenes,
+                grid_geom as geometry,
+                '{{"city_filter": "{args.city}", "grid_size": {args.grid_size}, "density_threshold": {args.density_threshold}, "intersect_only": {args.intersect_only}}}' as analysis_params
+            FROM grid_overlap_stats
+            ORDER BY overlap_count_in_grid DESC
+            LIMIT {args.top_n};
+            """
+        elif args.intersect_only:
             # 🎯 快速模式：跳过面积计算
             print(f"🚀 使用快速模式（intersect-only），大幅提升性能...")
             analysis_sql = f"""
@@ -638,6 +738,14 @@ def main():
                 print(f"   • 按 density_level 字段设置颜色")
                 print(f"   • 显示 overlap_count 标签")
                 print(f"   • 使用 analysis_id = '{analysis_id}' 过滤")
+                
+                if args.use_grid:
+                    print(f"\n🔥 网格化分析特别提示:")
+                    print(f"   • 每个热点是 {args.grid_size}m × {args.grid_size}m 的网格")
+                    print(f"   • 颜色深浅代表网格内重叠密度")
+                    print(f"   • 密度阈值: >= {args.density_threshold} 重叠/网格")
+                    print(f"   • 建议使用填充样式 + 透明度 70%")
+                    print(f"   • 可以叠加原始bbox数据对比查看")
                 
             else:
                 print(f"⚠️ 未发现重叠热点，建议:")
