@@ -429,6 +429,33 @@ def main():
         # 🚀 执行网格化分析SQL（默认方法）
         print(f"🔥 使用网格化分析，避免连锁聚合问题...")
         
+        # 先检查网格数量，避免生成过多网格
+        with engine.connect() as conn:
+            grid_check_sql = text(f"""
+                WITH city_bbox AS (
+                    SELECT ST_Envelope(ST_Union(geometry)) as city_envelope
+                    FROM {view_name} 
+                    WHERE city_id = '{args.city}' AND all_good = true
+                )
+                SELECT 
+                    ST_XMax(city_envelope) - ST_XMin(city_envelope) as width_degrees,
+                    ST_YMax(city_envelope) - ST_YMin(city_envelope) as height_degrees,
+                    CEIL((ST_XMax(city_envelope) - ST_XMin(city_envelope)) / {args.grid_size}) *
+                    CEIL((ST_YMax(city_envelope) - ST_YMin(city_envelope)) / {args.grid_size}) as estimated_grid_count
+                FROM city_bbox;
+            """)
+            
+            grid_check = conn.execute(grid_check_sql).fetchone()
+            estimated_grids = grid_check.estimated_grid_count
+            
+            print(f"📏 城市范围: {grid_check.width_degrees:.4f}° × {grid_check.height_degrees:.4f}°")
+            print(f"📊 预计网格数量: {estimated_grids:,} 个")
+            
+            if estimated_grids > 10000:
+                print(f"⚠️ 网格数量过多！建议增大 --grid-size 或减小分析范围")
+                print(f"💡 建议: --grid-size {args.grid_size * 2:.3f} (约 {int(estimated_grids/4):,} 个网格)")
+                return
+        
         analysis_sql = f"""
             WITH city_bbox AS (
                 -- 获取城市的边界框
@@ -448,19 +475,19 @@ def main():
                 FROM city_bbox,
                 LATERAL (
                     SELECT 
-                        generate_series(
-                            (floor(ST_XMin(city_envelope) / {args.grid_size}) * {args.grid_size})::int,
-                            (ceil(ST_XMax(city_envelope) / {args.grid_size}) * {args.grid_size})::int,
-                            {args.grid_size}
-                        ) as x
+                        (floor(ST_XMin(city_envelope) / {args.grid_size}) + i) * {args.grid_size} as x
+                    FROM generate_series(
+                        0,
+                        ceil((ST_XMax(city_envelope) - ST_XMin(city_envelope)) / {args.grid_size})::int
+                    ) as i
                 ) x_series,
                 LATERAL (
                     SELECT 
-                        generate_series(
-                            (floor(ST_YMin(city_envelope) / {args.grid_size}) * {args.grid_size})::int,
-                            (ceil(ST_YMax(city_envelope) / {args.grid_size}) * {args.grid_size})::int,
-                            {args.grid_size}
-                        ) as y
+                        (floor(ST_YMin(city_envelope) / {args.grid_size}) + j) * {args.grid_size} as y
+                    FROM generate_series(
+                        0,
+                        ceil((ST_YMax(city_envelope) - ST_YMin(city_envelope)) / {args.grid_size})::int
+                    ) as j
                 ) y_series
             ),
             overlap_pairs AS (
