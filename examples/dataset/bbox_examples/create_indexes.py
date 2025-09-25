@@ -160,9 +160,31 @@ class BBoxIndexOptimizer:
         """检查所有表的索引状态"""
         print("🔍 检查bbox分表索引状态...")
         
-        # 获取分表列表
+        # 获取分表列表（排除视图）
         all_tables = list_bbox_tables(self.engine)
-        bbox_tables = [t for t in all_tables if t.startswith('clips_bbox_') and t != 'clips_bbox']
+        
+        # 过滤出真正的表，排除视图
+        bbox_tables = []
+        
+        # 获取所有视图名称，避免对视图进行索引操作
+        with self.engine.connect() as conn:
+            views_sql = text("""
+                SELECT table_name 
+                FROM information_schema.views 
+                WHERE table_schema = 'public' 
+                AND table_name LIKE 'clips_bbox%';
+            """)
+            view_names = {row[0] for row in conn.execute(views_sql).fetchall()}
+        
+        for table in all_tables:
+            if table.startswith('clips_bbox_') and table != 'clips_bbox':
+                # 排除视图
+                if table not in view_names:
+                    bbox_tables.append(table)
+                else:
+                    print(f"⏭️ 跳过视图: {table}")
+        
+        print(f"📋 找到 {len(bbox_tables)} 个实际分表（排除 {len(view_names)} 个视图）")
         
         if limit:
             bbox_tables = bbox_tables[:limit]
