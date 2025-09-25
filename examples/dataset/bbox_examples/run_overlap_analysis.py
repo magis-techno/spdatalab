@@ -137,16 +137,16 @@ def main():
         import argparse
         from datetime import datetime
         
-        # 尝试导入分析器
+        # 尝试导入分析器（使用统一视图）
         try:
             from spdatalab.dataset.bbox import (
-                create_qgis_compatible_unified_view,
+                create_unified_view,
                 list_bbox_tables,
                 LOCAL_DSN
             )
         except ImportError:
             from src.spdatalab.dataset.bbox import (
-                create_qgis_compatible_unified_view,
+                create_unified_view,
                 list_bbox_tables,
                 LOCAL_DSN
             )
@@ -157,16 +157,17 @@ def main():
         print("✅ 所有模块导入成功")
         
         # 解析命令行参数
-        parser = argparse.ArgumentParser(description='Docker兼容的BBox叠置分析')
-        parser.add_argument('--city', help='城市过滤')
+        parser = argparse.ArgumentParser(description='Docker兼容的BBox叠置分析（优化版）')
+        parser.add_argument('--city', required=False, help='城市过滤（强烈建议指定以避免性能问题）')
         parser.add_argument('--subdatasets', nargs='+', help='子数据集过滤')
-        parser.add_argument('--min-overlap-area', type=float, default=0.0001, help='最小重叠面积阈值')
+        parser.add_argument('--min-overlap-area', type=float, default=0.0, help='最小重叠面积阈值（intersect-only模式下忽略）')
         parser.add_argument('--top-n', type=int, default=15, help='返回的热点数量')
         parser.add_argument('--analysis-id', help='自定义分析ID')
         parser.add_argument('--refresh-view', action='store_true', help='强制刷新统一视图')
         parser.add_argument('--test-only', action='store_true', help='只运行测试，不执行分析')
         parser.add_argument('--suggest-city', action='store_true', help='显示城市分析建议并退出')
         parser.add_argument('--estimate-time', action='store_true', help='估算分析时间并退出')
+        parser.add_argument('--intersect-only', action='store_true', help='🚀 快速模式：只要相交就算重叠，大幅提升性能（推荐）')
         
         args = parser.parse_args()
         
@@ -175,6 +176,9 @@ def main():
         print(f"   最小重叠面积: {args.min_overlap_area}")
         print(f"   返回数量: {args.top_n}")
         print(f"   强制刷新视图: {args.refresh_view}")
+        print(f"   快速模式: {args.intersect_only}")
+        if args.intersect_only:
+            print(f"   🎯 使用快速模式，将跳过面积计算以提升性能")
         
         # 创建数据库连接
         print(f"\n🔌 连接数据库...")
@@ -194,9 +198,9 @@ def main():
             print("❌ 没有发现bbox分表，无法执行分析")
             return
         
-        # 检查统一视图
+        # 检查统一视图（使用标准视图）
         print(f"\n🔍 检查统一视图...")
-        view_name = "clips_bbox_unified_qgis"
+        view_name = "clips_bbox_unified"
         
         check_view_sql = text(f"""
             SELECT EXISTS (
@@ -219,7 +223,7 @@ def main():
                 else:
                     print(f"📌 视图不存在，创建新视图...")
                 
-                success = create_qgis_compatible_unified_view(engine, view_name)
+                success = create_unified_view(engine, view_name)
                 if not success:
                     print("❌ 统一视图创建失败")
                     return
@@ -396,71 +400,147 @@ def main():
         
         print(f"\n🚀 开始叠置分析: {analysis_id}")
         
-        # 构建过滤条件
-        where_conditions = []
-        if args.city:
-            where_conditions.append(f"a.city_id = '{args.city}' AND b.city_id = '{args.city}'")
+        # 🚨 强制城市过滤机制
+        if not args.city:
+            print("❌ 错误: 必须指定城市过滤条件以避免性能问题")
+            print("💡 使用 --suggest-city 查看推荐的城市")
+            print("💡 或使用 --city your_city_name 指定城市")
+            print("💡 示例: --city A72")
+            return
         
+        print(f"🏙️ 城市过滤: {args.city}")
+        
+        # 构建额外过滤条件
+        where_conditions = []
         if args.subdatasets:
             subdataset_list = "', '".join(args.subdatasets)
             where_conditions.append(f"a.subdataset_name IN ('{subdataset_list}') AND b.subdataset_name IN ('{subdataset_list}')")
+            print(f"📦 子数据集过滤: {len(args.subdatasets)} 个")
         
         where_clause = "AND " + " AND ".join(where_conditions) if where_conditions else ""
         
-        # 执行分析
-        analysis_sql = f"""
-        WITH overlapping_pairs AS (
+        # 🚀 执行优化后的分析SQL
+        if args.intersect_only:
+            # 🎯 快速模式：跳过面积计算
+            print(f"🚀 使用快速模式（intersect-only），大幅提升性能...")
+            analysis_sql = f"""
+            WITH candidate_pairs AS (
+                SELECT 
+                    a.id as bbox_a_id,
+                    b.id as bbox_b_id,
+                    a.subdataset_name as subdataset_a,
+                    b.subdataset_name as subdataset_b,
+                    a.scene_token as scene_a,
+                    b.scene_token as scene_b
+                FROM {view_name} a
+                JOIN {view_name} b ON a.id < b.id
+                WHERE a.city_id = '{args.city}'  -- 🚀 优先过滤城市
+                AND b.city_id = '{args.city}'
+                AND a.all_good = true  -- 🚀 优先过滤质量
+                AND b.all_good = true
+                AND a.geometry && b.geometry  -- 🚀 快速边界框检查
+                AND ST_Intersects(a.geometry, b.geometry)  -- 精确相交检查
+                AND NOT ST_Equals(a.geometry, b.geometry)
+                {where_clause}
+            ),
+            overlapping_areas AS (
+                SELECT 
+                    *,
+                    -- 🎯 简化模式：使用虚拟几何和面积
+                    ST_Point(0, 0) as overlap_geometry,
+                    1.0 as overlap_area
+                FROM candidate_pairs
+            ),
+            overlap_hotspots AS (
+                SELECT 
+                    ST_Point(0, 0) as hotspot_geometry,
+                    COUNT(*) as overlap_count,
+                    ARRAY_AGG(DISTINCT subdataset_a) || ARRAY_AGG(DISTINCT subdataset_b) as involved_subdatasets,
+                    ARRAY_AGG(DISTINCT scene_a) || ARRAY_AGG(DISTINCT scene_b) as involved_scenes,
+                    SUM(overlap_area) as total_overlap_area
+                FROM overlapping_areas
+                GROUP BY 1
+                HAVING COUNT(*) >= 1
+            )
+            INSERT INTO {analysis_table} 
+            (analysis_id, hotspot_rank, overlap_count, total_overlap_area, 
+             subdataset_count, scene_count, involved_subdatasets, involved_scenes, geometry, analysis_params)
             SELECT 
-                a.qgis_id as bbox_a_id,
-                b.qgis_id as bbox_b_id,
-                a.subdataset_name as subdataset_a,
-                b.subdataset_name as subdataset_b,
-                a.scene_token as scene_a,
-                b.scene_token as scene_b,
-                ST_Intersection(a.geometry, b.geometry) as overlap_geometry,
-                ST_Area(ST_Intersection(a.geometry, b.geometry)) as overlap_area
-            FROM {view_name} a
-            JOIN {view_name} b ON a.qgis_id < b.qgis_id
-            WHERE ST_Intersects(a.geometry, b.geometry)
-            AND ST_Area(ST_Intersection(a.geometry, b.geometry)) > {args.min_overlap_area}
-            AND NOT ST_Equals(a.geometry, b.geometry)
-            -- 🎯 只分析相同城市的bbox（性能和逻辑优化）
-            AND a.city_id = b.city_id
-            AND a.city_id IS NOT NULL
-            -- 🎯 只分析质量合格的数据（all_good=true）
-            AND a.all_good = true
-            AND b.all_good = true
-            {where_clause}
-        ),
-        overlap_hotspots AS (
+                '{analysis_id}' as analysis_id,
+                ROW_NUMBER() OVER (ORDER BY overlap_count DESC) as hotspot_rank,
+                overlap_count,
+                total_overlap_area,
+                ARRAY_LENGTH(involved_subdatasets, 1) as subdataset_count,
+                ARRAY_LENGTH(involved_scenes, 1) as scene_count,
+                involved_subdatasets,
+                involved_scenes,
+                hotspot_geometry as geometry,
+                '{{"city_filter": "{args.city}", "min_overlap_area": {args.min_overlap_area}, "top_n": {args.top_n}, "intersect_only": true}}' as analysis_params
+            FROM overlap_hotspots
+            ORDER BY overlap_count DESC
+            LIMIT {args.top_n};
+            """
+        else:
+            # 📊 完整模式：计算实际重叠几何和面积
+            print(f"📊 使用完整模式，计算精确重叠面积...")
+            analysis_sql = f"""
+            WITH intersections_precalc AS (
+                SELECT 
+                    a.id as bbox_a_id,
+                    b.id as bbox_b_id,
+                    a.subdataset_name as subdataset_a,
+                    b.subdataset_name as subdataset_b,
+                    a.scene_token as scene_a,
+                    b.scene_token as scene_b,
+                    ST_Intersection(a.geometry, b.geometry) as overlap_geometry
+                FROM {view_name} a
+                JOIN {view_name} b ON a.id < b.id
+                WHERE a.city_id = '{args.city}'  -- 🚀 优先过滤城市
+                AND b.city_id = '{args.city}'
+                AND a.all_good = true  -- 🚀 优先过滤质量
+                AND b.all_good = true
+                AND a.geometry && b.geometry  -- 🚀 快速边界框检查
+                AND ST_Intersects(a.geometry, b.geometry)  -- 精确相交检查
+                AND NOT ST_Equals(a.geometry, b.geometry)
+                {where_clause}
+            ),
+            overlapping_areas AS (
+                SELECT 
+                    *,
+                    overlap_geometry,
+                    ST_Area(overlap_geometry) as overlap_area  -- 🎯 只计算一次面积
+                FROM intersections_precalc
+                WHERE ST_Area(overlap_geometry) > {args.min_overlap_area}  -- 面积过滤在这里进行
+            ),
+            overlap_hotspots AS (
+                SELECT 
+                    ST_Union(overlap_geometry) as hotspot_geometry,
+                    COUNT(*) as overlap_count,
+                    ARRAY_AGG(DISTINCT subdataset_a) || ARRAY_AGG(DISTINCT subdataset_b) as involved_subdatasets,
+                    ARRAY_AGG(DISTINCT scene_a) || ARRAY_AGG(DISTINCT scene_b) as involved_scenes,
+                    SUM(overlap_area) as total_overlap_area
+                FROM overlapping_areas
+                GROUP BY ST_SnapToGrid(overlap_geometry, 0.001)
+                HAVING COUNT(*) >= 2
+            )
+            INSERT INTO {analysis_table} 
+            (analysis_id, hotspot_rank, overlap_count, total_overlap_area, 
+             subdataset_count, scene_count, involved_subdatasets, involved_scenes, geometry, analysis_params)
             SELECT 
-                ST_Union(overlap_geometry) as hotspot_geometry,
-                COUNT(*) as overlap_count,
-                ARRAY_AGG(DISTINCT subdataset_a) || ARRAY_AGG(DISTINCT subdataset_b) as involved_subdatasets,
-                ARRAY_AGG(DISTINCT scene_a) || ARRAY_AGG(DISTINCT scene_b) as involved_scenes,
-                SUM(overlap_area) as total_overlap_area
-            FROM overlapping_pairs
-            GROUP BY ST_SnapToGrid(overlap_geometry, 0.001)
-            HAVING COUNT(*) >= 2
-        )
-        INSERT INTO {analysis_table} 
-        (analysis_id, hotspot_rank, overlap_count, total_overlap_area, 
-         subdataset_count, scene_count, involved_subdatasets, involved_scenes, geometry, analysis_params)
-        SELECT 
-            '{analysis_id}' as analysis_id,
-            ROW_NUMBER() OVER (ORDER BY overlap_count DESC) as hotspot_rank,
-            overlap_count,
-            total_overlap_area,
-            ARRAY_LENGTH(involved_subdatasets, 1) as subdataset_count,
-            ARRAY_LENGTH(involved_scenes, 1) as scene_count,
-            involved_subdatasets,
-            involved_scenes,
-            hotspot_geometry as geometry,
-            '{{"city_filter": "{args.city}", "min_overlap_area": {args.min_overlap_area}, "top_n": {args.top_n}}}' as analysis_params
-        FROM overlap_hotspots
-        ORDER BY overlap_count DESC
-        LIMIT {args.top_n};
-        """
+                '{analysis_id}' as analysis_id,
+                ROW_NUMBER() OVER (ORDER BY overlap_count DESC) as hotspot_rank,
+                overlap_count,
+                total_overlap_area,
+                ARRAY_LENGTH(involved_subdatasets, 1) as subdataset_count,
+                ARRAY_LENGTH(involved_scenes, 1) as scene_count,
+                involved_subdatasets,
+                involved_scenes,
+                hotspot_geometry as geometry,
+                '{{"city_filter": "{args.city}", "min_overlap_area": {args.min_overlap_area}, "top_n": {args.top_n}, "intersect_only": false}}' as analysis_params
+            FROM overlap_hotspots
+            ORDER BY overlap_count DESC
+            LIMIT {args.top_n};
+            """
         
         print(f"⚡ 执行空间叠置分析SQL...")
         print(f"💡 可以使用 Ctrl+C 安全退出")
@@ -510,7 +590,7 @@ def main():
                 view_sql = f"""
                 CREATE OR REPLACE VIEW {qgis_view} AS
                 SELECT 
-                    id as qgis_id,
+                    id,
                     analysis_id,
                     hotspot_rank,
                     overlap_count,
@@ -549,7 +629,7 @@ def main():
                 print(f"   2. {qgis_view} - 重叠热点区域")
                 print(f"")
                 print(f"🎨 可视化建议:")
-                print(f"   • 主键: qgis_id")
+                print(f"   • 主键: id")
                 print(f"   • 几何列: geometry")
                 print(f"   • 按 density_level 字段设置颜色")
                 print(f"   • 显示 overlap_count 标签")
