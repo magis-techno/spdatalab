@@ -452,16 +452,16 @@ def main():
                 LATERAL (
                     SELECT 
                         generate_series(
-                            floor(ST_XMin(city_envelope) / {args.grid_size}) * {args.grid_size}::int,
-                            ceil(ST_XMax(city_envelope) / {args.grid_size}) * {args.grid_size}::int,
+                            (floor(ST_XMin(city_envelope) / {args.grid_size}) * {args.grid_size})::int,
+                            (ceil(ST_XMax(city_envelope) / {args.grid_size}) * {args.grid_size})::int,
                             {args.grid_size}
                         ) as x
                 ) x_series,
                 LATERAL (
                     SELECT 
                         generate_series(
-                            floor(ST_YMin(city_envelope) / {args.grid_size}) * {args.grid_size}::int,
-                            ceil(ST_YMax(city_envelope) / {args.grid_size}) * {args.grid_size}::int,
+                            (floor(ST_YMin(city_envelope) / {args.grid_size}) * {args.grid_size})::int,
+                            (ceil(ST_YMax(city_envelope) / {args.grid_size}) * {args.grid_size})::int,
                             {args.grid_size}
                         ) as y
                 ) y_series
