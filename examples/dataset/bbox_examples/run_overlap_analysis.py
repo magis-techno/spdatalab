@@ -652,58 +652,26 @@ def main():
                 {'AND SUM(e.bbox_area) >= ' + str(args.min_overlap_area) if args.calculate_area and args.min_overlap_area > 0 else ''}
                 GROUP BY g.grid_x, g.grid_y, g.grid_density
             ),
-            connected_components AS (
-                -- 🔗 第5步：连通性分析，找相邻的高密度网格
-                WITH RECURSIVE grid_clusters AS (
-                    -- 初始化：为每个网格分配唯一cluster_id
-                    SELECT 
-                        grid_x, 
-                        grid_y,
-                        bbox_count_in_grid,
-                        subdataset_count,
-                        scene_count, 
-                        involved_subdatasets,
-                        involved_scenes,
-                        total_bbox_area,
-                        grid_geom,
-                        ROW_NUMBER() OVER (ORDER BY grid_x, grid_y) as cluster_id,
-                        ROW_NUMBER() OVER (ORDER BY grid_x, grid_y) as original_cluster_id
-                    FROM high_density_grids
-                    
-                    UNION ALL
-                    
-                    -- 递归：合并相邻网格的cluster_id
-                    SELECT 
-                        h.grid_x,
-                        h.grid_y, 
-                        h.bbox_count_in_grid,
-                        h.subdataset_count,
-                        h.scene_count,
-                        h.involved_subdatasets,
-                        h.involved_scenes,
-                        h.total_bbox_area,
-                        h.grid_geom,
-                        LEAST(c.cluster_id, h.original_cluster_id) as cluster_id,
-                        h.original_cluster_id
-                    FROM high_density_grids h
-                    JOIN grid_clusters c ON (
-                        -- 8-连通相邻关系
-                        ABS(h.grid_x - c.grid_x) <= 1 
-                        AND ABS(h.grid_y - c.grid_y) <= 1
-                        AND NOT (h.grid_x = c.grid_x AND h.grid_y = c.grid_y)
-                    )
-                    WHERE c.cluster_id < h.original_cluster_id
-                )
-                SELECT DISTINCT ON (grid_x, grid_y)
-                    grid_x, grid_y, bbox_count_in_grid, subdataset_count, scene_count,
-                    involved_subdatasets, involved_scenes, total_bbox_area, grid_geom,
-                    MIN(cluster_id) OVER (PARTITION BY grid_x, grid_y) as final_cluster_id
-                FROM grid_clusters
+            grid_clusters AS (
+                -- 🔗 第5步：简化连通性分析，基于网格邻近度分组
+                SELECT 
+                    grid_x,
+                    grid_y,
+                    bbox_count_in_grid,
+                    subdataset_count,
+                    scene_count,
+                    involved_subdatasets,
+                    involved_scenes,
+                    total_bbox_area,
+                    grid_geom,
+                    -- 简单聚类：使用网格坐标区域分组
+                    floor(grid_x / 3) * 1000 + floor(grid_y / 3) as simple_cluster_id
+                FROM high_density_grids
             ),
             density_regions AS (
                 -- 🏗️ 第6步：合并连通网格为区域
                 SELECT 
-                    final_cluster_id as region_id,
+                    simple_cluster_id as region_id,
                     COUNT(*) as grid_count,
                     SUM(bbox_count_in_grid) as total_bbox_count,
                     MAX(bbox_count_in_grid) as max_grid_density,
@@ -721,8 +689,8 @@ def main():
                         ELSE 
                             ST_Union(ARRAY_AGG(grid_geom))
                     END as region_geometry
-                FROM connected_components
-                GROUP BY final_cluster_id
+                FROM grid_clusters
+                GROUP BY simple_cluster_id
                 HAVING COUNT(*) >= {args.min_cluster_size}  -- 最小连通区域大小
             )
             INSERT INTO {analysis_table} 
@@ -747,7 +715,7 @@ def main():
                     'min_cluster_size', {args.min_cluster_size},
                     'cluster_method', '{args.cluster_method}',
                     'calculate_area', {str(args.calculate_area).lower()},
-                    'region_id', region_id,
+                    'region_cluster_id', region_id,
                     'grid_count', grid_count,
                     'max_grid_density', max_grid_density,
                     'avg_grid_density', avg_grid_density
