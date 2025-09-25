@@ -587,8 +587,12 @@ def main():
                 print(f"\n🎨 创建QGIS视图...")
                 qgis_view = "qgis_bbox_overlap_hotspots"
                 
+                # 先删除旧视图，避免列名冲突
+                drop_view_sql = f"DROP VIEW IF EXISTS {qgis_view} CASCADE;"
+                conn.execute(text(drop_view_sql))
+                
                 view_sql = f"""
-                CREATE OR REPLACE VIEW {qgis_view} AS
+                CREATE VIEW {qgis_view} AS
                 SELECT 
                     id,
                     analysis_id,

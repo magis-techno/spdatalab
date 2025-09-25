@@ -554,8 +554,12 @@ class BBoxOverlapAnalyzer:
                 # 内置SQL
                 where_clause = f"WHERE analysis_id = '{analysis_id}'" if analysis_id else ""
                 
+                # 先删除旧视图，避免列名冲突
+                drop_view_sql = f"DROP VIEW IF EXISTS {self.qgis_view} CASCADE;"
+                conn.execute(text(drop_view_sql))
+                
                 view_sql = f"""
-                CREATE OR REPLACE VIEW {self.qgis_view} AS
+                CREATE VIEW {self.qgis_view} AS
                 SELECT 
                     id,
                     analysis_id,
