@@ -32,7 +32,7 @@ python -m spdatalab process_bbox --input defect_dataset.json
     |                            |                           |
     |                            |                           |
 ┌───────────┐               ┌─────────────┐              ┌─────────────┐
-│索引文件   │               │dataset.json │              │分表+ 动态字段│
+│索引文件    │                │dataset.json │              │分表+ 动态字段│
 │或         │  DatasetManager │或          │  BBox模块     │+           │
 │问题单URLs │  ────────────► │dataset.     │ ────────────► │几何边界框   │
 │          │               │parquet      │              │+           │

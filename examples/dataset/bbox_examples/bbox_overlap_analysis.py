@@ -43,7 +43,7 @@ sys.path.insert(0, str(project_root))
 # 尝试直接导入，如果失败则添加src路径
 try:
     from spdatalab.dataset.bbox import (
-        create_qgis_compatible_unified_view,
+        create_unified_view,
         list_bbox_tables,
         LOCAL_DSN
     )
@@ -51,7 +51,7 @@ except ImportError:
     # 如果直接导入失败，尝试添加src路径
     sys.path.insert(0, str(project_root / "src"))
     from spdatalab.dataset.bbox import (
-        create_qgis_compatible_unified_view,
+        create_unified_view,
         list_bbox_tables,
         LOCAL_DSN
     )
@@ -70,7 +70,7 @@ class BBoxOverlapAnalyzer:
         self.dsn = dsn
         self.engine = create_engine(dsn, future=True)
         self.analysis_table = "bbox_overlap_analysis_results"
-        self.unified_view = "clips_bbox_unified_qgis"
+        self.unified_view = "clips_bbox_unified"
         self.qgis_view = "qgis_bbox_overlap_hotspots"
         
         # 优雅退出控制
@@ -144,11 +144,11 @@ class BBoxOverlapAnalyzer:
         Args:
             force_refresh: 是否强制刷新视图
         """
-        print("🔍 检查bbox统一视图...")
+        print("🔍 检查bbox.py中的标准统一视图...")
         
         try:
             with self.engine.connect() as conn:
-                # 1. 检查视图是否存在
+                # 1. 检查bbox.py中的标准统一视图是否存在
                 check_view_sql = text(f"""
                     SELECT EXISTS (
                         SELECT FROM information_schema.views 
@@ -195,14 +195,14 @@ class BBoxOverlapAnalyzer:
                         print(f"🔄 为安全起见，将重新创建视图")
                         view_needs_update = True
                 
-                # 4. 创建或更新视图
+                # 4. 创建或更新视图（使用bbox.py的标准函数）
                 if view_needs_update:
                     if current_table_count == 0:
                         print(f"❌ 无法创建视图：没有可用的bbox分表")
                         return False
                     
-                    print(f"🛠️ 正在创建/更新统一视图...")
-                    success = create_qgis_compatible_unified_view(self.engine, self.unified_view)
+                    print(f"🛠️ 使用bbox.py中的create_unified_view函数创建标准统一视图...")
+                    success = create_unified_view(self.engine, self.unified_view)
                     if not success:
                         print("❌ 创建统一视图失败")
                         return False
@@ -221,16 +221,14 @@ class BBoxOverlapAnalyzer:
                         print(f"⚠️ 统一视图为空，可能分表中没有数据")
                         return False
                     
-                    # 显示数据分布概况
+                    # 显示数据分布概况（注意：使用id而不是qgis_id）
                     sample_sql = text(f"""
                         SELECT 
                             COUNT(DISTINCT subdataset_name) as subdataset_count,
                             COUNT(DISTINCT city_id) as city_count,
                             COUNT(*) FILTER (WHERE all_good = true) as good_quality_count,
                             COUNT(*) FILTER (WHERE all_good = false OR all_good IS NULL) as poor_quality_count,
-                            ROUND(100.0 * COUNT(*) FILTER (WHERE all_good = true) / COUNT(*), 2) as good_quality_percent,
-                            MIN(created_at) as earliest_data,
-                            MAX(created_at) as latest_data
+                            ROUND(100.0 * COUNT(*) FILTER (WHERE all_good = true) / COUNT(*), 2) as good_quality_percent
                         FROM {self.unified_view} 
                         WHERE city_id IS NOT NULL;
                     """)
@@ -416,8 +414,8 @@ class BBoxOverlapAnalyzer:
                 analysis_sql = f"""
                 WITH overlapping_areas AS (
                     SELECT 
-                        a.qgis_id as bbox_a_id,
-                        b.qgis_id as bbox_b_id,
+                        a.id as bbox_a_id,
+                        b.id as bbox_b_id,
                         a.subdataset_name as subdataset_a,
                         b.subdataset_name as subdataset_b,
                         a.scene_token as scene_a,
@@ -425,7 +423,7 @@ class BBoxOverlapAnalyzer:
                         ST_Intersection(a.geometry, b.geometry) as overlap_geometry,
                         ST_Area(ST_Intersection(a.geometry, b.geometry)) as overlap_area
                     FROM {self.unified_view} a
-                    JOIN {self.unified_view} b ON a.qgis_id < b.qgis_id
+                    JOIN {self.unified_view} b ON a.id < b.id
                     WHERE ST_Intersects(a.geometry, b.geometry)
                     {"" if intersect_only else f"AND ST_Area(ST_Intersection(a.geometry, b.geometry)) > {min_overlap_area}"}
                     AND NOT ST_Equals(a.geometry, b.geometry)
@@ -517,7 +515,7 @@ class BBoxOverlapAnalyzer:
                 view_sql = f"""
                 CREATE OR REPLACE VIEW {self.qgis_view} AS
                 SELECT 
-                    id as qgis_id,
+                    id,
                     analysis_id,
                     hotspot_rank,
                     overlap_count,
@@ -718,7 +716,7 @@ class BBoxOverlapAnalyzer:
                 'username': 'postgres'
             },
             'visualization_tips': {
-                'primary_key': 'qgis_id',
+                'primary_key': 'id',
                 'geometry_column': 'geometry',
                 'style_column': 'density_level',
                 'label_column': 'overlap_count',

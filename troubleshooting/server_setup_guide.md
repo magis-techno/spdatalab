@@ -316,3 +316,4 @@ nohup /tmp/disk_monitor.sh > /tmp/disk_usage.log 2>&1 &
 
 完成以上配置后，你的新服务器就准备好接收数据库迁移了！
 
+
