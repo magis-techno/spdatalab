@@ -170,13 +170,12 @@ def main():
         # 🔥 网格化分析参数（默认启用）
         parser.add_argument('--grid-size', type=float, default=0.002, help='网格大小（度），默认0.002度约200米')
         parser.add_argument('--percentile', type=float, default=90, help='密度阈值分位数（0-100），默认90分位数')
-        parser.add_argument('--min-cluster-size', type=int, default=3, help='最小连通区域包含的网格数，默认3')
+        parser.add_argument('--min-cluster-size', type=int, default=1, help='最小连通区域包含的网格数，默认1（不过滤）')
         parser.add_argument('--cluster-method', choices=['convex_hull', 'union'], default='convex_hull', 
-                          help='区域合并方法：convex_hull（凸包）或union（几何联合）')
+                          help='区域合并方法：convex_hull（规整边界）或union（精确形状）')
         parser.add_argument('--calculate-area', action='store_true', help='计算重叠面积并应用min-overlap-area阈值（默认只检查相交）')
         # 兼容旧参数
-        parser.add_argument('--density-threshold', type=int, help='固定密度阈值（已弃用，建议使用--percentile）')
-        parser.add_argument('--top-n', type=int, help='返回数量（已弃用，现在返回所有满足阈值的区域）')
+        parser.add_argument('--density-threshold', type=int, help='固定密度阈值（兼容旧版本，建议使用--percentile）')
         # 🧹 清理和诊断功能
         parser.add_argument('--diagnose', action='store_true', help='诊断bbox数据状态并退出')
         parser.add_argument('--cleanup-views', action='store_true', help='清理旧的bbox视图')
@@ -185,9 +184,7 @@ def main():
         
         # 参数兼容性处理
         if args.density_threshold:
-            print(f"⚠️ 警告: --density-threshold 已弃用，建议使用 --percentile")
-        if args.top_n:
-            print(f"ℹ️ 注意: --top-n 已弃用，现在返回所有满足阈值的连通区域")
+            print(f"ℹ️ 使用兼容模式: 固定密度阈值 {args.density_threshold}")
         
         print(f"\n📋 分析参数:")
         print(f"   城市过滤: {args.city}")
@@ -200,8 +197,16 @@ def main():
         else:
             print(f"   📊 动态密度阈值: {args.percentile}分位数")
         
-        print(f"   🔗 连通区域分析: 最小{args.min_cluster_size}个网格")
-        print(f"   🎯 区域合并方法: {args.cluster_method}")
+        if args.min_cluster_size > 1:
+            print(f"   🔗 连通区域过滤: 最小{args.min_cluster_size}个网格")
+        else:
+            print(f"   🔗 连通区域分析: 不过滤区域大小")
+        
+        cluster_method_desc = {
+            'convex_hull': 'convex_hull（生成规整边界，可能包含空白区域）',
+            'union': 'union（保持精确形状，可能有洞或复杂边界）'
+        }
+        print(f"   🎯 区域合并方法: {cluster_method_desc.get(args.cluster_method, args.cluster_method)}")
         print(f"   🎯 分析模式: {'面积计算模式' if args.calculate_area else '快速相交模式（默认）'}")
         if args.calculate_area and args.min_overlap_area > 0:
             print(f"   📐 最小重叠面积: {args.min_overlap_area}")
@@ -923,7 +928,8 @@ def main():
                     print(f"   • 降低分位数阈值: --percentile 75")
                 else:
                     print(f"   • 降低固定阈值: --density-threshold 3")
-                print(f"   • 减小最小区域大小: --min-cluster-size 2")
+                if args.min_cluster_size > 1:
+                    print(f"   • 减小最小区域大小: --min-cluster-size 1")
                 print(f"   • 增大网格尺寸: --grid-size 0.005")
                 if args.calculate_area and args.min_overlap_area > 0:
                     print(f"   • 降低面积阈值: --min-overlap-area 0")
