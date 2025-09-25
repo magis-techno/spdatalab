@@ -429,9 +429,9 @@ def main():
         # 🚀 执行网格化分析SQL（默认方法）
         print(f"🔥 使用网格化分析，避免连锁聚合问题...")
         
-        # 先检查网格数量，避免生成过多网格
+        # 🎯 新方法：只检查城市范围，不预估网格数量（因为我们按需生成）
         with engine.connect() as conn:
-            grid_check_sql = text(f"""
+            city_check_sql = text(f"""
                 WITH city_bbox AS (
                     SELECT ST_Envelope(ST_Union(geometry)) as city_envelope
                     FROM {view_name} 
@@ -440,58 +440,22 @@ def main():
                 SELECT 
                     ST_XMax(city_envelope) - ST_XMin(city_envelope) as width_degrees,
                     ST_YMax(city_envelope) - ST_YMin(city_envelope) as height_degrees,
-                    CEIL((ST_XMax(city_envelope) - ST_XMin(city_envelope)) / {args.grid_size}) *
-                    CEIL((ST_YMax(city_envelope) - ST_YMin(city_envelope)) / {args.grid_size}) as estimated_grid_count
-                FROM city_bbox;
+                    COUNT(*) as bbox_count
+                FROM city_bbox, {view_name} 
+                WHERE city_id = '{args.city}' AND all_good = true
+                GROUP BY 1, 2;
             """)
             
-            grid_check = conn.execute(grid_check_sql).fetchone()
-            estimated_grids = grid_check.estimated_grid_count
+            city_check = conn.execute(city_check_sql).fetchone()
             
-            print(f"📏 城市范围: {grid_check.width_degrees:.4f}° × {grid_check.height_degrees:.4f}°")
-            print(f"📊 预计网格数量: {estimated_grids:,} 个")
-            
-            if estimated_grids > 10000:
-                print(f"⚠️ 网格数量过多！建议增大 --grid-size 或减小分析范围")
-                print(f"💡 建议: --grid-size {args.grid_size * 2:.3f} (约 {int(estimated_grids/4):,} 个网格)")
-                return
+            print(f"📏 城市范围: {city_check.width_degrees:.4f}° × {city_check.height_degrees:.4f}°")
+            print(f"📦 bbox数量: {city_check.bbox_count:,} 个")
+            print(f"📊 网格大小: {args.grid_size}° × {args.grid_size}° (约200m×200m)")
+            print(f"💡 新方法：只为有重叠的区域生成网格，避免空网格计算")
         
         analysis_sql = f"""
-            WITH city_bbox AS (
-                -- 获取城市的边界框
-                SELECT ST_Envelope(ST_Union(geometry)) as city_envelope
-                FROM {view_name} 
-                WHERE city_id = '{args.city}' AND all_good = true
-            ),
-            analysis_grid AS (
-                -- 创建规则网格覆盖城市区域
-                SELECT 
-                    ROW_NUMBER() OVER() as grid_id,
-                    ST_MakeEnvelope(
-                        x, y, 
-                        x + {args.grid_size}, y + {args.grid_size}, 
-                        4326
-                    ) as grid_geom
-                FROM city_bbox,
-                LATERAL (
-                    SELECT 
-                        (floor(ST_XMin(city_envelope) / {args.grid_size}) + i) * {args.grid_size} as x
-                    FROM generate_series(
-                        0,
-                        ceil((ST_XMax(city_envelope) - ST_XMin(city_envelope)) / {args.grid_size})::int
-                    ) as i
-                ) x_series,
-                LATERAL (
-                    SELECT 
-                        (floor(ST_YMin(city_envelope) / {args.grid_size}) + j) * {args.grid_size} as y
-                    FROM generate_series(
-                        0,
-                        ceil((ST_YMax(city_envelope) - ST_YMin(city_envelope)) / {args.grid_size})::int
-                    ) as j
-                ) y_series
-            ),
-            overlap_pairs AS (
-                -- 计算重叠对（优化版）
+            WITH overlap_pairs AS (
+                -- 🚀 第1步：计算重叠对（这个无法避免）
                 SELECT 
                     a.id as bbox_a_id,
                     b.id as bbox_b_id,
@@ -509,23 +473,40 @@ def main():
                 AND NOT ST_Equals(a.geometry, b.geometry)
                 {where_clause}
             ),
-            grid_overlap_stats AS (
-                -- 统计每个网格内的重叠情况
+            grid_assigned_overlaps AS (
+                -- 🎯 第2步：数学计算每个重叠属于哪个网格（高效！）
                 SELECT 
-                    g.grid_id,
-                    g.grid_geom,
-                    COUNT(op.overlap_geom) as overlap_count_in_grid,
-                    ARRAY_AGG(DISTINCT op.subdataset_a) || ARRAY_AGG(DISTINCT op.subdataset_b) as involved_subdatasets,
-                    ARRAY_AGG(DISTINCT op.scene_a) || ARRAY_AGG(DISTINCT op.scene_b) as involved_scenes,
+                    *,
+                    -- 直接计算网格坐标，无需预生成网格
+                    floor(ST_X(ST_Centroid(overlap_geom)) / {args.grid_size})::int as grid_x,
+                    floor(ST_Y(ST_Centroid(overlap_geom)) / {args.grid_size})::int as grid_y,
                     CASE 
-                        WHEN {not args.calculate_area} THEN COUNT(op.overlap_geom)::float
-                        ELSE COALESCE(SUM(ST_Area(op.overlap_geom)), 0)
-                    END as total_overlap_area
-                FROM analysis_grid g
-                LEFT JOIN overlap_pairs op ON ST_Intersects(g.grid_geom, op.overlap_geom)
-                GROUP BY g.grid_id, g.grid_geom
-                HAVING COUNT(op.overlap_geom) >= {args.density_threshold}
-                   AND ({not args.calculate_area} OR COALESCE(SUM(ST_Area(op.overlap_geom)), 0) >= {args.min_overlap_area})
+                        WHEN {not args.calculate_area} THEN 1.0
+                        ELSE ST_Area(overlap_geom)
+                    END as overlap_area
+                FROM overlap_pairs
+            ),
+            grid_overlap_stats AS (
+                -- 📊 第3步：按网格分组统计（只处理有数据的网格）
+                SELECT 
+                    grid_x,
+                    grid_y,
+                    COUNT(*) as overlap_count_in_grid,
+                    ARRAY_AGG(DISTINCT subdataset_a) || ARRAY_AGG(DISTINCT subdataset_b) as involved_subdatasets,
+                    ARRAY_AGG(DISTINCT scene_a) || ARRAY_AGG(DISTINCT scene_b) as involved_scenes,
+                    SUM(overlap_area) as total_overlap_area,
+                    -- 🔧 按需生成网格几何（只为有数据的网格）
+                    ST_MakeEnvelope(
+                        grid_x * {args.grid_size}, 
+                        grid_y * {args.grid_size},
+                        (grid_x + 1) * {args.grid_size}, 
+                        (grid_y + 1) * {args.grid_size}, 
+                        4326
+                    ) as grid_geom
+                FROM grid_assigned_overlaps
+                GROUP BY grid_x, grid_y
+                HAVING COUNT(*) >= {args.density_threshold}
+                   AND ({not args.calculate_area} OR SUM(overlap_area) >= {args.min_overlap_area})
             )
             INSERT INTO {analysis_table} 
             (analysis_id, hotspot_rank, overlap_count, total_overlap_area, 
@@ -540,7 +521,7 @@ def main():
                 involved_subdatasets,
                 involved_scenes,
                 grid_geom as geometry,
-                '{{"city_filter": "{args.city}", "grid_size": {args.grid_size}, "density_threshold": {args.density_threshold}, "calculate_area": {args.calculate_area}}}' as analysis_params
+                '{{"city_filter": "{args.city}", "grid_size": {args.grid_size}, "density_threshold": {args.density_threshold}, "calculate_area": {args.calculate_area}, "grid_coords": "(" || grid_x || "," || grid_y || ")"}}' as analysis_params
             FROM grid_overlap_stats
             ORDER BY overlap_count_in_grid DESC
             LIMIT {args.top_n};
