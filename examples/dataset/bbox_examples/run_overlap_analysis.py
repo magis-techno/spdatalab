@@ -170,9 +170,8 @@ def main():
         # 🔥 网格化分析参数（默认启用）
         parser.add_argument('--grid-size', type=float, default=0.002, help='网格大小（度），默认0.002度约200米')
         parser.add_argument('--percentile', type=float, default=90, help='密度阈值分位数（0-100），默认90分位数')
-        parser.add_argument('--min-cluster-size', type=int, default=1, help='最小连通区域包含的网格数，默认1（不过滤）')
-        parser.add_argument('--cluster-method', choices=['convex_hull', 'union'], default='convex_hull', 
-                          help='区域合并方法：convex_hull（规整边界）或union（精确形状）')
+        parser.add_argument('--top-percent', type=float, default=5, help='返回最密集的前X%网格，默认5%')
+        parser.add_argument('--max-results', type=int, default=50, help='最大返回网格数量限制，默认50')
         parser.add_argument('--calculate-area', action='store_true', help='计算重叠面积并应用min-overlap-area阈值（默认只检查相交）')
         # 兼容旧参数
         parser.add_argument('--density-threshold', type=int, help='固定密度阈值（兼容旧版本，建议使用--percentile）')
@@ -197,16 +196,8 @@ def main():
         else:
             print(f"   📊 动态密度阈值: {args.percentile}分位数")
         
-        if args.min_cluster_size > 1:
-            print(f"   🔗 连通区域过滤: 最小{args.min_cluster_size}个网格")
-        else:
-            print(f"   🔗 连通区域分析: 不过滤区域大小")
-        
-        cluster_method_desc = {
-            'convex_hull': 'convex_hull（生成规整边界，可能包含空白区域）',
-            'union': 'union（保持精确形状，可能有洞或复杂边界）'
-        }
-        print(f"   🎯 区域合并方法: {cluster_method_desc.get(args.cluster_method, args.cluster_method)}")
+        print(f"   📊 返回策略: 前{args.top_percent}%最密集网格")
+        print(f"   🔢 最大返回数量: {args.max_results}个网格")
         print(f"   🎯 分析模式: {'面积计算模式' if args.calculate_area else '快速相交模式（默认）'}")
         if args.calculate_area and args.min_overlap_area > 0:
             print(f"   📐 最小重叠面积: {args.min_overlap_area}")
@@ -652,8 +643,8 @@ def main():
                 {'AND SUM(e.bbox_area) >= ' + str(args.min_overlap_area) if args.calculate_area and args.min_overlap_area > 0 else ''}
                 GROUP BY g.grid_x, g.grid_y, g.grid_density
             ),
-            grid_clusters AS (
-                -- 🔗 第5步：简化连通性分析，基于网格邻近度分组
+            final_grids AS (
+                -- 🔗 第5步：按百分比选择最密集的网格
                 SELECT 
                     grid_x,
                     grid_y,
@@ -664,70 +655,55 @@ def main():
                     involved_scenes,
                     total_bbox_area,
                     grid_geom,
-                    -- 简单聚类：使用网格坐标区域分组
-                    floor(grid_x / 3) * 1000 + floor(grid_y / 3) as simple_cluster_id
+                    ROW_NUMBER() OVER (ORDER BY bbox_count_in_grid DESC) as density_rank
                 FROM high_density_grids
             ),
-            density_regions AS (
-                -- 🏗️ 第6步：合并连通网格为区域
+            top_percent_grids AS (
+                -- 🎯 第6步：计算百分比阈值并限制数量
                 SELECT 
-                    simple_cluster_id as region_id,
-                    COUNT(*) as grid_count,
-                    SUM(bbox_count_in_grid) as total_bbox_count,
-                    MAX(bbox_count_in_grid) as max_grid_density,
-                    ROUND(AVG(bbox_count_in_grid::numeric), 1) as avg_grid_density,
-                    SUM(subdataset_count) as total_subdatasets,
-                    SUM(scene_count) as total_scenes,
-                    -- 简化的数据集和场景合并（避免数组维度问题）
-                    string_to_array(
-                        string_agg(DISTINCT array_to_string(involved_subdatasets, ','), ','), 
-                        ','
-                    ) as region_subdatasets,
-                    string_to_array(
-                        string_agg(DISTINCT array_to_string(involved_scenes, ','), ','), 
-                        ','
-                    ) as region_scenes,
-                    SUM(total_bbox_area) as region_total_area,
-                    -- 区域几何合并
-                    CASE 
-                        WHEN '{args.cluster_method}' = 'convex_hull' THEN
-                            ST_ConvexHull(ST_Collect(ARRAY_AGG(grid_geom)))
-                        ELSE 
-                            ST_Union(ARRAY_AGG(grid_geom))
-                    END as region_geometry
-                FROM grid_clusters
-                GROUP BY simple_cluster_id
-                HAVING COUNT(*) >= {args.min_cluster_size}  -- 最小连通区域大小
+                    grid_x,
+                    grid_y,
+                    bbox_count_in_grid,
+                    subdataset_count,
+                    scene_count,
+                    involved_subdatasets,
+                    involved_scenes,
+                    total_bbox_area,
+                    grid_geom,
+                    density_rank
+                FROM final_grids
+                WHERE density_rank <= GREATEST(
+                    ROUND((SELECT COUNT(*) FROM final_grids) * {args.top_percent} / 100.0),
+                    1
+                )
+                AND density_rank <= {args.max_results}
             )
             INSERT INTO {analysis_table} 
             (analysis_id, hotspot_rank, overlap_count, total_overlap_area, 
              subdataset_count, scene_count, involved_subdatasets, involved_scenes, geometry, analysis_params)
             SELECT 
                 '{analysis_id}' as analysis_id,
-                ROW_NUMBER() OVER (ORDER BY total_bbox_count DESC, grid_count DESC) as hotspot_rank,
-                total_bbox_count as overlap_count,
-                region_total_area as total_overlap_area,
-                ARRAY_LENGTH(region_subdatasets, 1) as subdataset_count,
-                ARRAY_LENGTH(region_scenes, 1) as scene_count,
-                region_subdatasets as involved_subdatasets,
-                region_scenes as involved_scenes,
-                region_geometry as geometry,
+                density_rank as hotspot_rank,
+                bbox_count_in_grid as overlap_count,
+                total_bbox_area as total_overlap_area,
+                subdataset_count,
+                scene_count,
+                involved_subdatasets,
+                involved_scenes,
+                grid_geom as geometry,
                 json_build_object(
-                    'analysis_type', 'density_regions',
+                    'analysis_type', 'top_percent_grids',
                     'city_filter', '{args.city}',
                     'grid_size', {args.grid_size},
                     'percentile_threshold', {args.percentile if not args.density_threshold else 'null'},
                     'fixed_threshold', {args.density_threshold if args.density_threshold else 'null'},
-                    'min_cluster_size', {args.min_cluster_size},
-                    'cluster_method', '{args.cluster_method}',
+                    'top_percent', {args.top_percent},
+                    'max_results', {args.max_results},
                     'calculate_area', {str(args.calculate_area).lower()},
-                    'region_cluster_id', region_id,
-                    'grid_count', grid_count,
-                    'max_grid_density', max_grid_density,
-                    'avg_grid_density', avg_grid_density
+                    'min_overlap_area', {args.min_overlap_area if args.calculate_area else 'null'}
                 )::text as analysis_params
-            FROM density_regions
-            ORDER BY total_bbox_count DESC, grid_count DESC;
+            FROM top_percent_grids
+            ORDER BY density_rank;
             """
         
         print(f"⚡ 执行bbox密度分析SQL...")
@@ -765,7 +741,7 @@ def main():
             # 计算总耗时和性能统计
             total_duration = (commit_time - analysis_start_time).total_seconds()
             
-            print(f"✅ 智能区域分析完成，发现 {inserted_count} 个连通密集区域")
+            print(f"✅ 网格密度分析完成，发现 {inserted_count} 个高密度网格")
             print(f"⏱️ 总耗时: {total_duration:.2f}秒 (SQL: {sql_duration:.2f}s + 提交: {commit_duration:.2f}s)")
             
             # 性能统计
@@ -819,7 +795,7 @@ def main():
                 """)
                 
                 result_df = pd.read_sql(summary_sql, engine)
-                print(f"\n🏗️ 连通密集区域统计:")
+                print(f"\n📊 TOP {inserted_count} 高密度网格:")
                 print(result_df.to_string(index=False))
                 
                 # 创建QGIS视图

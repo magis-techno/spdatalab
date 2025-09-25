@@ -94,14 +94,16 @@ psql -d postgres -f sql/qgis_views.sql
 | `--city` | string | None | 城市过滤条件（🎯 强烈推荐） |
 | `--subdatasets` | list | None | 子数据集过滤列表 |
 | `--min-overlap-area` | float | 0.0 | 最小重叠面积阈值（平方度） |
-| `--top-n` | int | 20 | 返回的热点数量 |
+| `--top-percent` | float | 5 | 返回最密集的前X%网格 |
+| `--max-results` | int | 50 | 最大返回网格数量限制 |
 | `--analysis-id` | string | 自动生成 | 自定义分析ID |
 | `--suggest-city` | flag | False | 显示城市分析建议并退出 |
 | `--estimate-time` | flag | False | 估算分析时间并退出 |
 | `--refresh-view` | flag | False | 强制刷新统一视图 |
 | `--calculate-area` | flag | False | 🎯 计算面积并应用min-overlap-area阈值 |
 | `--grid-size` | float | 0.002 | 网格大小（度），约200米 |
-| `--density-threshold` | int | 5 | 每网格最小bbox数量阈值 |
+| `--percentile` | float | 90 | 密度阈值分位数（0-100） |
+| `--density-threshold` | int | None | 每网格最小bbox数量阈值（固定阈值，与percentile二选一） |
 | `--diagnose` | flag | False | 🔍 诊断bbox数据状态并退出 |
 | `--cleanup-views` | flag | False | 🧹 清理旧的bbox视图 |
 
