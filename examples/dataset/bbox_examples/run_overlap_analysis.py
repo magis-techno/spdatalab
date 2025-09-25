@@ -675,7 +675,7 @@ def main():
                     COUNT(*) as grid_count,
                     SUM(bbox_count_in_grid) as total_bbox_count,
                     MAX(bbox_count_in_grid) as max_grid_density,
-                    ROUND(AVG(bbox_count_in_grid::float), 1) as avg_grid_density,
+                    ROUND(AVG(bbox_count_in_grid::numeric), 1) as avg_grid_density,
                     SUM(subdataset_count) as total_subdatasets,
                     SUM(scene_count) as total_scenes,
                     -- 合并所有涉及的数据集和场景
@@ -801,11 +801,11 @@ def main():
                     SELECT 
                         hotspot_rank as region_rank,
                         overlap_count as total_bbox_count,
-                        ROUND(CAST(total_overlap_area AS FLOAT), 4) as region_area,
+                        ROUND(total_overlap_area::numeric, 4) as region_area,
                         subdataset_count,
                         scene_count,
                         CAST(analysis_params::json->>'grid_count' AS INTEGER) as grid_count,
-                        ROUND(CAST(analysis_params::json->>'avg_grid_density' AS FLOAT), 1) as avg_density
+                        ROUND(CAST(analysis_params::json->>'avg_grid_density' AS NUMERIC), 1) as avg_density
                     FROM {analysis_table}
                     WHERE analysis_id = '{analysis_id}'
                     ORDER BY hotspot_rank
