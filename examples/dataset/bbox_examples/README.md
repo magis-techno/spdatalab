@@ -7,12 +7,15 @@
 ```
 bbox_examples/
 ├── README.md                           # 本文档
-├── bbox_overlap_analysis.py            # 主分析脚本
-├── sql/                                # SQL脚本集合
-│   ├── create_analysis_tables.sql      # 创建分析结果表
-│   ├── overlap_analysis.sql            # 核心叠置分析查询
-│   └── qgis_views.sql                  # QGIS兼容视图
-└── (生成的样式文件会在运行后出现)
+├── run_overlap_analysis.py             # 🎯 主分析脚本（推荐）
+├── bbox_overlap_analysis.py            # ⚠️ 旧版脚本（已弃用）
+├── cleanup_analysis_data.py            # 🧹 独立清理工具
+├── create_indexes.py                   # 🔧 索引优化工具
+├── *.sql                               # SQL脚本文件
+└── sql/                                # SQL脚本集合
+    ├── create_analysis_tables.sql      # 创建分析结果表
+    ├── overlap_analysis.sql            # 核心叠置分析查询
+    └── qgis_views.sql                  # QGIS兼容视图
 ```
 
 ## 🎯 功能特性
@@ -38,35 +41,37 @@ bbox_examples/
 
 ## 🚀 快速开始
 
-### 1. 基础使用
+### 1. 基础使用（推荐新版本）
 
 ```bash
-# 1️⃣ 首先查看城市建议（推荐）
-python examples/dataset/bbox_examples/bbox_overlap_analysis.py --suggest-city
+# 🎯 推荐：使用新版高性能脚本
+# 1️⃣ 首先查看城市建议
+python examples/dataset/bbox_examples/run_overlap_analysis.py --suggest-city
 
-# 2️⃣ 估算特定城市的分析时间
-python examples/dataset/bbox_examples/bbox_overlap_analysis.py \
-    --city beijing --estimate-time
+# 2️⃣ 估算特定城市的分析时间  
+python examples/dataset/bbox_examples/run_overlap_analysis.py \
+    --city A263 --estimate-time
 
-# 3️⃣ 执行指定城市的分析（推荐方式）
-python examples/dataset/bbox_examples/bbox_overlap_analysis.py \
-    --city beijing \
-    --min-overlap-area 0.0001 \
+# 3️⃣ 执行指定城市的bbox密度分析（O(n)复杂度）
+python examples/dataset/bbox_examples/run_overlap_analysis.py \
+    --city A263 \
     --top-n 15
 
-# 🎯 简化模式：只要相交就算重叠（忽略面积阈值）
-python examples/dataset/bbox_examples/bbox_overlap_analysis.py \
-    --city beijing \
-    --intersect-only \
-    --top-n 15
+# 4️⃣ 诊断数据状态
+python examples/dataset/bbox_examples/run_overlap_analysis.py --diagnose
 
-# ⚠️ 全量分析（不推荐，可能耗时很久）
-python examples/dataset/bbox_examples/bbox_overlap_analysis.py \
-    --min-overlap-area 0.0001 \
-    --top-n 20
+# 5️⃣ 清理旧视图
+python examples/dataset/bbox_examples/run_overlap_analysis.py --cleanup-views
 ```
 
-### 2. QGIS可视化
+### 2. 旧版本使用（不推荐）
+
+```bash
+# ⚠️ 旧版本：传统O(n²)重叠分析（已弃用，性能较差）
+python examples/dataset/bbox_examples/bbox_overlap_analysis.py --city beijing
+```
+
+### 3. QGIS可视化
 
 ```bash
 # 运行QGIS可视化指南（包含演示分析）
@@ -77,7 +82,7 @@ python examples/visualization/qgis_bbox_overlap_guide.py \
     --analysis-id your_analysis_id
 ```
 
-### 3. 手动SQL执行
+### 4. 手动SQL执行
 
 如果你更喜欢直接使用SQL：
 
@@ -107,7 +112,11 @@ psql -d postgres -f sql/qgis_views.sql
 | `--suggest-city` | flag | False | 显示城市分析建议并退出 |
 | `--estimate-time` | flag | False | 估算分析时间并退出 |
 | `--refresh-view` | flag | False | 强制刷新统一视图 |
-| `--intersect-only` | flag | False | 🎯 简化模式：只要相交就算重叠 |
+| `--calculate-area` | flag | False | 🎯 计算面积并应用min-overlap-area阈值 |
+| `--grid-size` | float | 0.002 | 网格大小（度），约200米 |
+| `--density-threshold` | int | 5 | 每网格最小bbox数量阈值 |
+| `--diagnose` | flag | False | 🔍 诊断bbox数据状态并退出 |
+| `--cleanup-views` | flag | False | 🧹 清理旧的bbox视图 |
 
 ### 分析参数解释
 

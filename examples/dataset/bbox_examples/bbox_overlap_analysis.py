@@ -984,7 +984,27 @@ class BBoxOverlapAnalyzer:
 
 def main():
     """主函数"""
-    parser = argparse.ArgumentParser(description='BBox叠置分析')
+    
+    # 🚨 弃用警告
+    print("⚠️" * 20)
+    print("🚨 警告: 此脚本已弃用！")
+    print("🚨 请使用新版本: run_overlap_analysis.py")
+    print("🚨 新版本使用O(n)复杂度，性能提升数千倍")
+    print("⚠️" * 20)
+    print("\n💡 推荐命令:")
+    print("   python examples/dataset/bbox_examples/run_overlap_analysis.py --city YOUR_CITY")
+    print("   python examples/dataset/bbox_examples/run_overlap_analysis.py --suggest-city")
+    print("\n是否继续使用旧版本？(继续使用传统O(n²)分析) [y/N]: ", end="")
+    
+    import sys
+    user_input = input().strip().lower()
+    if user_input not in ['y', 'yes']:
+        print("👍 建议使用新版本脚本！")
+        sys.exit(0)
+    
+    print("\n⚠️ 继续使用旧版本（性能较慢）...")
+    
+    parser = argparse.ArgumentParser(description='BBox叠置分析 (DEPRECATED - 已弃用)')
     parser.add_argument('--city', required=False, help='城市过滤（必需参数，用于避免性能问题）')
     parser.add_argument('--subdatasets', nargs='+', help='子数据集过滤')
     parser.add_argument('--min-overlap-area', type=float, default=0.0, help='最小重叠面积阈值（intersect-only模式下忽略）')

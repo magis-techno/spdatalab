@@ -48,6 +48,15 @@ from examples.dataset.bbox_examples.bbox_overlap_analysis import BBoxOverlapAnal
 
 def main():
     """主函数"""
+    
+    # 弃用提示
+    print("ℹ️ 注意: 此工具的功能已整合到 run_overlap_analysis.py 中")
+    print("💡 新的命令:")
+    print("   --diagnose      诊断数据状态")
+    print("   --cleanup-views 清理视图")
+    print("   --suggest-city  城市建议")
+    print("\n继续使用独立清理工具...\n")
+    
     parser = argparse.ArgumentParser(
         description='清理BBox叠置分析数据',
         formatter_class=argparse.RawDescriptionHelpFormatter,

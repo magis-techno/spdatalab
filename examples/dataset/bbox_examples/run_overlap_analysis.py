@@ -171,6 +171,9 @@ def main():
         parser.add_argument('--grid-size', type=float, default=0.002, help='网格大小（度），默认0.002度约200米')
         parser.add_argument('--density-threshold', type=int, default=5, help='每网格最小重叠数量阈值，默认5')
         parser.add_argument('--calculate-area', action='store_true', help='计算重叠面积并应用min-overlap-area阈值（默认只检查相交）')
+        # 🧹 清理和诊断功能
+        parser.add_argument('--diagnose', action='store_true', help='诊断bbox数据状态并退出')
+        parser.add_argument('--cleanup-views', action='store_true', help='清理旧的bbox视图')
         
         args = parser.parse_args()
         
@@ -307,6 +310,86 @@ def main():
                         print(f"   - 建议命令: --city {best_city}")
                 else:
                     print("❌ 未找到可用的城市数据")
+                return
+            
+            # 如果用户想诊断数据状态
+            if args.diagnose:
+                print(f"\n🔍 数据状态诊断")
+                print("-" * 40)
+                
+                # 检查分表数量和数据量
+                print(f"📋 分表状态:")
+                print(f"   发现 {len(bbox_tables)} 个bbox分表")
+                print(f"   视图记录数: {row_count:,}")
+                
+                # 检查数据质量分布
+                quality_sql = f"""
+                SELECT 
+                    COUNT(*) as total,
+                    COUNT(*) FILTER (WHERE all_good = true) as good,
+                    COUNT(DISTINCT city_id) as cities,
+                    COUNT(DISTINCT subdataset_name) as subdatasets
+                FROM {view_name};
+                """
+                quality_result = conn.execute(text(quality_sql)).fetchone()
+                good_percent = (quality_result.good / quality_result.total * 100) if quality_result.total > 0 else 0
+                
+                print(f"📊 数据质量:")
+                print(f"   总记录数: {quality_result.total:,}")
+                print(f"   优质记录: {quality_result.good:,} ({good_percent:.1f}%)")
+                print(f"   城市数量: {quality_result.cities}")
+                print(f"   数据集数量: {quality_result.subdatasets}")
+                
+                # 建议
+                if quality_result.good < 1000:
+                    print(f"\n💡 建议: 数据量较小，任何城市都可快速分析")
+                elif quality_result.good > 100000:
+                    print(f"\n💡 建议: 数据量较大，建议使用 --suggest-city 选择合适城市")
+                else:
+                    print(f"\n💡 建议: 数据状态良好，可以进行overlap分析")
+                
+                print(f"\n✅ 诊断完成")
+                return
+            
+            # 如果用户想清理视图
+            if args.cleanup_views:
+                print(f"\n🧹 清理bbox相关视图")
+                print("-" * 40)
+                
+                views_to_check = [
+                    'clips_bbox_unified_qgis',
+                    'clips_bbox_unified_mat', 
+                    'qgis_bbox_overlap_hotspots'
+                ]
+                
+                check_views_sql = text("""
+                    SELECT table_name 
+                    FROM information_schema.views 
+                    WHERE table_schema = 'public' 
+                    AND table_name = ANY(:view_names);
+                """)
+                
+                existing_views = conn.execute(check_views_sql, {'view_names': views_to_check}).fetchall()
+                existing_view_names = [row[0] for row in existing_views]
+                
+                if not existing_view_names:
+                    print("✅ 没有找到需要清理的视图")
+                else:
+                    print(f"📋 找到以下视图，将删除:")
+                    for view_name_to_delete in existing_view_names:
+                        print(f"   - {view_name_to_delete}")
+                    
+                    for view_name_to_delete in existing_view_names:
+                        try:
+                            drop_sql = text(f"DROP VIEW IF EXISTS {view_name_to_delete} CASCADE;")
+                            conn.execute(drop_sql)
+                            print(f"✅ 删除视图: {view_name_to_delete}")
+                        except Exception as e:
+                            print(f"❌ 删除失败 {view_name_to_delete}: {str(e)}")
+                    
+                    conn.commit()
+                    print(f"✅ 视图清理完成")
+                
                 return
             
             # 如果用户想估算时间
@@ -451,8 +534,7 @@ def main():
             print(f"📏 城市范围: {city_check.width_degrees:.4f}° × {city_check.height_degrees:.4f}°")
             print(f"📦 bbox数量: {city_check.bbox_count:,} 个")
             print(f"📊 网格大小: {args.grid_size}° × {args.grid_size}° (约200m×200m)")
-            print(f"🎯 分析方法: bbox密度分析（O(n)复杂度）")
-            print(f"💡 优势: 避免{city_check.bbox_count:,}²≈{(city_check.bbox_count**2/2/1000000):.1f}M次空间相交计算")
+            print(f"🎯 分析方法: bbox密度分析")
         
         analysis_sql = f"""
             WITH bbox_bounds AS (
@@ -542,7 +624,6 @@ def main():
             """
         
         print(f"⚡ 执行bbox密度分析SQL...")
-        print(f"🎯 分析类型: bbox密度分析（O(n)复杂度，预计快5000倍）")
         print(f"💡 可以使用 Ctrl+C 安全退出")
         
         analysis_start_time = datetime.now()
@@ -585,7 +666,6 @@ def main():
             if bbox_count > 0:
                 bbox_per_sec = bbox_count / max(sql_duration, 0.001)  # 避免除零
                 print(f"📊 处理速度: {bbox_per_sec:,.0f} bbox/秒")
-                print(f"💡 相比传统O(n²)方法，理论提升: ~{bbox_count/2:,.0f}倍")
             
             if inserted_count > 0:
                 # 显示TOP结果
@@ -669,7 +749,6 @@ def main():
                 if args.calculate_area and args.min_overlap_area > 0:
                     print(f"   • 面积阈值: >= {args.min_overlap_area} 平方度")
                 print(f"   • 🎯 这是密度分析，不是传统重叠分析")
-                print(f"   • 优势: O(n)复杂度，比传统方法快数千倍")
                 print(f"   • 建议使用填充样式 + 透明度 70%")
                 print(f"   • 可以叠加原始bbox数据对比查看")
                 
