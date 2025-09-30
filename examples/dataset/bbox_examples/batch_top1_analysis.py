@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-批量城市Top1热点分析脚本
-=======================
+批量城市Top1热点分析脚本（简化版）
+===============================
 
-遍历所有城市，分析每个城市的top1重叠热点区域
+遍历所有城市，提取每个城市的top1重叠热点区域
 
 使用方法：
     python examples/dataset/bbox_examples/batch_top1_analysis.py
-    python examples/dataset/bbox_examples/batch_top1_analysis.py --min-bbox-count 1000
     python examples/dataset/bbox_examples/batch_top1_analysis.py --output-table city_top1_hotspots
 """
 
@@ -15,6 +14,7 @@ import sys
 from pathlib import Path
 import argparse
 from datetime import datetime
+import subprocess
 import time
 
 # 添加项目路径
@@ -30,155 +30,89 @@ except ImportError:
 from sqlalchemy import create_engine, text
 import pandas as pd
 
-def get_all_cities(conn, min_bbox_count=500):
-    """获取所有有足够bbox数据的城市"""
+def get_all_cities(conn):
+    """获取所有城市"""
     
-    print(f"🔍 查找有足够数据的城市（最少{min_bbox_count}个bbox）...")
+    print(f"🔍 查找所有城市...")
     
-    cities_sql = text(f"""
+    cities_sql = text("""
         SELECT 
             city_id,
             COUNT(*) as bbox_count,
-            COUNT(*) FILTER (WHERE all_good = true) as good_bbox_count,
-            ROUND((COUNT(*) FILTER (WHERE all_good = true) * 100.0 / COUNT(*))::numeric, 1) as quality_rate
+            COUNT(*) FILTER (WHERE all_good = true) as good_bbox_count
         FROM clips_bbox_unified
         WHERE city_id IS NOT NULL 
         GROUP BY city_id
-        HAVING COUNT(*) >= {min_bbox_count}
         ORDER BY COUNT(*) DESC;
     """)
     
     cities_df = pd.read_sql(cities_sql, conn)
     
-    print(f"📊 找到 {len(cities_df)} 个符合条件的城市:")
-    print(cities_df.to_string(index=False))
+    print(f"📊 找到 {len(cities_df)} 个城市:")
+    print(cities_df.head(10).to_string(index=False))
+    if len(cities_df) > 10:
+        print(f"... 还有 {len(cities_df) - 10} 个城市")
     
-    return cities_df
+    return cities_df['city_id'].tolist()
 
-def analyze_city_top1(conn, city_id, grid_size=0.002, density_threshold=5):
-    """分析单个城市的top1热点"""
+def analyze_city_with_existing_script(city_id):
+    """使用现有脚本分析单个城市的top1热点"""
     
     print(f"\n🎯 分析城市: {city_id}")
     
-    # 使用与run_overlap_analysis.py相同的网格分析逻辑
-    analysis_sql = text(f"""
-        WITH bbox_bounds AS (
-            -- 🚀 第1步：提取bbox边界（一次性几何计算）
-            SELECT 
-                id,
-                subdataset_name,
-                scene_token,
-                ST_XMin(geometry) as xmin,
-                ST_XMax(geometry) as xmax,
-                ST_YMin(geometry) as ymin,
-                ST_YMax(geometry) as ymax
-            FROM clips_bbox_unified
-            WHERE city_id = '{city_id}' AND all_good = true
-        ),
-        bbox_grid_coverage AS (
-            -- 🎯 第2步：计算每个bbox覆盖的网格范围（纯数学计算）
-            SELECT 
-                id,
-                subdataset_name,
-                scene_token,
-                floor(xmin / {grid_size})::int as min_grid_x,
-                floor(xmax / {grid_size})::int as max_grid_x,
-                floor(ymin / {grid_size})::int as min_grid_y,
-                floor(ymax / {grid_size})::int as max_grid_y,
-                (xmax - xmin) * (ymax - ymin) as bbox_area
-            FROM bbox_bounds
-        ),
-        expanded_grid_coverage AS (
-            -- 🔧 第3步：展开每个bbox到它覆盖的所有网格
-            SELECT 
-                id,
-                subdataset_name,
-                scene_token,
-                bbox_area,
-                grid_x,
-                grid_y
-            FROM bbox_grid_coverage,
-            LATERAL generate_series(min_grid_x, max_grid_x) as grid_x,
-            LATERAL generate_series(min_grid_y, max_grid_y) as grid_y
-        ),
-        grid_density_stats AS (
-            -- 📊 第4步：统计每个网格的bbox密度
-            SELECT 
-                grid_x,
-                grid_y,
-                COUNT(*) as bbox_count_in_grid,
-                COUNT(DISTINCT subdataset_name) as subdataset_count,
-                COUNT(DISTINCT scene_token) as scene_count,
-                ARRAY_AGG(DISTINCT subdataset_name) as involved_subdatasets,
-                ARRAY_AGG(DISTINCT scene_token) as involved_scenes,
-                SUM(bbox_area) as total_bbox_area,
-                -- 🔧 按需生成网格几何
-                ST_MakeEnvelope(
-                    grid_x * {grid_size}, 
-                    grid_y * {grid_size},
-                    (grid_x + 1) * {grid_size}, 
-                    (grid_y + 1) * {grid_size}, 
-                    4326
-                ) as grid_geom
-            FROM expanded_grid_coverage
-            GROUP BY grid_x, grid_y
-            HAVING COUNT(*) >= {density_threshold}
+    try:
+        # 调用现有的run_overlap_analysis.py脚本
+        cmd = [
+            'python', 
+            'run_overlap_analysis.py',
+            '--city', city_id,
+            '--top-n', '1',  # 只要top1
+            '--grid-size', '0.002',
+            '--density-threshold', '5'
+        ]
+        
+        print(f"   执行命令: {' '.join(cmd)}")
+        
+        # 在bbox_examples目录下执行
+        result = subprocess.run(
+            cmd,
+            cwd=Path(__file__).parent,
+            capture_output=True,
+            text=True,
+            timeout=300  # 5分钟超时
         )
-        -- 只返回TOP1热点
-        SELECT 
-            '{city_id}' as city_id,
-            grid_x,
-            grid_y,
-            bbox_count_in_grid,
-            subdataset_count,
-            scene_count,
-            involved_subdatasets,
-            involved_scenes,
-            total_bbox_area,
-            grid_geom,
-            '({grid_x},{grid_y})' as grid_coords
-        FROM grid_density_stats
-        ORDER BY bbox_count_in_grid DESC
-        LIMIT 1;
-    """)
-    
-    result = conn.execute(analysis_sql).fetchone()
-    
-    if result:
-        print(f"   ✅ Top1热点: 网格({result.grid_x},{result.grid_y}), 密度={result.bbox_count_in_grid}")
-        return result
-    else:
-        print(f"   ⚠️ 未找到符合条件的热点（密度阈值>={density_threshold}）")
-        return None
+        
+        if result.returncode == 0:
+            print(f"   ✅ 城市 {city_id} 分析成功")
+            return True
+        else:
+            print(f"   ❌ 城市 {city_id} 分析失败:")
+            print(f"   错误输出: {result.stderr}")
+            return False
+            
+    except subprocess.TimeoutExpired:
+        print(f"   ⏰ 城市 {city_id} 分析超时（>5分钟）")
+        return False
+    except Exception as e:
+        print(f"   ❌ 城市 {city_id} 分析异常: {str(e)}")
+        return False
 
-def create_top1_results_table(conn, table_name):
-    """创建top1结果表"""
+def create_top1_summary_table(conn, table_name):
+    """创建top1汇总表"""
     
-    print(f"📋 创建结果表: {table_name}")
+    print(f"📋 创建汇总表: {table_name}")
     
     create_sql = text(f"""
         CREATE TABLE IF NOT EXISTS {table_name} (
             id SERIAL PRIMARY KEY,
             city_id VARCHAR(50) NOT NULL,
-            analysis_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            
-            -- 网格信息
-            grid_x INTEGER,
-            grid_y INTEGER,
-            grid_coords VARCHAR(50),
-            
-            -- 密度统计
+            analysis_id VARCHAR(100),
             bbox_count INTEGER,
             subdataset_count INTEGER,
             scene_count INTEGER,
-            total_bbox_area NUMERIC,
-            
-            -- 详细信息
-            involved_subdatasets TEXT[],
-            involved_scenes TEXT[],
-            
-            -- 分析参数
-            analysis_params TEXT
+            total_overlap_area NUMERIC,
+            grid_coords TEXT,
+            analysis_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         
         -- 添加几何列
@@ -197,95 +131,99 @@ def create_top1_results_table(conn, table_name):
         CREATE INDEX IF NOT EXISTS idx_{table_name}_city_id ON {table_name} (city_id);
         CREATE INDEX IF NOT EXISTS idx_{table_name}_bbox_count ON {table_name} (bbox_count);
         CREATE INDEX IF NOT EXISTS idx_{table_name}_geom ON {table_name} USING GIST (geometry);
-        
-        -- 添加约束（每个城市每天只能有一条记录）
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_{table_name}_unique_city_date 
-        ON {table_name} (city_id, DATE(analysis_time));
     """)
     
     conn.execute(create_sql)
     conn.commit()
     print(f"✅ 表 {table_name} 创建成功")
 
-def save_top1_result(conn, table_name, city_result, analysis_params):
-    """保存单个城市的top1结果"""
+def extract_top1_results(conn, table_name):
+    """从bbox_overlap_analysis_results中提取所有城市的top1结果"""
     
-    if not city_result:
-        return
+    print(f"📊 提取top1结果到 {table_name}...")
     
-    insert_sql = text(f"""
+    # 先清空今天的数据
+    cleanup_sql = text(f"""
+        DELETE FROM {table_name} 
+        WHERE analysis_time::date = CURRENT_DATE;
+    """)
+    conn.execute(cleanup_sql)
+    
+    # 提取每个城市的top1热点（hotspot_rank = 1）
+    extract_sql = text(f"""
         INSERT INTO {table_name} 
-        (city_id, grid_x, grid_y, grid_coords, bbox_count, subdataset_count, scene_count, 
-         total_bbox_area, involved_subdatasets, involved_scenes, geometry, analysis_params)
-        VALUES 
-        (:city_id, :grid_x, :grid_y, :grid_coords, :bbox_count, :subdataset_count, :scene_count,
-         :total_bbox_area, :involved_subdatasets, :involved_scenes, :geometry, :analysis_params);
+        (city_id, analysis_id, bbox_count, subdataset_count, scene_count, 
+         total_overlap_area, geometry, grid_coords)
+        SELECT 
+            -- 从analysis_params JSON中提取city_id
+            (analysis_params::json->>'city_filter') as city_id,
+            analysis_id,
+            overlap_count as bbox_count,
+            subdataset_count,
+            scene_count,
+            total_overlap_area,
+            geometry,
+            (analysis_params::json->>'grid_coords') as grid_coords
+        FROM bbox_overlap_analysis_results 
+        WHERE hotspot_rank = 1  -- 只要每个分析的top1
+        AND analysis_time::date = CURRENT_DATE  -- 只要今天的分析
+        AND analysis_params::json->>'city_filter' IS NOT NULL;
     """)
     
-    conn.execute(insert_sql, {
-        'city_id': city_result.city_id,
-        'grid_x': city_result.grid_x,
-        'grid_y': city_result.grid_y,
-        'grid_coords': city_result.grid_coords,
-        'bbox_count': city_result.bbox_count_in_grid,
-        'subdataset_count': city_result.subdataset_count,
-        'scene_count': city_result.scene_count,
-        'total_bbox_area': city_result.total_bbox_area,
-        'involved_subdatasets': city_result.involved_subdatasets,
-        'involved_scenes': city_result.involved_scenes,
-        'geometry': city_result.grid_geom,
-        'analysis_params': analysis_params
-    })
+    result = conn.execute(extract_sql)
+    conn.commit()
+    
+    extracted_count = result.rowcount
+    print(f"✅ 提取了 {extracted_count} 个城市的top1热点")
+    
+    return extracted_count
 
 def main():
     """主函数"""
-    parser = argparse.ArgumentParser(description='批量城市Top1热点分析')
-    parser.add_argument('--min-bbox-count', type=int, default=500, 
-                       help='城市最少bbox数量阈值 (默认: 500)')
-    parser.add_argument('--grid-size', type=float, default=0.002,
-                       help='网格大小 (默认: 0.002度)')
-    parser.add_argument('--density-threshold', type=int, default=5,
-                       help='密度阈值 (默认: 5)')
+    parser = argparse.ArgumentParser(description='批量城市Top1热点分析（简化版）')
     parser.add_argument('--output-table', default='city_top1_hotspots',
-                       help='输出表名 (默认: city_top1_hotspots)')
+                       help='输出汇总表名 (默认: city_top1_hotspots)')
     parser.add_argument('--cities', nargs='+', 
                        help='指定分析的城市列表，如: --cities A263 B001')
+    parser.add_argument('--max-cities', type=int, default=None,
+                       help='最多分析城市数量 (默认: 无限制)')
     
     args = parser.parse_args()
     
-    print("🚀 批量城市Top1热点分析")
+    print("🚀 批量城市Top1热点分析（简化版）")
     print("=" * 50)
-    print(f"参数配置:")
-    print(f"  最少bbox数量: {args.min_bbox_count}")
-    print(f"  网格大小: {args.grid_size}度")
-    print(f"  密度阈值: {args.density_threshold}")
-    print(f"  输出表: {args.output_table}")
+    print(f"输出表: {args.output_table}")
+    if args.max_cities:
+        print(f"最多分析: {args.max_cities} 个城市")
+    else:
+        print(f"分析所有城市（无限制）")
     
     engine = create_engine(LOCAL_DSN, future=True)
     
     try:
         with engine.connect() as conn:
             
-            # 创建结果表
-            create_top1_results_table(conn, args.output_table)
+            # 创建汇总表
+            create_top1_summary_table(conn, args.output_table)
             
             # 获取城市列表
             if args.cities:
                 print(f"\n🎯 指定分析城市: {args.cities}")
                 cities_to_analyze = args.cities
             else:
-                cities_df = get_all_cities(conn, args.min_bbox_count)
-                cities_to_analyze = cities_df['city_id'].tolist()
+                all_cities = get_all_cities(conn)
+                if args.max_cities:
+                    cities_to_analyze = all_cities[:args.max_cities]
+                else:
+                    cities_to_analyze = all_cities  # 分析所有城市
             
             if not cities_to_analyze:
-                print("❌ 没有找到符合条件的城市")
+                print("❌ 没有找到城市")
                 return 1
-            
-            # 分析参数
-            analysis_params = f'{{"grid_size": {args.grid_size}, "density_threshold": {args.density_threshold}, "analysis_type": "top1_hotspot", "timestamp": "{datetime.now().isoformat()}"}}'
             
             # 批量分析
             print(f"\n🔄 开始批量分析 {len(cities_to_analyze)} 个城市...")
+            print(f"每个城市使用 run_overlap_analysis.py --top-n 1 进行分析")
             
             successful_cities = []
             failed_cities = []
@@ -295,27 +233,21 @@ def main():
             for i, city_id in enumerate(cities_to_analyze, 1):
                 print(f"\n[{i}/{len(cities_to_analyze)}] 处理城市: {city_id}")
                 
-                try:
-                    # 分析城市top1
-                    city_result = analyze_city_top1(
-                        conn, city_id, 
-                        args.grid_size, 
-                        args.density_threshold
-                    )
-                    
-                    if city_result:
-                        # 保存结果
-                        save_top1_result(conn, args.output_table, city_result, analysis_params)
-                        successful_cities.append(city_id)
-                        print(f"   ✅ 已保存到 {args.output_table}")
-                    else:
-                        failed_cities.append(city_id)
-                        
-                except Exception as e:
-                    print(f"   ❌ 分析失败: {str(e)}")
+                success = analyze_city_with_existing_script(city_id)
+                
+                if success:
+                    successful_cities.append(city_id)
+                else:
                     failed_cities.append(city_id)
+                
+                # 每10个城市休息一下
+                if i % 10 == 0:
+                    print(f"   💤 已处理 {i} 个城市，休息2秒...")
+                    time.sleep(2)
             
-            conn.commit()
+            # 提取结果到汇总表
+            print(f"\n📊 从分析结果中提取top1热点...")
+            extracted_count = extract_top1_results(conn, args.output_table)
             
             # 统计结果
             total_time = time.time() - start_time
@@ -325,32 +257,38 @@ def main():
             print(f"=" * 60)
             print(f"总耗时: {total_time:.2f}秒")
             print(f"成功分析: {len(successful_cities)} 个城市")
-            print(f"失败/无结果: {len(failed_cities)} 个城市")
+            print(f"失败: {len(failed_cities)} 个城市")
+            print(f"提取top1: {extracted_count} 个热点")
             
             if successful_cities:
-                print(f"\n✅ 成功的城市: {', '.join(successful_cities)}")
+                print(f"\n✅ 成功的城市: {', '.join(successful_cities[:10])}")
+                if len(successful_cities) > 10:
+                    print(f"   ... 还有 {len(successful_cities) - 10} 个")
             
             if failed_cities:
-                print(f"\n⚠️ 失败/无结果的城市: {', '.join(failed_cities)}")
+                print(f"\n⚠️ 失败的城市: {', '.join(failed_cities[:10])}")
+                if len(failed_cities) > 10:
+                    print(f"   ... 还有 {len(failed_cities) - 10} 个")
             
             # 显示结果概览
-            summary_sql = text(f"""
-                SELECT 
-                    city_id,
-                    bbox_count,
-                    subdataset_count,
-                    scene_count,
-                    grid_coords,
-                    ROUND(total_bbox_area::numeric, 6) as total_bbox_area
-                FROM {args.output_table}
-                WHERE analysis_time::date = CURRENT_DATE
-                ORDER BY bbox_count DESC;
-            """)
-            
-            results_df = pd.read_sql(summary_sql, conn)
-            
-            if not results_df.empty:
-                print(f"\n📋 今日Top1热点汇总:")
+            if extracted_count > 0:
+                summary_sql = text(f"""
+                    SELECT 
+                        city_id,
+                        bbox_count,
+                        subdataset_count,
+                        scene_count,
+                        grid_coords,
+                        ROUND(total_overlap_area::numeric, 6) as total_overlap_area
+                    FROM {args.output_table}
+                    WHERE analysis_time::date = CURRENT_DATE
+                    ORDER BY bbox_count DESC
+                    LIMIT 10;
+                """)
+                
+                results_df = pd.read_sql(summary_sql, conn)
+                
+                print(f"\n📋 Top10热点城市:")
                 print(results_df.to_string(index=False))
                 
                 print(f"\n🎯 QGIS可视化:")
