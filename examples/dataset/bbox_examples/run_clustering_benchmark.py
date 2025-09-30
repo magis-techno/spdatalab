@@ -134,7 +134,9 @@ def save_clustering_results_to_db(conn, city_id, performance_results):
         ),
         grid_with_geom AS (
             SELECT 
-                (grid_x || '_' || grid_y)::integer as grid_id,
+                ROW_NUMBER() OVER (ORDER BY bbox_count DESC) as grid_id,
+                grid_x,
+                grid_y,
                 bbox_count,
                 ROW_NUMBER() OVER (ORDER BY bbox_count DESC) as grid_rank,
                 ST_MakeEnvelope(
@@ -155,7 +157,7 @@ def save_clustering_results_to_db(conn, city_id, performance_results):
             bbox_count,
             grid_rank,
             grid_geom,
-            '{{"grid_size": 0.002, "min_density": 5, "query_time": {performance_results["grid"]["query_time"]}}}'::jsonb
+            ('{{"grid_size": 0.002, "min_density": 5, "query_time": ' || {performance_results["grid"]["query_time"]} || ', "grid_x": ' || grid_x || ', "grid_y": ' || grid_y || '}}')::jsonb
         FROM grid_with_geom;
     """)
     
@@ -182,7 +184,7 @@ def save_clustering_results_to_db(conn, city_id, performance_results):
         ),
         hierarchical_stats AS (
             SELECT 
-                (coarse_id * 1000 + fine_id) as hierarchical_id,
+                ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC) as hierarchical_id,
                 COUNT(*) as bbox_count,
                 ST_Centroid(ST_Collect(geometry)) as cluster_center,
                 ST_ConvexHull(ST_Collect(geometry)) as cluster_boundary,
