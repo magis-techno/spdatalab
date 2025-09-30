@@ -28,6 +28,249 @@ except ImportError:
 from sqlalchemy import create_engine, text
 import pandas as pd
 
+def create_clustering_results_table(conn):
+    """创建聚类结果表"""
+    create_table_sql = text("""
+        CREATE TABLE IF NOT EXISTS clustering_benchmark_results (
+            id SERIAL PRIMARY KEY,
+            city_id VARCHAR(50),
+            method_name VARCHAR(50),
+            cluster_id INTEGER,
+            bbox_count INTEGER,
+            cluster_rank INTEGER,
+            test_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            performance_metrics JSONB
+        );
+        
+        -- 添加几何列
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_name = 'clustering_benchmark_results' 
+                AND column_name = 'geometry'
+            ) THEN
+                PERFORM AddGeometryColumn('public', 'clustering_benchmark_results', 'geometry', 4326, 'GEOMETRY', 2);
+            END IF;
+        END $$;
+        
+        -- 创建索引
+        CREATE INDEX IF NOT EXISTS idx_clustering_results_city_method 
+        ON clustering_benchmark_results (city_id, method_name);
+        CREATE INDEX IF NOT EXISTS idx_clustering_results_geom 
+        ON clustering_benchmark_results USING GIST (geometry);
+    """)
+    
+    conn.execute(create_table_sql)
+    conn.commit()
+
+def save_clustering_results_to_db(conn, city_id, performance_results):
+    """保存聚类结果到数据库供QGIS可视化"""
+    
+    print(f"\n💾 保存聚类结果到数据库...")
+    
+    # 创建结果表
+    create_clustering_results_table(conn)
+    
+    # 清理该城市的旧结果
+    cleanup_sql = text(f"""
+        DELETE FROM clustering_benchmark_results 
+        WHERE city_id = '{city_id}' 
+        AND test_timestamp < NOW() - INTERVAL '1 hour';
+    """)
+    conn.execute(cleanup_sql)
+    
+    # 1. 保存DBSCAN聚类结果
+    print("   📊 保存DBSCAN聚类结果...")
+    dbscan_sql = text(f"""
+        WITH dbscan_clusters AS (
+            SELECT 
+                id,
+                geometry,
+                ST_ClusterDBSCAN(geometry, 0.002, 5) OVER() as cluster_id
+            FROM clips_bbox_unified 
+            WHERE city_id = '{city_id}' AND all_good = true
+        ),
+        cluster_stats AS (
+            SELECT 
+                cluster_id,
+                COUNT(*) as bbox_count,
+                ST_Centroid(ST_Collect(geometry)) as cluster_center,
+                ST_ConvexHull(ST_Collect(geometry)) as cluster_boundary,
+                ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC) as cluster_rank
+            FROM dbscan_clusters 
+            WHERE cluster_id IS NOT NULL
+            GROUP BY cluster_id
+        )
+        INSERT INTO clustering_benchmark_results 
+        (city_id, method_name, cluster_id, bbox_count, cluster_rank, geometry, performance_metrics)
+        SELECT 
+            '{city_id}',
+            'DBSCAN',
+            cluster_id,
+            bbox_count,
+            cluster_rank,
+            cluster_boundary,
+            '{{"eps": 0.002, "min_samples": 5, "query_time": {performance_results["dbscan"]["query_time"]}}}'::jsonb
+        FROM cluster_stats
+        WHERE bbox_count >= 5;  -- 只保存有意义的聚类
+    """)
+    
+    result = conn.execute(dbscan_sql)
+    dbscan_count = result.rowcount
+    
+    # 2. 保存网格方法结果
+    print("   🔲 保存网格方法结果...")
+    grid_sql = text(f"""
+        WITH grid_density AS (
+            SELECT 
+                floor(ST_X(ST_Centroid(geometry)) / 0.002)::int as grid_x,
+                floor(ST_Y(ST_Centroid(geometry)) / 0.002)::int as grid_y,
+                COUNT(*) as bbox_count
+            FROM clips_bbox_unified 
+            WHERE city_id = '{city_id}' AND all_good = true
+            GROUP BY grid_x, grid_y
+            HAVING COUNT(*) >= 5
+        ),
+        grid_with_geom AS (
+            SELECT 
+                (grid_x || '_' || grid_y)::integer as grid_id,
+                bbox_count,
+                ROW_NUMBER() OVER (ORDER BY bbox_count DESC) as grid_rank,
+                ST_MakeEnvelope(
+                    grid_x * 0.002, 
+                    grid_y * 0.002,
+                    (grid_x + 1) * 0.002, 
+                    (grid_y + 1) * 0.002, 
+                    4326
+                ) as grid_geom
+            FROM grid_density
+        )
+        INSERT INTO clustering_benchmark_results 
+        (city_id, method_name, cluster_id, bbox_count, cluster_rank, geometry, performance_metrics)
+        SELECT 
+            '{city_id}',
+            'Grid',
+            grid_id,
+            bbox_count,
+            grid_rank,
+            grid_geom,
+            '{{"grid_size": 0.002, "min_density": 5, "query_time": {performance_results["grid"]["query_time"]}}}'::jsonb
+        FROM grid_with_geom;
+    """)
+    
+    result = conn.execute(grid_sql)
+    grid_count = result.rowcount
+    
+    # 3. 保存分层聚类结果
+    print("   🏗️ 保存分层聚类结果...")
+    hierarchical_sql = text(f"""
+        WITH coarse_clusters AS (
+            SELECT 
+                geometry,
+                ST_ClusterDBSCAN(geometry, 0.01, 20) OVER() as coarse_id
+            FROM clips_bbox_unified 
+            WHERE city_id = '{city_id}' AND all_good = true
+        ),
+        fine_clusters AS (
+            SELECT 
+                coarse_id,
+                geometry,
+                ST_ClusterDBSCAN(geometry, 0.002, 5) OVER(PARTITION BY coarse_id) as fine_id
+            FROM coarse_clusters 
+            WHERE coarse_id IS NOT NULL
+        ),
+        hierarchical_stats AS (
+            SELECT 
+                (coarse_id * 1000 + fine_id) as hierarchical_id,
+                COUNT(*) as bbox_count,
+                ST_Centroid(ST_Collect(geometry)) as cluster_center,
+                ST_ConvexHull(ST_Collect(geometry)) as cluster_boundary,
+                ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC) as cluster_rank
+            FROM fine_clusters
+            WHERE fine_id IS NOT NULL
+            GROUP BY coarse_id, fine_id
+        )
+        INSERT INTO clustering_benchmark_results 
+        (city_id, method_name, cluster_id, bbox_count, cluster_rank, geometry, performance_metrics)
+        SELECT 
+            '{city_id}',
+            'Hierarchical',
+            hierarchical_id,
+            bbox_count,
+            cluster_rank,
+            cluster_boundary,
+            '{{"coarse_eps": 0.01, "fine_eps": 0.002, "query_time": {performance_results["hierarchical"]["query_time"]}}}'::jsonb
+        FROM hierarchical_stats
+        WHERE bbox_count >= 3;
+    """)
+    
+    result = conn.execute(hierarchical_sql)
+    hierarchical_count = result.rowcount
+    
+    conn.commit()
+    
+    print(f"   ✅ DBSCAN结果: {dbscan_count} 个聚类")
+    print(f"   ✅ 网格结果: {grid_count} 个网格")  
+    print(f"   ✅ 分层结果: {hierarchical_count} 个聚类")
+    
+    # 创建QGIS友好的视图
+    create_qgis_views(conn, city_id)
+
+def create_qgis_views(conn, city_id):
+    """创建QGIS友好的视图"""
+    
+    print("   🎨 创建QGIS可视化视图...")
+    
+    view_sql = text(f"""
+        -- 聚类对比视图
+        CREATE OR REPLACE VIEW qgis_clustering_comparison AS
+        SELECT 
+            id,
+            city_id,
+            method_name,
+            cluster_id,
+            bbox_count,
+            cluster_rank,
+            CASE 
+                WHEN method_name = 'DBSCAN' THEN '#FF6B6B'
+                WHEN method_name = 'Grid' THEN '#4ECDC4'  
+                WHEN method_name = 'Hierarchical' THEN '#45B7D1'
+            END as method_color,
+            CASE 
+                WHEN bbox_count >= 50 THEN 'Very High'
+                WHEN bbox_count >= 20 THEN 'High'
+                WHEN bbox_count >= 10 THEN 'Medium'
+                ELSE 'Low'
+            END as density_level,
+            geometry,
+            performance_metrics,
+            test_timestamp
+        FROM clustering_benchmark_results
+        WHERE city_id = '{city_id}'
+        ORDER BY method_name, cluster_rank;
+        
+        -- 方法性能对比视图
+        CREATE OR REPLACE VIEW qgis_method_performance AS
+        SELECT 
+            method_name,
+            COUNT(*) as cluster_count,
+            MAX(bbox_count) as max_density,
+            ROUND(AVG(bbox_count)::numeric, 2) as avg_density,
+            (performance_metrics->>'query_time')::float as query_time_seconds,
+            ST_ConvexHull(ST_Collect(geometry)) as method_coverage
+        FROM clustering_benchmark_results
+        WHERE city_id = '{city_id}'
+        GROUP BY method_name, performance_metrics->>'query_time'
+        ORDER BY query_time_seconds;
+    """)
+    
+    conn.execute(view_sql)
+    conn.commit()
+    
+    print(f"   ✅ 创建视图: qgis_clustering_comparison")
+    print(f"   ✅ 创建视图: qgis_method_performance")
+
 def run_clustering_benchmark(city_id='A263'):
     """运行聚类性能基准测试"""
     
@@ -178,6 +421,9 @@ def run_clustering_benchmark(city_id='A263'):
             'fine_clusters': hierarchical_stats.fine_clusters,
             'query_time': hierarchical_time
         }
+        
+        # 保存详细聚类结果到数据库表供QGIS可视化
+        save_clustering_results_to_db(conn, city_id, results)
     
     # 性能分析和建议
     print("\n" + "=" * 50)
@@ -237,7 +483,16 @@ def main():
         results = run_clustering_benchmark(args.city)
         
         print(f"\n✅ 测试完成！")
-        print(f"💾 结果已保存到内存，可用于进一步分析")
+        print(f"💾 结果已保存到数据库表: clustering_benchmark_results")
+        print(f"🎨 QGIS可视化视图已创建:")
+        print(f"   • qgis_clustering_comparison - 聚类对比视图")
+        print(f"   • qgis_method_performance - 性能对比视图")
+        print(f"\n🎯 QGIS使用指南:")
+        print(f"   1. 连接数据库: host=local_pg, database=postgres")
+        print(f"   2. 加载图层: qgis_clustering_comparison")
+        print(f"   3. 按 method_name 字段分类显示")
+        print(f"   4. 使用 method_color 字段设置颜色")
+        print(f"   5. 按 density_level 字段设置符号大小")
         
     except Exception as e:
         print(f"\n❌ 测试失败: {str(e)}")
