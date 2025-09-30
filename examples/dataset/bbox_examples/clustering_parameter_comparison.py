@@ -286,57 +286,81 @@ def create_parameter_comparison_views(conn, city_id):
     
     print(f"\n🎨 创建参数对比视图...")
     
-    view_sql = text(f"""
-        -- 参数对比主视图
-        CREATE OR REPLACE VIEW qgis_parameter_comparison AS
-        SELECT 
-            id,
-            city_id,
-            method_name,
-            eps_value,
-            min_samples,
-            cluster_id,
-            bbox_count,
-            cluster_rank,
-            CASE 
-                WHEN eps_value <= 0.001 THEN 'Fine (≤0.001)'
-                WHEN eps_value <= 0.002 THEN 'Medium (≤0.002)'
-                ELSE 'Coarse (>0.002)'
-            END as eps_category,
-            CASE 
-                WHEN bbox_count >= 100 THEN 'Very Large'
-                WHEN bbox_count >= 50 THEN 'Large'
-                WHEN bbox_count >= 20 THEN 'Medium'
-                ELSE 'Small'
-            END as cluster_size_category,
-            geometry,
-            test_timestamp
-        FROM clustering_parameter_comparison
-        WHERE city_id = '{city_id}'
-        ORDER BY method_name, eps_value, cluster_rank;
-        
-        -- 参数效果统计视图
-        CREATE OR REPLACE VIEW qgis_parameter_stats AS
-        SELECT 
-            method_name,
-            eps_value,
-            COUNT(*) as total_clusters,
-            MAX(bbox_count) as max_cluster_size,
-            ROUND(AVG(bbox_count)::numeric, 2) as avg_cluster_size,
-            COUNT(*) FILTER (WHERE bbox_count >= 50) as large_clusters,
-            COUNT(*) FILTER (WHERE bbox_count >= 20) as medium_plus_clusters,
-            ST_ConvexHull(ST_Collect(geometry)) as method_coverage
-        FROM clustering_parameter_comparison
-        WHERE city_id = '{city_id}'
-        GROUP BY method_name, eps_value
-        ORDER BY method_name, eps_value;
+    # 先检查基础表是否有数据
+    check_sql = text(f"""
+        SELECT COUNT(*) as record_count 
+        FROM clustering_parameter_comparison 
+        WHERE city_id = '{city_id}';
     """)
     
-    conn.execute(view_sql)
-    conn.commit()
+    result = conn.execute(check_sql).fetchone()
+    record_count = result.record_count if result else 0
     
-    print(f"   ✅ 创建视图: qgis_parameter_comparison")
-    print(f"   ✅ 创建视图: qgis_parameter_stats")
+    if record_count == 0:
+        print(f"   ⚠️ 警告: clustering_parameter_comparison 表中没有数据 (city_id='{city_id}')")
+        return
+    
+    print(f"   📊 找到 {record_count} 条记录")
+    
+    try:
+        # 分别创建两个视图，便于调试
+        view1_sql = text(f"""
+            CREATE OR REPLACE VIEW qgis_parameter_comparison AS
+            SELECT 
+                id,
+                city_id,
+                method_name,
+                eps_value,
+                min_samples,
+                cluster_id,
+                bbox_count,
+                cluster_rank,
+                CASE 
+                    WHEN eps_value <= 0.001 THEN 'Fine (≤0.001)'
+                    WHEN eps_value <= 0.002 THEN 'Medium (≤0.002)'
+                    ELSE 'Coarse (>0.002)'
+                END as eps_category,
+                CASE 
+                    WHEN bbox_count >= 100 THEN 'Very Large'
+                    WHEN bbox_count >= 50 THEN 'Large'
+                    WHEN bbox_count >= 20 THEN 'Medium'
+                    ELSE 'Small'
+                END as cluster_size_category,
+                geometry,
+                test_timestamp
+            FROM clustering_parameter_comparison
+            WHERE city_id = '{city_id}'
+            ORDER BY method_name, eps_value, cluster_rank;
+        """)
+        
+        conn.execute(view1_sql)
+        print(f"   ✅ 创建视图: qgis_parameter_comparison")
+        
+        view2_sql = text(f"""
+            CREATE OR REPLACE VIEW qgis_parameter_stats AS
+            SELECT 
+                method_name,
+                eps_value,
+                COUNT(*) as total_clusters,
+                MAX(bbox_count) as max_cluster_size,
+                ROUND(AVG(bbox_count)::numeric, 2) as avg_cluster_size,
+                COUNT(*) FILTER (WHERE bbox_count >= 50) as large_clusters,
+                COUNT(*) FILTER (WHERE bbox_count >= 20) as medium_plus_clusters,
+                ST_ConvexHull(ST_Collect(geometry)) as method_coverage
+            FROM clustering_parameter_comparison
+            WHERE city_id = '{city_id}'
+            GROUP BY method_name, eps_value
+            ORDER BY method_name, eps_value;
+        """)
+        
+        conn.execute(view2_sql)
+        print(f"   ✅ 创建视图: qgis_parameter_stats")
+        
+        conn.commit()
+        
+    except Exception as e:
+        print(f"   ❌ 创建视图失败: {str(e)}")
+        raise
 
 def print_comparison_summary(results):
     """打印对比总结"""
