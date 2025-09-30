@@ -137,6 +137,44 @@ def create_top1_summary_table(conn, table_name):
     conn.commit()
     print(f"✅ 表 {table_name} 创建成功")
 
+def extract_single_city_top1(conn, table_name, city_id):
+    """从bbox_overlap_analysis_results中提取单个城市的top1结果"""
+    
+    # 先删除该城市今天的旧数据
+    cleanup_sql = text(f"""
+        DELETE FROM {table_name} 
+        WHERE city_id = :city_id 
+        AND analysis_time::date = CURRENT_DATE;
+    """)
+    conn.execute(cleanup_sql, {'city_id': city_id})
+    
+    # 提取该城市的top1热点
+    extract_sql = text(f"""
+        INSERT INTO {table_name} 
+        (city_id, analysis_id, bbox_count, subdataset_count, scene_count, 
+         total_overlap_area, geometry, grid_coords)
+        SELECT 
+            (analysis_params::json->>'city_filter') as city_id,
+            analysis_id,
+            overlap_count as bbox_count,
+            subdataset_count,
+            scene_count,
+            total_overlap_area,
+            geometry,
+            (analysis_params::json->>'grid_coords') as grid_coords
+        FROM bbox_overlap_analysis_results 
+        WHERE hotspot_rank = 1
+        AND analysis_time::date = CURRENT_DATE
+        AND analysis_params::json->>'city_filter' = :city_id
+        ORDER BY analysis_time DESC
+        LIMIT 1;  -- 只要最新的一条
+    """)
+    
+    result = conn.execute(extract_sql, {'city_id': city_id})
+    conn.commit()
+    
+    return result.rowcount
+
 def extract_top1_results(conn, table_name):
     """从bbox_overlap_analysis_results中提取所有城市的top1结果"""
     
@@ -237,6 +275,12 @@ def main():
                 
                 if success:
                     successful_cities.append(city_id)
+                    # 立即提取该城市的top1结果
+                    try:
+                        extract_single_city_top1(conn, args.output_table, city_id)
+                        print(f"   📊 已提取 {city_id} 的top1结果到汇总表")
+                    except Exception as e:
+                        print(f"   ⚠️ 提取 {city_id} 结果失败: {str(e)}")
                 else:
                     failed_cities.append(city_id)
                 
@@ -245,9 +289,16 @@ def main():
                     print(f"   💤 已处理 {i} 个城市，休息2秒...")
                     time.sleep(2)
             
-            # 提取结果到汇总表
-            print(f"\n📊 从分析结果中提取top1热点...")
-            extracted_count = extract_top1_results(conn, args.output_table)
+            # 检查汇总表中的结果数量
+            count_sql = text(f"""
+                SELECT COUNT(*) as count 
+                FROM {args.output_table} 
+                WHERE analysis_time::date = CURRENT_DATE;
+            """)
+            result = conn.execute(count_sql).fetchone()
+            extracted_count = result.count if result else 0
+            
+            print(f"\n📊 汇总表中共有 {extracted_count} 个城市的top1热点")
             
             # 统计结果
             total_time = time.time() - start_time
