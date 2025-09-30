@@ -750,41 +750,8 @@ def main():
                 print(f"\n📊 TOP 5 重叠热点:")
                 print(result_df.to_string(index=False))
                 
-                # 创建QGIS视图
-                print(f"\n🎨 创建QGIS视图...")
-                qgis_view = "qgis_bbox_overlap_hotspots"
-                
-                # 先删除旧视图，避免列名冲突
-                drop_view_sql = f"DROP VIEW IF EXISTS {qgis_view} CASCADE;"
-                conn.execute(text(drop_view_sql))
-                
-                view_sql = f"""
-                CREATE VIEW {qgis_view} AS
-                SELECT 
-                    id,
-                    analysis_id,
-                    hotspot_rank,
-                    overlap_count,
-                    total_overlap_area,
-                    subdataset_count,
-                    scene_count,
-                    involved_subdatasets,
-                    involved_scenes,
-                    CASE 
-                        WHEN overlap_count >= 10 THEN 'High Density'
-                        WHEN overlap_count >= 5 THEN 'Medium Density'
-                        ELSE 'Low Density'
-                    END as density_level,
-                    geometry,
-                    created_at
-                FROM {analysis_table}
-                WHERE analysis_type = 'bbox_overlap'
-                ORDER BY hotspot_rank;
-                """
-                
-                conn.execute(text(view_sql))
-                conn.commit()
-                print(f"✅ QGIS视图 {qgis_view} 创建成功")
+                # 数据已存储到表中，无需额外视图
+                print(f"✅ 分析结果已保存到表: {analysis_table}")
                 
                 # 输出QGIS连接信息
                 print(f"\n🎯 QGIS可视化指导")
@@ -797,14 +764,14 @@ def main():
                 print(f"")
                 print(f"📊 推荐加载的图层:")
                 print(f"   1. {view_name} - 所有bbox数据（底图）")
-                print(f"   2. {qgis_view} - 重叠热点区域")
+                print(f"   2. {analysis_table} - 重叠热点区域")
                 print(f"")
                 print(f"🎨 可视化建议:")
                 print(f"   • 主键: id")
                 print(f"   • 几何列: geometry")
-                print(f"   • 按 density_level 字段设置颜色")
+                print(f"   • 按 overlap_count 字段设置颜色（数值越大越热）")
                 print(f"   • 显示 overlap_count 标签")
-                print(f"   • 使用 analysis_id = '{analysis_id}' 过滤")
+                print(f"   • 使用 analysis_id = '{analysis_id}' 过滤当前分析结果")
                 
                 print(f"\n🔥 bbox密度分析特别提示:")
                 print(f"   • 每个热点是 {args.grid_size}° × {args.grid_size}° 的网格 (约200m×200m)")

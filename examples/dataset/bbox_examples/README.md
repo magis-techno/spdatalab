@@ -276,15 +276,16 @@ python examples/dataset/bbox_examples/cleanup_analysis_data.py --cleanup-views -
 - 包含几何数据和JSON参数
 - 支持历史查询和对比分析
 
-**QGIS视图架构**：
+**QGIS数据架构**：
 
 🏗️ **基础数据层**（由bbox.py管理）：
-- `clips_bbox_unified_qgis` - 原始bbox数据统一视图（复用bbox.py中的标准视图）
+- `clips_bbox_unified` - 原始bbox数据统一视图
 
-📊 **分析结果层**（由叠置分析创建）：
-- `qgis_bbox_overlap_hotspots` - 主热点视图
-- `qgis_bbox_overlap_summary` - 汇总统计视图  
-- `qgis_bbox_overlap_details` - 详细信息视图
+📊 **分析结果层**（直接使用表）：
+- `bbox_overlap_analysis_results` - 分析结果表（无需额外视图）
+  - 主键：`id`
+  - 几何列：`geometry`
+  - 过滤字段：`analysis_id`
 
 ### 2. 控制台输出
 
