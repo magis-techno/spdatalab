@@ -198,10 +198,9 @@ def create_top1_results_table(conn, table_name):
         CREATE INDEX IF NOT EXISTS idx_{table_name}_bbox_count ON {table_name} (bbox_count);
         CREATE INDEX IF NOT EXISTS idx_{table_name}_geom ON {table_name} USING GIST (geometry);
         
-        -- 添加约束
-        ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS unique_city_analysis;
-        ALTER TABLE {table_name} ADD CONSTRAINT unique_city_analysis 
-        UNIQUE (city_id, analysis_time::date);
+        -- 添加约束（每个城市每天只能有一条记录）
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_{table_name}_unique_city_date 
+        ON {table_name} (city_id, DATE(analysis_time));
     """)
     
     conn.execute(create_sql)
