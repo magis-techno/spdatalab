@@ -30,7 +30,7 @@ clean-toll-station:
 	@echo "清理收费站分析相关表和视图..."
 	docker compose -f docker/docker-compose.yml exec -T workspace \
 	  env PGPASSWORD=postgres \
-	  psql -h local_pg -U postgres -f scripts/clean_toll_station_analysis.sql
+	  psql -h local_pg -U postgres -f scripts/database/clean_toll_station_analysis.sql
 
 # 初始化路线相关表
 init-routes:
