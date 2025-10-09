@@ -60,6 +60,8 @@ def run_overlap_analysis(repo: BBoxRepository, config: OverlapAnalysisConfig) ->
         Tunable execution knobs (batch sizes, workspace paths, etc.).
     """
 
+    # TODO(core): Wire this to the refactored data access helpers in io.py once
+    # the legacy code path is fully decomposed.
     raise NotImplementedError(
         "New implementation pending: migrate logic from legacy.run."
     )

@@ -1,13 +1,10 @@
 from __future__ import annotations
 import argparse
-import json
 import sys
 import re
-from pathlib import Path
 from datetime import datetime
 import geopandas as gpd, pandas as pd
 from sqlalchemy import text, create_engine
-from spdatalab.common.io_hive import hive_cursor
 from typing import List, Dict
 import multiprocessing as mp
 from multiprocessing import Pool, Manager
@@ -24,7 +21,7 @@ from .pipeline import (
     setup_interrupt_handlers,
 )
 from .core import chunk
-from .io import load_scene_ids
+from .io import load_scene_ids, fetch_meta, fetch_bbox_with_geometry
 
 LOCAL_DSN = "postgresql+psycopg://postgres:postgres@local_pg:5432/postgres"
 POINT_TABLE = "public.ddi_data_points"
@@ -130,50 +127,6 @@ def create_table_if_not_exists(eng, table_name='clips_bbox'):
         print(f"创建表时出错: {str(e)}")
         print("建议：如果表已通过cleanup_clips_bbox.sql创建，请使用 --no-create-table 选项")
         return False
-
-def fetch_meta(tokens):
-    """批量获取场景元数据"""
-    sql = ("SELECT id AS scene_token,origin_name AS data_name,event_id,city_id,timestamp "
-           "FROM transform.ods_t_data_fragment_datalake WHERE id IN %(tok)s")
-    with hive_cursor() as cur:
-        cur.execute(sql, {"tok": tuple(tokens)})
-        cols = [d[0] for d in cur.description]
-        return pd.DataFrame(cur.fetchall(), columns=cols)
-
-def fetch_bbox_with_geometry(names, eng):
-    """批量获取边界框信息并直接在PostGIS中构建几何对象"""
-    sql_query = text(f"""
-        WITH bbox_data AS (
-            SELECT 
-                dataset_name,
-                ST_XMin(ST_Extent(point_lla)) AS xmin,
-                ST_YMin(ST_Extent(point_lla)) AS ymin,
-                ST_XMax(ST_Extent(point_lla)) AS xmax,
-                ST_YMax(ST_Extent(point_lla)) AS ymax,
-                bool_and(workstage = 2) AS all_good
-            FROM {POINT_TABLE}
-            WHERE dataset_name = ANY(:names_param)
-            GROUP BY dataset_name
-        )
-        SELECT 
-            dataset_name,
-            all_good,
-            CASE 
-                WHEN xmin = xmax OR ymin = ymax THEN
-                    -- 对于点数据，直接创建点几何对象
-                    ST_Point((xmin + xmax) / 2, (ymin + ymax) / 2)
-                ELSE
-                    -- 对于已有边界框的数据，直接使用边界框
-                    ST_MakeEnvelope(xmin, ymin, xmax, ymax, 4326)
-            END AS geometry
-        FROM bbox_data;""")
-    
-    return gpd.read_postgis(
-        sql_query, 
-        eng, 
-        params={"names_param": names},
-        geom_col='geometry'
-    )
 
 def batch_insert_to_postgis(gdf, eng, table_name='clips_bbox', batch_size=1000, tracker=None, batch_num=None):
     """批量插入到PostGIS，依赖数据库约束处理重复数据"""
@@ -1554,7 +1507,9 @@ def process_subdataset_scenes(eng, scene_ids, table_name, batch_size, insert_bat
             
             # 获取边界框和几何对象
             try:
-                bbox_gdf = fetch_bbox_with_geometry(meta.data_name.tolist(), eng)
+                bbox_gdf = fetch_bbox_with_geometry(
+                    meta.data_name.tolist(), eng, point_table=POINT_TABLE
+                )
                 if bbox_gdf.empty:
                     print(f"    [批次 {batch_num}] 没有找到边界框数据，跳过")
                     for token in meta.scene_token:
@@ -1779,7 +1734,9 @@ def run(input_path, batch=1000, insert_batch=1000, create_table=False, retry_fai
             
             # 获取边界框和几何对象（直接从PostGIS获取原始几何）
             try:
-                bbox_gdf = fetch_bbox_with_geometry(meta.data_name.tolist(), eng)
+                bbox_gdf = fetch_bbox_with_geometry(
+                    meta.data_name.tolist(), eng, point_table=POINT_TABLE
+                )
                 if bbox_gdf.empty:
                     print(f"[批次 {batch_num}] 没有找到边界框数据，跳过")
                     # 记录获取边界框失败的tokens

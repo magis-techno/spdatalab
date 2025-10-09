@@ -12,7 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
+import geopandas as gpd
 import pandas as pd
+from sqlalchemy import text
+
+from spdatalab.common.io_hive import hive_cursor
 
 from .pipeline import PARQUET_AVAILABLE
 
@@ -23,6 +27,8 @@ __all__ = [
     "load_scene_ids_from_json",
     "load_scene_ids_from_parquet",
     "load_scene_ids_from_text",
+    "fetch_meta",
+    "fetch_bbox_with_geometry",
 ]
 
 
@@ -94,3 +100,73 @@ def load_scene_ids(file_path: str | Path) -> list[str]:
     if suffix == ".parquet":
         return load_scene_ids_from_parquet(file_path)
     return load_scene_ids_from_text(file_path)
+
+
+def fetch_meta(tokens: Sequence[str]) -> pd.DataFrame:
+    """
+    Fetch metadata records for the provided scene tokens via Hive.
+    """
+
+    if not tokens:
+        return pd.DataFrame(columns=["scene_token", "data_name", "event_id", "city_id", "timestamp"])
+
+    sql = (
+        "SELECT id AS scene_token, origin_name AS data_name, event_id, city_id, timestamp "
+        "FROM transform.ods_t_data_fragment_datalake WHERE id IN %(tok)s"
+    )
+    with hive_cursor() as cur:
+        cur.execute(sql, {"tok": tuple(tokens)})
+        cols = [desc[0] for desc in cur.description]
+        return pd.DataFrame(cur.fetchall(), columns=cols)
+
+
+def fetch_bbox_with_geometry(
+    names: Sequence[str],
+    engine,
+    *,
+    point_table: str = "public.ddi_data_points",
+) -> gpd.GeoDataFrame:
+    """
+    Fetch aggregated bounding boxes for datasets stored in PostGIS.
+    """
+
+    if not names:
+        return gpd.GeoDataFrame(
+            {"dataset_name": [], "all_good": []},
+            geometry=gpd.GeoSeries([], crs=4326),
+            crs=4326,
+        )
+
+    sql_query = text(
+        f"""
+        WITH bbox_data AS (
+            SELECT
+                dataset_name,
+                ST_XMin(ST_Extent(point_lla)) AS xmin,
+                ST_YMin(ST_Extent(point_lla)) AS ymin,
+                ST_XMax(ST_Extent(point_lla)) AS xmax,
+                ST_YMax(ST_Extent(point_lla)) AS ymax,
+                bool_and(workstage = 2) AS all_good
+            FROM {point_table}
+            WHERE dataset_name = ANY(:names_param)
+            GROUP BY dataset_name
+        )
+        SELECT
+            dataset_name,
+            all_good,
+            CASE
+                WHEN xmin = xmax OR ymin = ymax THEN
+                    ST_Point((xmin + xmax) / 2, (ymin + ymax) / 2)
+                ELSE
+                    ST_MakeEnvelope(xmin, ymin, xmax, ymax, 4326)
+            END AS geometry
+        FROM bbox_data;
+        """
+    )
+
+    return gpd.read_postgis(
+        sql_query,
+        engine,
+        params={"names_param": list(names)},
+        geom_col="geometry",
+    )
