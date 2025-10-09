@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# STATUS: production - 批量分析所有城市top1热点，生成汇总表，用于定期分析
 """
 批量城市Top1热点分析脚本（简化版）
 ===============================
@@ -103,114 +102,43 @@ def create_top1_summary_table(conn, table_name):
     
     print(f"📋 创建汇总表: {table_name}")
     
-    # 先检查表是否存在
-    check_table_sql = text(f"""
-        SELECT EXISTS (
-            SELECT FROM information_schema.tables 
-            WHERE table_schema = 'public' 
-            AND table_name = '{table_name}'
+    create_sql = text(f"""
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            id SERIAL PRIMARY KEY,
+            city_id VARCHAR(50) NOT NULL,
+            analysis_id VARCHAR(100),
+            bbox_count INTEGER,
+            subdataset_count INTEGER,
+            scene_count INTEGER,
+            total_overlap_area NUMERIC,
+            grid_coords TEXT,
+            analysis_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
-    """)
-    
-    table_exists = conn.execute(check_table_sql).scalar()
-    
-    if not table_exists:
-        # 创建新表
-        create_sql = text(f"""
-            CREATE TABLE {table_name} (
-                id SERIAL PRIMARY KEY,
-                city_id VARCHAR(50) NOT NULL,
-                analysis_id VARCHAR(100),
-                bbox_count INTEGER,
-                subdataset_count INTEGER,
-                scene_count INTEGER,
-                total_overlap_area NUMERIC,
-                grid_coords TEXT,
-                analysis_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        """)
-        conn.execute(create_sql)
-        print(f"✅ 表 {table_name} 创建成功")
-    else:
-        print(f"📋 表 {table_name} 已存在，检查字段结构...")
         
-        # 检查必要字段是否存在，如果不存在则添加
-        required_fields = {
-            'analysis_id': 'VARCHAR(100)',
-            'bbox_count': 'INTEGER',
-            'subdataset_count': 'INTEGER', 
-            'scene_count': 'INTEGER',
-            'total_overlap_area': 'NUMERIC',
-            'grid_coords': 'TEXT'
-        }
-        
-        for field_name, field_type in required_fields.items():
-            check_field_sql = text(f"""
-                SELECT EXISTS (
-                    SELECT 1 FROM information_schema.columns 
-                    WHERE table_name = '{table_name}' 
-                    AND column_name = '{field_name}'
-                    AND table_schema = 'public'
-                );
-            """)
-            
-            field_exists = conn.execute(check_field_sql).scalar()
-            
-            if not field_exists:
-                add_field_sql = text(f"""
-                    ALTER TABLE {table_name} 
-                    ADD COLUMN {field_name} {field_type};
-                """)
-                conn.execute(add_field_sql)
-                print(f"   ✅ 添加字段: {field_name} {field_type}")
-    
-    # 添加几何列（如果不存在）
-    geometry_sql = text(f"""
+        -- 添加几何列
         DO $$
         BEGIN
             IF NOT EXISTS (
                 SELECT 1 FROM information_schema.columns 
                 WHERE table_name = '{table_name}' 
                 AND column_name = 'geometry'
-                AND table_schema = 'public'
             ) THEN
                 PERFORM AddGeometryColumn('public', '{table_name}', 'geometry', 4326, 'GEOMETRY', 2);
-                RAISE NOTICE '几何列已添加到 {table_name} 表';
             END IF;
         END $$;
-    """)
-    conn.execute(geometry_sql)
-    
-    # 创建索引
-    index_sql = text(f"""
+        
+        -- 创建索引
         CREATE INDEX IF NOT EXISTS idx_{table_name}_city_id ON {table_name} (city_id);
         CREATE INDEX IF NOT EXISTS idx_{table_name}_bbox_count ON {table_name} (bbox_count);
         CREATE INDEX IF NOT EXISTS idx_{table_name}_geom ON {table_name} USING GIST (geometry);
     """)
-    conn.execute(index_sql)
     
+    conn.execute(create_sql)
     conn.commit()
-    print(f"✅ 表 {table_name} 结构检查完成")
+    print(f"✅ 表 {table_name} 创建成功")
 
 def extract_single_city_top1(conn, table_name, city_id):
     """从bbox_overlap_analysis_results中提取单个城市的top1结果"""
-    
-    # 先检查源表结构
-    check_columns_sql = text("""
-        SELECT column_name 
-        FROM information_schema.columns 
-        WHERE table_name = 'bbox_overlap_analysis_results' 
-        AND table_schema = 'public'
-        ORDER BY ordinal_position;
-    """)
-    
-    try:
-        columns_result = conn.execute(check_columns_sql)
-        available_columns = [row[0] for row in columns_result]
-        print(f"   📋 源表可用字段: {available_columns}")
-    except Exception as e:
-        print(f"   ⚠️ 检查源表字段失败: {str(e)}")
-        available_columns = []
     
     # 先删除该城市今天的旧数据
     cleanup_sql = text(f"""
@@ -220,14 +148,6 @@ def extract_single_city_top1(conn, table_name, city_id):
     """)
     conn.execute(cleanup_sql, {'city_id': city_id})
     
-    # 根据可用字段动态构建查询
-    if 'analysis_id' in available_columns:
-        analysis_id_field = 'analysis_id'
-    else:
-        # 如果没有analysis_id字段，使用id或生成一个默认值
-        analysis_id_field = "CONCAT('analysis_', id::text)"
-        print(f"   ⚠️ 源表缺少analysis_id字段，使用替代方案")
-    
     # 提取该城市的top1热点
     extract_sql = text(f"""
         INSERT INTO {table_name} 
@@ -235,7 +155,7 @@ def extract_single_city_top1(conn, table_name, city_id):
          total_overlap_area, geometry, grid_coords)
         SELECT 
             (analysis_params::json->>'city_filter') as city_id,
-            {analysis_id_field} as analysis_id,
+            analysis_id,
             overlap_count as bbox_count,
             subdataset_count,
             scene_count,
