@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# STATUS: production - 批量分析所有城市top1热点，生成汇总表，用于定期分析
 """
 批量城市Top1热点分析脚本（简化版）
 ===============================
@@ -140,6 +141,23 @@ def create_top1_summary_table(conn, table_name):
 def extract_single_city_top1(conn, table_name, city_id):
     """从bbox_overlap_analysis_results中提取单个城市的top1结果"""
     
+    # 先检查源表结构
+    check_columns_sql = text("""
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_name = 'bbox_overlap_analysis_results' 
+        AND table_schema = 'public'
+        ORDER BY ordinal_position;
+    """)
+    
+    try:
+        columns_result = conn.execute(check_columns_sql)
+        available_columns = [row[0] for row in columns_result]
+        print(f"   📋 源表可用字段: {available_columns}")
+    except Exception as e:
+        print(f"   ⚠️ 检查源表字段失败: {str(e)}")
+        available_columns = []
+    
     # 先删除该城市今天的旧数据
     cleanup_sql = text(f"""
         DELETE FROM {table_name} 
@@ -148,6 +166,14 @@ def extract_single_city_top1(conn, table_name, city_id):
     """)
     conn.execute(cleanup_sql, {'city_id': city_id})
     
+    # 根据可用字段动态构建查询
+    if 'analysis_id' in available_columns:
+        analysis_id_field = 'analysis_id'
+    else:
+        # 如果没有analysis_id字段，使用id或生成一个默认值
+        analysis_id_field = "CONCAT('analysis_', id::text)"
+        print(f"   ⚠️ 源表缺少analysis_id字段，使用替代方案")
+    
     # 提取该城市的top1热点
     extract_sql = text(f"""
         INSERT INTO {table_name} 
@@ -155,7 +181,7 @@ def extract_single_city_top1(conn, table_name, city_id):
          total_overlap_area, geometry, grid_coords)
         SELECT 
             (analysis_params::json->>'city_filter') as city_id,
-            analysis_id,
+            {analysis_id_field} as analysis_id,
             overlap_count as bbox_count,
             subdataset_count,
             scene_count,

@@ -1,3 +1,4 @@
+# STATUS: production - 高性能Polygon轨迹查询的标准示例，展示核心功能
 """
 高性能Polygon轨迹查询示例
 

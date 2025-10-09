@@ -1,3 +1,4 @@
+# STATUS: production - 质检轨迹查询标准流程，处理Excel质检结果并查询轨迹
 """质检轨迹查询示例
 
 演示如何使用quality_check_trajectory_query模块处理Excel质检结果：

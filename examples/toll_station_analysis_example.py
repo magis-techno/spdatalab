@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# STATUS: production - 收费站轨迹分析标准流程，用于分析收费站周边轨迹模式
 """
 收费站轨迹分析示例
 
