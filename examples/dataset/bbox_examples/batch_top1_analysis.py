@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """
-批量城市Top1热点分析脚本（简化版）
+批量城市热点分析脚本
 ===============================
 
-遍历所有城市，提取每个城市的top1重叠热点区域
+遍历所有城市，提取每个城市的top热点区域（支持固定数量或百分比）
 
 使用方法：
-    python examples/dataset/bbox_examples/batch_top1_analysis.py
-    python examples/dataset/bbox_examples/batch_top1_analysis.py --output-table city_top1_hotspots
+    # 使用百分比（默认前1%）
+    python examples/dataset/bbox_examples/batch_top1_analysis.py --top-percent 1
+    
+    # 使用固定数量
+    python examples/dataset/bbox_examples/batch_top1_analysis.py --top-n 1
+    
+    # 自定义输出表
+    python examples/dataset/bbox_examples/batch_top1_analysis.py --top-percent 5 --output-table city_top5pct_hotspots
 """
 
 import sys
@@ -55,8 +61,14 @@ def get_all_cities(conn):
     
     return cities_df['city_id'].tolist()
 
-def analyze_city_with_existing_script(city_id):
-    """使用现有脚本分析单个城市的top1热点"""
+def analyze_city_with_existing_script(city_id, top_n=None, top_percent=None):
+    """使用现有脚本分析单个城市的热点
+    
+    Args:
+        city_id: 城市ID
+        top_n: 固定数量（与top_percent互斥）
+        top_percent: 百分比（与top_n互斥）
+    """
     
     print(f"\n🎯 分析城市: {city_id}")
     
@@ -66,10 +78,18 @@ def analyze_city_with_existing_script(city_id):
             'python', 
             'run_overlap_analysis.py',
             '--city', city_id,
-            '--top-n', '1',  # 只要top1
             '--grid-size', '0.002',
             '--density-threshold', '5'
         ]
+        
+        # 添加top-n或top-percent参数
+        if top_n is not None:
+            cmd.extend(['--top-n', str(top_n)])
+        elif top_percent is not None:
+            cmd.extend(['--top-percent', str(top_percent)])
+        else:
+            # 默认使用1%
+            cmd.extend(['--top-percent', '1'])
         
         print(f"   执行命令: {' '.join(cmd)}")
         
@@ -163,11 +183,14 @@ def extract_single_city_top1(conn, table_name, city_id):
             geometry,
             (analysis_params::json->>'grid_coords') as grid_coords
         FROM bbox_overlap_analysis_results 
-        WHERE hotspot_rank = 1
-        AND analysis_time::date = CURRENT_DATE
-        AND analysis_params::json->>'city_filter' = :city_id
-        ORDER BY analysis_time DESC
-        LIMIT 1;  -- 只要最新的一条
+        WHERE analysis_id = (
+            SELECT analysis_id
+            FROM bbox_overlap_analysis_results
+            WHERE analysis_params::json->>'city_filter' = :city_id
+            AND analysis_time::date = CURRENT_DATE
+            ORDER BY analysis_time DESC
+            LIMIT 1
+        );
     """)
     
     result = conn.execute(extract_sql, {'city_id': city_id})
@@ -218,19 +241,29 @@ def extract_top1_results(conn, table_name):
 
 def main():
     """主函数"""
-    parser = argparse.ArgumentParser(description='批量城市Top1热点分析（简化版）')
-    parser.add_argument('--output-table', default='city_top1_hotspots',
-                       help='输出汇总表名 (默认: city_top1_hotspots)')
+    parser = argparse.ArgumentParser(description='批量城市热点分析')
+    parser.add_argument('--output-table', default='city_hotspots',
+                       help='输出汇总表名 (默认: city_hotspots)')
     parser.add_argument('--cities', nargs='+', 
                        help='指定分析的城市列表，如: --cities A263 B001')
     parser.add_argument('--max-cities', type=int, default=None,
                        help='最多分析城市数量 (默认: 无限制)')
     
+    # 🎯 支持固定数量或百分比两种方式
+    result_group = parser.add_mutually_exclusive_group()
+    result_group.add_argument('--top-n', type=int, help='返回的热点数量（与--top-percent互斥）')
+    result_group.add_argument('--top-percent', type=float, default=1.0, 
+                            help='返回最密集的前X%%网格（默认1%%）')
+    
     args = parser.parse_args()
     
-    print("🚀 批量城市Top1热点分析（简化版）")
+    print("🚀 批量城市热点分析")
     print("=" * 50)
     print(f"输出表: {args.output_table}")
+    if args.top_n is not None:
+        print(f"分析参数: 返回前 {args.top_n} 个最密集网格")
+    else:
+        print(f"分析参数: 返回前 {args.top_percent}% 最密集网格")
     if args.max_cities:
         print(f"最多分析: {args.max_cities} 个城市")
     else:
@@ -261,7 +294,10 @@ def main():
             
             # 批量分析
             print(f"\n🔄 开始批量分析 {len(cities_to_analyze)} 个城市...")
-            print(f"每个城市使用 run_overlap_analysis.py --top-n 1 进行分析")
+            if args.top_n is not None:
+                print(f"每个城市使用 run_overlap_analysis.py --top-n {args.top_n} 进行分析")
+            else:
+                print(f"每个城市使用 run_overlap_analysis.py --top-percent {args.top_percent} 进行分析")
             
             successful_cities = []
             failed_cities = []
@@ -271,14 +307,14 @@ def main():
             for i, city_id in enumerate(cities_to_analyze, 1):
                 print(f"\n[{i}/{len(cities_to_analyze)}] 处理城市: {city_id}")
                 
-                success = analyze_city_with_existing_script(city_id)
+                success = analyze_city_with_existing_script(city_id, top_n=args.top_n, top_percent=args.top_percent)
                 
                 if success:
                     successful_cities.append(city_id)
-                    # 立即提取该城市的top1结果
+                    # 立即提取该城市的热点结果
                     try:
                         extract_single_city_top1(conn, args.output_table, city_id)
-                        print(f"   📊 已提取 {city_id} 的top1结果到汇总表")
+                        print(f"   📊 已提取 {city_id} 的热点结果到汇总表")
                     except Exception as e:
                         print(f"   ⚠️ 提取 {city_id} 结果失败: {str(e)}")
                 else:
