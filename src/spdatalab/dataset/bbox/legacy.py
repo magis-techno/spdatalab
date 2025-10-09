@@ -23,6 +23,8 @@ from .pipeline import (
     PARQUET_AVAILABLE,
     setup_interrupt_handlers,
 )
+from .core import chunk
+from .io import load_scene_ids
 
 LOCAL_DSN = "postgresql+psycopg://postgres:postgres@local_pg:5432/postgres"
 POINT_TABLE = "public.ddi_data_points"
@@ -128,54 +130,6 @@ def create_table_if_not_exists(eng, table_name='clips_bbox'):
         print(f"创建表时出错: {str(e)}")
         print("建议：如果表已通过cleanup_clips_bbox.sql创建，请使用 --no-create-table 选项")
         return False
-
-def chunk(lst, n):
-    """将列表分块处理"""
-    for i in range(0, len(lst), n):
-        yield lst[i:i+n]
-
-def load_scene_ids_from_json(file_path):
-    """从JSON格式的数据集文件中加载scene_id列表"""
-    with open(file_path, 'r', encoding='utf-8') as f:
-        dataset_data = json.load(f)
-    
-    scene_ids = []
-    subdatasets = dataset_data.get('subdatasets', [])
-    
-    for subdataset in subdatasets:
-        scene_ids.extend(subdataset.get('scene_ids', []))
-    
-    print(f"从JSON文件加载了 {len(scene_ids)} 个scene_id")
-    return scene_ids
-
-def load_scene_ids_from_parquet(file_path):
-    """从Parquet格式的数据集文件中加载scene_id列表"""
-    if not PARQUET_AVAILABLE:
-        raise ImportError("需要安装 pandas 和 pyarrow 才能使用 parquet 格式: pip install pandas pyarrow")
-    
-    df = pd.read_parquet(file_path)
-    scene_ids = df['scene_id'].unique().tolist()
-    
-    print(f"从Parquet文件加载了 {len(scene_ids)} 个scene_id")
-    return scene_ids
-
-def load_scene_ids_from_text(file_path):
-    """从文本文件中加载scene_id列表（兼容原格式）"""
-    scene_ids = [t.strip() for t in Path(file_path).read_text().splitlines() if t.strip()]
-    print(f"从文本文件加载了 {len(scene_ids)} 个scene_id")
-    return scene_ids
-
-def load_scene_ids(file_path):
-    """智能加载scene_id列表，自动检测文件格式"""
-    file_path = Path(file_path)
-    
-    if file_path.suffix.lower() == '.json':
-        return load_scene_ids_from_json(file_path)
-    elif file_path.suffix.lower() == '.parquet':
-        return load_scene_ids_from_parquet(file_path)
-    else:
-        # 默认按文本格式处理
-        return load_scene_ids_from_text(file_path)
 
 def fetch_meta(tokens):
     """批量获取场景元数据"""
