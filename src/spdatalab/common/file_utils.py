@@ -3,11 +3,20 @@
 import logging
 from typing import Union, TextIO, BinaryIO, Optional
 from pathlib import Path
-import moxing as mox
 from contextlib import contextmanager
-from spdatalab.common.io_obs import init_moxing
 
 logger = logging.getLogger(__name__)
+
+# 尝试导入 moxing，如果不可用则设为 None
+try:
+    import moxing as mox
+    from spdatalab.common.io_obs import init_moxing
+    MOXING_AVAILABLE = True
+except ImportError:
+    mox = None
+    init_moxing = None
+    MOXING_AVAILABLE = False
+    logger.debug("moxing 模块不可用，OBS 支持已禁用")
 
 @contextmanager
 def open_file(path: Union[str, Path], mode: str = 'r') -> Union[TextIO, BinaryIO]:
@@ -23,12 +32,18 @@ def open_file(path: Union[str, Path], mode: str = 'r') -> Union[TextIO, BinaryIO
     Raises:
         FileNotFoundError: 文件不存在
         IOError: 文件打开失败
+        ImportError: 尝试访问 OBS 文件但 moxing 模块不可用
     """
     path = str(path)
     is_obs = path.startswith('obs://')
     
     try:
         if is_obs:
+            if not MOXING_AVAILABLE:
+                raise ImportError(
+                    "尝试访问 OBS 文件但 moxing 模块不可用。"
+                    "请安装 moxing: pip install moxing"
+                )
             init_moxing()  # 初始化 moxing 环境
             file_obj = mox.file.File(path, mode)
         else:

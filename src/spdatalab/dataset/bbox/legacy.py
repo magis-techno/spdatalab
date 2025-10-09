@@ -2114,15 +2114,36 @@ def run(input_path, batch=1000, insert_batch=1000, create_table=False, retry_fai
         print(f"- 失败记录: {tracker.failed_file}")
         print(f"- 进度文件: {tracker.progress_file}")
 
+def build_parser() -> argparse.ArgumentParser:
+    """兼容旧脚本的命令行解析器。"""
+
+    parser = argparse.ArgumentParser(description='从数据集文件生成边界框数据')
+    parser.add_argument('--input', required=True, help='输入文件路径（支持JSON/Parquet/文本格式）')
+    parser.add_argument('--batch', type=int, default=1000, help='处理批次大小')
+    parser.add_argument('--insert-batch', type=int, default=1000, help='插入批次大小')
+    parser.add_argument('--create-table', action='store_true', help='创建表（如果不存在）。默认假设表已通过SQL脚本创建')
+    parser.add_argument('--retry-failed', action='store_true', help='是否只重试失败的数据')
+    parser.add_argument('--work-dir', default='./bbox_import_logs', help='工作目录，用于存储日志和进度文件')
+    parser.add_argument('--show-stats', action='store_true', help='显示处理统计信息并退出')
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """暴露一个入口以供新的 CLI 代理调用。"""
+
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    run(
+        args.input,
+        args.batch,
+        args.insert_batch,
+        args.create_table,
+        args.retry_failed,
+        args.work_dir,
+        args.show_stats,
+    )
+    return 0
+
+
 if __name__ == '__main__':
-    ap = argparse.ArgumentParser(description='从数据集文件生成边界框数据')
-    ap.add_argument('--input', required=True, help='输入文件路径（支持JSON/Parquet/文本格式）')
-    ap.add_argument('--batch', type=int, default=1000, help='处理批次大小')
-    ap.add_argument('--insert-batch', type=int, default=1000, help='插入批次大小')
-    ap.add_argument('--create-table', action='store_true', help='创建表（如果不存在）。默认假设表已通过SQL脚本创建')
-    ap.add_argument('--retry-failed', action='store_true', help='是否只重试失败的数据')
-    ap.add_argument('--work-dir', default='./bbox_import_logs', help='工作目录，用于存储日志和进度文件')
-    ap.add_argument('--show-stats', action='store_true', help='显示处理统计信息并退出')
-    
-    args = ap.parse_args()
-    run(args.input, args.batch, args.insert_batch, args.create_table, args.retry_failed, args.work_dir, args.show_stats)
+    raise SystemExit(main())
