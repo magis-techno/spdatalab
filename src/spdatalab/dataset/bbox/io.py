@@ -10,11 +10,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Any, Callable, ContextManager, Iterable, Sequence
 
 import geopandas as gpd
 import pandas as pd
 from sqlalchemy import text
+from sqlalchemy.engine import Engine
 
 from spdatalab.common.io_hive import hive_cursor
 
@@ -29,6 +30,7 @@ __all__ = [
     "load_scene_ids_from_text",
     "fetch_meta",
     "fetch_bbox_with_geometry",
+    "BBoxDataRepository",
 ]
 
 
@@ -102,7 +104,13 @@ def load_scene_ids(file_path: str | Path) -> list[str]:
     return load_scene_ids_from_text(file_path)
 
 
-def fetch_meta(tokens: Sequence[str]) -> pd.DataFrame:
+HiveCursorFactory = Callable[[], ContextManager[Any]]
+
+
+def fetch_meta(
+    tokens: Sequence[str],
+    cursor_factory: HiveCursorFactory | None = None,
+) -> pd.DataFrame:
     """
     Fetch metadata records for the provided scene tokens via Hive.
     """
@@ -110,11 +118,12 @@ def fetch_meta(tokens: Sequence[str]) -> pd.DataFrame:
     if not tokens:
         return pd.DataFrame(columns=["scene_token", "data_name", "event_id", "city_id", "timestamp"])
 
+    cursor_factory = cursor_factory or hive_cursor
     sql = (
         "SELECT id AS scene_token, origin_name AS data_name, event_id, city_id, timestamp "
         "FROM transform.ods_t_data_fragment_datalake WHERE id IN %(tok)s"
     )
-    with hive_cursor() as cur:
+    with cursor_factory() as cur:
         cur.execute(sql, {"tok": tuple(tokens)})
         cols = [desc[0] for desc in cur.description]
         return pd.DataFrame(cur.fetchall(), columns=cols)
@@ -170,3 +179,27 @@ def fetch_bbox_with_geometry(
         params={"names_param": list(names)},
         geom_col="geometry",
     )
+
+
+@dataclass(slots=True)
+class BBoxDataRepository:
+    """
+    Implements the refactored repository interface backed by Hive + PostGIS.
+    """
+
+    engine: Engine
+    point_table: str = "public.ddi_data_points"
+    hive_cursor_factory: HiveCursorFactory | None = None
+
+    def load_scene_ids(self, manifest_path: str | Path) -> list[str]:
+        return load_scene_ids(manifest_path)
+
+    def fetch_metadata(self, tokens: Sequence[str]) -> pd.DataFrame:
+        return fetch_meta(tokens, cursor_factory=self.hive_cursor_factory or hive_cursor)
+
+    def fetch_bbox_geometries(self, dataset_names: Sequence[str]) -> gpd.GeoDataFrame:
+        return fetch_bbox_with_geometry(
+            dataset_names,
+            self.engine,
+            point_table=self.point_table,
+        )

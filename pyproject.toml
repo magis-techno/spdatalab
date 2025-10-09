@@ -2,7 +2,7 @@
 name = "spdatalab"
 version = "0.1.0"
 description = "Spatial‑Data‑Lab scaffold"
-requires-python = ">=3.9"
+requires-python = ">=3.9,<3.13"
 readme = "README.md"
 license = {text = "MIT"}
 dependencies = [

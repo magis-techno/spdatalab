@@ -8,7 +8,12 @@ that previously lived in ``spdatalab.dataset.bbox``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Iterator, Protocol, Sequence, TypeVar
+from pathlib import Path
+from typing import Iterable, Iterator, Protocol, Sequence, TypeVar, TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover
+    import geopandas as gpd
+    import pandas as pd
 
 __all__ = [
     "BBoxRepository",
@@ -23,7 +28,13 @@ T_co = TypeVar("T_co", covariant=False)
 class BBoxRepository(Protocol):
     """Abstracts data access for bbox scenes so the core logic stays testable."""
 
-    def list_scene_tokens(self, limit: int | None = None) -> Iterable[str]:
+    def load_scene_ids(self, manifest_path: str | Path) -> list[str]:
+        ...
+
+    def fetch_metadata(self, tokens: Sequence[str]) -> "pd.DataFrame":
+        ...
+
+    def fetch_bbox_geometries(self, dataset_names: Sequence[str]) -> "gpd.GeoDataFrame":
         ...
 
 

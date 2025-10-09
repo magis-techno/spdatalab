@@ -21,7 +21,7 @@ from .pipeline import (
     setup_interrupt_handlers,
 )
 from .core import chunk
-from .io import load_scene_ids, fetch_meta, fetch_bbox_with_geometry
+from .io import BBoxDataRepository, load_scene_ids
 
 LOCAL_DSN = "postgresql+psycopg://postgres:postgres@local_pg:5432/postgres"
 POINT_TABLE = "public.ddi_data_points"
@@ -1107,7 +1107,8 @@ def process_subdataset_parallel(args):
         # 为每个进程创建独立的数据库连接
         from sqlalchemy import create_engine
         eng = create_engine(dsn, future=True)
-        
+        repo = BBoxDataRepository(engine=eng, point_table=POINT_TABLE)
+
         # 创建独立的进度跟踪器
         sub_work_dir = f"{work_dir}/{subdataset_name}"
         sub_tracker = LightweightProgressTracker(sub_work_dir)
@@ -1123,7 +1124,7 @@ def process_subdataset_parallel(args):
         
         # 处理当前子数据集的数据
         processed_count, inserted_count = process_subdataset_scenes(
-            eng, remaining_scene_ids, table_name, batch_size, insert_batch_size, sub_tracker, metadata
+            repo, remaining_scene_ids, table_name, batch_size, insert_batch_size, sub_tracker, metadata
         )
         
         print(f"  ✅ [{subdataset_name}] 完成: 处理 {processed_count} 个，插入 {inserted_count} 条记录")
@@ -1171,7 +1172,8 @@ def run_with_partitioning_parallel(input_path, batch=1000, insert_batch=1000, wo
     print(f"仅维护视图: {maintain_view_only}")
     
     eng = create_engine(LOCAL_DSN, future=True)
-    
+    repo = BBoxDataRepository(engine=eng, point_table=POINT_TABLE)
+
     # 如果只是维护视图
     if maintain_view_only:
         print("\n=== 维护统一视图模式 ===")
@@ -1349,7 +1351,8 @@ def run_with_partitioning_sequential(input_path, batch=1000, insert_batch=1000, 
     print(f"仅维护视图: {maintain_view_only}")
     
     eng = create_engine(LOCAL_DSN, future=True)
-    
+    repo = BBoxDataRepository(engine=eng, point_table=POINT_TABLE)
+
     # 如果只是维护视图
     if maintain_view_only:
         print("\n=== 维护统一视图模式 ===")
@@ -1406,7 +1409,7 @@ def run_with_partitioning_sequential(input_path, batch=1000, insert_batch=1000, 
                 
                 # 处理当前子数据集的数据
                 sub_processed, sub_inserted = process_subdataset_scenes(
-                    eng, remaining_scene_ids, table_name, batch, insert_batch, sub_tracker, metadata
+                    repo, remaining_scene_ids, table_name, batch, insert_batch, sub_tracker, metadata
                 )
                 
                 total_processed += sub_processed
@@ -1446,7 +1449,7 @@ def run_with_partitioning_sequential(input_path, batch=1000, insert_batch=1000, 
     finally:
         print(f"\n日志和进度文件保存在: {work_dir}")
 
-def process_subdataset_scenes(eng, scene_ids, table_name, batch_size, insert_batch_size, tracker, metadata=None):
+def process_subdataset_scenes(repo, scene_ids, table_name, batch_size, insert_batch_size, tracker, metadata=None):
     """处理单个子数据集的场景数据
     
     Args:
@@ -1486,7 +1489,7 @@ def process_subdataset_scenes(eng, scene_ids, table_name, batch_size, insert_bat
             
             # 获取元数据
             try:
-                meta = fetch_meta(token_batch)
+                meta = repo.fetch_metadata(token_batch)
                 if meta.empty:
                     print(f"    [批次 {batch_num}] 没有找到元数据，跳过")
                     for token in token_batch:
@@ -1507,9 +1510,7 @@ def process_subdataset_scenes(eng, scene_ids, table_name, batch_size, insert_bat
             
             # 获取边界框和几何对象
             try:
-                bbox_gdf = fetch_bbox_with_geometry(
-                    meta.data_name.tolist(), eng, point_table=POINT_TABLE
-                )
+                bbox_gdf = repo.fetch_bbox_geometries(meta.data_name.tolist())
                 if bbox_gdf.empty:
                     print(f"    [批次 {batch_num}] 没有找到边界框数据，跳过")
                     for token in meta.scene_token:
@@ -1592,7 +1593,7 @@ def process_subdataset_scenes(eng, scene_ids, table_name, batch_size, insert_bat
             # 批量插入到指定表
             try:
                 batch_inserted = batch_insert_to_postgis(
-                    final_gdf, eng, 
+                    final_gdf, repo.engine, 
                     table_name=table_name,  # 使用指定的分表名称
                     batch_size=insert_batch_size, 
                     tracker=tracker, 
@@ -1711,7 +1712,7 @@ def run(input_path, batch=1000, insert_batch=1000, create_table=False, retry_fai
             
             # 获取元数据
             try:
-                meta = fetch_meta(token_batch)
+                meta = repo.fetch_metadata(token_batch)
                 if meta.empty:
                     print(f"[批次 {batch_num}] 没有找到元数据，跳过")
                     # 记录获取元数据失败的tokens
@@ -1734,9 +1735,7 @@ def run(input_path, batch=1000, insert_batch=1000, create_table=False, retry_fai
             
             # 获取边界框和几何对象（直接从PostGIS获取原始几何）
             try:
-                bbox_gdf = fetch_bbox_with_geometry(
-                    meta.data_name.tolist(), eng, point_table=POINT_TABLE
-                )
+                bbox_gdf = repo.fetch_bbox_geometries(meta.data_name.tolist())
                 if bbox_gdf.empty:
                     print(f"[批次 {batch_num}] 没有找到边界框数据，跳过")
                     # 记录获取边界框失败的tokens
@@ -1790,7 +1789,7 @@ def run(input_path, batch=1000, insert_batch=1000, create_table=False, retry_fai
             # 批量插入数据库
             try:
                 batch_inserted = batch_insert_to_postgis(
-                    final_gdf, eng, 
+                    final_gdf, repo.engine, 
                     batch_size=insert_batch, 
                     tracker=tracker, 
                     batch_num=batch_num
