@@ -1,7 +1,6 @@
 from __future__ import annotations
 import argparse
 import json
-import signal
 import sys
 import re
 from pathlib import Path
@@ -17,233 +16,44 @@ import threading
 import time
 import os
 
-# 检查是否有parquet支持
-try:
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-    PARQUET_AVAILABLE = True
-except ImportError:
-    PARQUET_AVAILABLE = False
+# 兼容旧实现的基础配置由 pipeline 模块提供
+from .pipeline import (
+    InterruptFlag,
+    LightweightProgressTracker,
+    PARQUET_AVAILABLE,
+    setup_interrupt_handlers,
+)
 
 LOCAL_DSN = "postgresql+psycopg://postgres:postgres@local_pg:5432/postgres"
 POINT_TABLE = "public.ddi_data_points"
 
 # 全局变量用于优雅退出
 interrupted = False
+interrupt_flag = InterruptFlag()
 
-def signal_handler(signum, frame):
-    """信号处理函数，用于优雅退出"""
+
+def _default_interrupt_message(signum: int, _frame: object | None) -> None:
+    print(f"\n???????({signum})???????..")
+    print("??????????????..")
+
+
+
+def setup_signal_handlers() -> None:
+    """??????????????????????"""
+
     global interrupted
-    print(f"\n接收到中断信号 ({signum})，正在优雅退出...")
-    print("等待当前批次处理完成，请稍候...")
-    interrupted = True
+    interrupted = False
+    interrupt_flag.reset()
 
-def setup_signal_handlers():
-    """设置信号处理器"""
-    signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
-    signal.signal(signal.SIGTERM, signal_handler)  # 终止信号
+    def _handler(signum: int, frame: object | None) -> None:
+        global interrupted
+        if not interrupt_flag.is_set():
+            _default_interrupt_message(signum, frame)
+        interrupt_flag.set()
+        interrupted = True
 
-class LightweightProgressTracker:
-    """轻量级进度跟踪器，使用Parquet文件存储状态，针对大规模数据优化"""
-    
-    def __init__(self, work_dir="./bbox_import_logs"):
-        self.work_dir = Path(work_dir).resolve()  # 使用绝对路径
-        try:
-            self.work_dir.mkdir(exist_ok=True, parents=True)
-        except PermissionError:
-            # 如果当前目录权限不足，尝试使用临时目录
-            import tempfile
-            self.work_dir = Path(tempfile.gettempdir()) / "bbox_import_logs"
-            self.work_dir.mkdir(exist_ok=True, parents=True)
-            print(f"权限不足，使用临时目录: {self.work_dir}")
-        
-        # 状态文件路径
-        self.success_file = self.work_dir / "successful_tokens.parquet"
-        self.failed_file = self.work_dir / "failed_tokens.parquet"
-        self.progress_file = self.work_dir / "progress.json"
-        
-        # 内存缓存（用于批量操作）
-        self._success_cache = self._load_success_cache()
-        self._failed_buffer = []  # 失败记录缓冲区
-        self._success_buffer = []  # 成功记录缓冲区
-        self._buffer_size = 1000  # 缓冲区大小
-        
-    def _load_success_cache(self):
-        """加载成功token的缓存"""
-        if self.success_file.exists() and PARQUET_AVAILABLE:
-            try:
-                df = pd.read_parquet(self.success_file)
-                cache = set(df['scene_token'].tolist())
-                print(f"已加载 {len(cache)} 个成功处理的scene_token")
-                return cache
-            except Exception as e:
-                print(f"加载成功记录失败: {e}，将创建新文件")
-                return set()
-        else:
-            return set()
-    
-    def save_successful_batch(self, scene_tokens, batch_num=None):
-        """批量保存成功处理的token（使用缓冲区优化）"""
-        if not scene_tokens:
-            return
-            
-        # 添加到缓冲区
-        timestamp = datetime.now()
-        for token in scene_tokens:
-            if token not in self._success_cache:
-                self._success_buffer.append({
-                    'scene_token': token,
-                    'processed_at': timestamp,
-                    'batch_num': batch_num
-                })
-                self._success_cache.add(token)
-        
-        # 如果缓冲区达到阈值，则写入文件
-        if len(self._success_buffer) >= self._buffer_size:
-            self._flush_success_buffer()
-    
-    def _flush_success_buffer(self):
-        """将成功记录缓冲区写入文件"""
-        if not self._success_buffer or not PARQUET_AVAILABLE:
-            return
-            
-        new_df = pd.DataFrame(self._success_buffer)
-        
-        try:
-            if self.success_file.exists():
-                # 追加到现有文件
-                existing_df = pd.read_parquet(self.success_file)
-                combined_df = pd.concat([existing_df, new_df], ignore_index=True)
-                # 去重（以防万一）
-                combined_df = combined_df.drop_duplicates(subset=['scene_token'], keep='last')
-            else:
-                combined_df = new_df
-            
-            # 写入文件
-            combined_df.to_parquet(self.success_file, index=False)
-            print(f"已保存 {len(self._success_buffer)} 个成功记录到文件")
-            
-        except Exception as e:
-            print(f"保存成功记录失败: {e}")
-        
-        # 清空缓冲区
-        self._success_buffer = []
-    
-    def save_failed_record(self, scene_token, error_msg, batch_num=None, step="unknown"):
-        """保存失败记录（使用缓冲区优化）"""
-        self._failed_buffer.append({
-            'scene_token': scene_token,
-            'error_msg': str(error_msg),
-            'batch_num': batch_num,
-            'step': step,
-            'failed_at': datetime.now()
-        })
-        
-        # 如果缓冲区达到阈值，则写入文件
-        if len(self._failed_buffer) >= self._buffer_size:
-            self._flush_failed_buffer()
-    
-    def _flush_failed_buffer(self):
-        """将失败记录缓冲区写入文件"""
-        if not self._failed_buffer or not PARQUET_AVAILABLE:
-            return
-            
-        new_df = pd.DataFrame(self._failed_buffer)
-        
-        try:
-            if self.failed_file.exists():
-                # 追加到现有文件
-                existing_df = pd.read_parquet(self.failed_file)
-                combined_df = pd.concat([existing_df, new_df], ignore_index=True)
-            else:
-                combined_df = new_df
-            
-            # 写入文件
-            combined_df.to_parquet(self.failed_file, index=False)
-            print(f"已保存 {len(self._failed_buffer)} 个失败记录到文件")
-            
-        except Exception as e:
-            print(f"保存失败记录失败: {e}")
-        
-        # 清空缓冲区
-        self._failed_buffer = []
-    
-    def get_remaining_tokens(self, all_tokens):
-        """获取还需要处理的token"""
-        remaining = [token for token in all_tokens if token not in self._success_cache]
-        print(f"总计 {len(all_tokens)} 个场景，已成功处理 {len(self._success_cache)} 个，剩余 {len(remaining)} 个")
-        return remaining
-    
-    def check_tokens_exist(self, tokens):
-        """批量检查tokens是否已存在"""
-        return set(tokens) & self._success_cache
-    
-    def load_failed_tokens(self):
-        """加载失败的tokens，用于重试"""
-        if not self.failed_file.exists() or not PARQUET_AVAILABLE:
-            return []
-        
-        try:
-            failed_df = pd.read_parquet(self.failed_file)
-            # 排除已成功处理的tokens
-            failed_tokens = failed_df[~failed_df['scene_token'].isin(self._success_cache)]['scene_token'].unique().tolist()
-            print(f"加载了 {len(failed_tokens)} 个失败的scene_token")
-            return failed_tokens
-        except Exception as e:
-            print(f"加载失败记录失败: {e}")
-            return []
-    
-    def save_progress(self, total_scenes, processed_scenes, inserted_records, current_batch):
-        """保存总体进度"""
-        progress = {
-            "total_scenes": total_scenes,
-            "processed_scenes": processed_scenes,
-            "inserted_records": inserted_records,
-            "current_batch": current_batch,
-            "timestamp": datetime.now().isoformat(),
-            "successful_count": len(self._success_cache),
-            "failed_count": len(self._failed_buffer) + (
-                len(pd.read_parquet(self.failed_file)) if self.failed_file.exists() and PARQUET_AVAILABLE else 0
-            )
-        }
-        
-        try:
-            with open(self.progress_file, 'w', encoding='utf-8') as f:
-                json.dump(progress, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"保存进度失败: {e}")
-    
-    def get_statistics(self):
-        """获取统计信息"""
-        success_count = len(self._success_cache)
-        
-        failed_count = 0
-        failed_by_step = {}
-        
-        if self.failed_file.exists() and PARQUET_AVAILABLE:
-            try:
-                failed_df = pd.read_parquet(self.failed_file)
-                # 排除已成功处理的
-                active_failed = failed_df[~failed_df['scene_token'].isin(self._success_cache)]
-                failed_count = len(active_failed['scene_token'].unique())
-                
-                # 按步骤统计
-                if not active_failed.empty:
-                    failed_by_step = active_failed['step'].value_counts().to_dict()
-                    
-            except Exception as e:
-                print(f"统计失败记录时出错: {e}")
-        
-        return {
-            'success_count': success_count,
-            'failed_count': failed_count,
-            'failed_by_step': failed_by_step
-        }
-    
-    def finalize(self):
-        """完成处理，刷新所有缓冲区"""
-        self._flush_success_buffer()
-        self._flush_failed_buffer()
+    setup_interrupt_handlers(interrupt_flag, on_interrupt=_handler)
+
 
 def create_table_if_not_exists(eng, table_name='clips_bbox'):
     """如果表不存在则创建表 - 与cleanup_clips_bbox.sql保持一致"""
@@ -1570,6 +1380,9 @@ def run_with_partitioning_parallel(input_path, batch=1000, insert_batch=1000, wo
     except KeyboardInterrupt:
         print(f"\n程序被用户中断")
         interrupted = True
+        interrupt_flag.set()
+        interrupt_flag.set()
+        interrupt_flag.set()
     except Exception as e:
         print(f"\n并行分表处理遇到错误: {str(e)}")
     finally:
