@@ -91,11 +91,15 @@ def cleanup_analysis_data(mode='today', dry_run=False):
             return True
         
         # 检查是否有问题的JSON
+        if where_clause:
+            json_where = f"{where_clause} AND (analysis_params LIKE '%False%' OR analysis_params LIKE '%True%')"
+        else:
+            json_where = "WHERE (analysis_params LIKE '%False%' OR analysis_params LIKE '%True%')"
+        
         check_json_sql = text(f"""
             SELECT COUNT(*) as bad_json_count
             FROM bbox_overlap_analysis_results 
-            {where_clause}
-            AND (analysis_params LIKE '%False%' OR analysis_params LIKE '%True%');
+            {json_where};
         """)
         
         bad_json_result = conn.execute(check_json_sql).fetchone()
