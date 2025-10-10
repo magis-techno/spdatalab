@@ -8,6 +8,7 @@ or warehouse backends so they can be reused across the refactor.
 from __future__ import annotations
 
 import json
+import locale
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, ContextManager, Iterable, Sequence
@@ -54,11 +55,37 @@ def fetch_scenes(city: str | None = None) -> Iterable[SceneRecord]:
 # Dataset loading helpers
 
 
+def _load_json_with_fallback(file_path: Path) -> Any:
+    """Load JSON from ``file_path`` trying UTF-8 first then locale encoding."""
+
+    encodings = ["utf-8"]
+    preferred = locale.getpreferredencoding(False)
+    if preferred and preferred.lower() not in {enc.lower() for enc in encodings}:
+        encodings.append(preferred)
+
+    last_error: UnicodeDecodeError | None = None
+    for encoding in encodings:
+        try:
+            with open(file_path, "r", encoding=encoding) as handle:
+                return json.load(handle)
+        except UnicodeDecodeError as exc:
+            last_error = exc
+
+    # If we exhausted the encodings list re-raise the last error to keep
+    # the standard error semantics of ``open``/``json.load``.
+    if last_error is not None:
+        raise last_error
+
+    # Reaching this point means we never attempted to open the file, but
+    # that can only happen when ``encodings`` is empty, which should not
+    # occur. Raise ``RuntimeError`` for completeness.
+    raise RuntimeError("No encodings available to decode JSON file")
+
+
 def load_scene_ids_from_json(file_path: str | Path) -> list[str]:
     """Read scene identifiers from a dataset manifest stored as JSON."""
 
-    with open(Path(file_path), "r", encoding="utf-8") as handle:
-        dataset_data = json.load(handle)
+    dataset_data = _load_json_with_fallback(Path(file_path))
 
     scene_ids: list[str] = []
     for subdataset in dataset_data.get("subdatasets", []):
@@ -183,22 +210,24 @@ def fetch_bbox_with_geometry(
 
 @dataclass(slots=True)
 class BBoxDataRepository:
-    """
-    Implements the refactored repository interface backed by Hive + PostGIS.
-    """
+    """Implements the refactored repository interface backed by Hive + PostGIS."""
 
     engine: Engine
     point_table: str = "public.ddi_data_points"
     hive_cursor_factory: HiveCursorFactory | None = None
+    scene_loader: Callable[[str | Path], list[str]] = load_scene_ids
+    metadata_fetcher: Callable[..., pd.DataFrame] = fetch_meta
+    bbox_fetcher: Callable[..., gpd.GeoDataFrame] = fetch_bbox_with_geometry
 
     def load_scene_ids(self, manifest_path: str | Path) -> list[str]:
-        return load_scene_ids(manifest_path)
+        return self.scene_loader(manifest_path)
 
     def fetch_metadata(self, tokens: Sequence[str]) -> pd.DataFrame:
-        return fetch_meta(tokens, cursor_factory=self.hive_cursor_factory or hive_cursor)
+        cursor_factory = self.hive_cursor_factory or hive_cursor
+        return self.metadata_fetcher(tokens, cursor_factory=cursor_factory)
 
     def fetch_bbox_geometries(self, dataset_names: Sequence[str]) -> gpd.GeoDataFrame:
-        return fetch_bbox_with_geometry(
+        return self.bbox_fetcher(
             dataset_names,
             self.engine,
             point_table=self.point_table,
