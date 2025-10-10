@@ -11,17 +11,26 @@
     # 首次运行：创建表
     python analyze_spatial_redundancy.py --create-table
     
-    # 分析冗余度（默认top1%）
+    # 分析冗余度（默认top1%，自动使用最新日期）
     python analyze_spatial_redundancy.py
+    
+    # 按scene数量排序（会增加几秒启动时间）
+    python analyze_spatial_redundancy.py --sort-by-scenes
     
     # 分析top5%
     python analyze_spatial_redundancy.py --top-percent 5
+    
+    # 指定分析日期
+    python analyze_spatial_redundancy.py --analysis-date 2025-10-09
     
     # 指定城市
     python analyze_spatial_redundancy.py --cities A263 B001
     
     # 导出CSV
     python analyze_spatial_redundancy.py --export-csv
+    
+    # 组合使用
+    python analyze_spatial_redundancy.py --sort-by-scenes --analysis-date 2025-10-09 --export-csv
 """
 
 import sys
@@ -97,10 +106,16 @@ def create_density_table(conn):
     print("✅ 表创建成功")
 
 
-def calculate_city_redundancy(conn, city_id: str, top_percent: float = 1.0):
+def calculate_city_redundancy(conn, city_id: str, top_percent: float = 1.0, analysis_date=None):
     """计算单个城市的冗余度指标
     
     使用 grid 面积统一计算，避免分子分母不一致的问题。
+    
+    Args:
+        conn: 数据库连接
+        city_id: 城市ID
+        top_percent: top百分比
+        analysis_date: 分析日期，如果为None则使用CURRENT_DATE
     """
     
     # 1. 城市总体统计（只需要 scene 和 bbox 数量）
@@ -118,11 +133,18 @@ def calculate_city_redundancy(conn, city_id: str, top_percent: float = 1.0):
         return None
     
     # 2. 获取该城市有数据的 grid 统计
-    grid_count_sql = text("""
-        SELECT COUNT(*) FROM city_grid_density
-        WHERE city_id = :city_id AND analysis_date = CURRENT_DATE
-    """)
-    grid_count = conn.execute(grid_count_sql, {'city_id': city_id}).scalar()
+    if analysis_date:
+        grid_count_sql = text("""
+            SELECT COUNT(*) FROM city_grid_density
+            WHERE city_id = :city_id AND analysis_date = :analysis_date
+        """)
+        grid_count = conn.execute(grid_count_sql, {'city_id': city_id, 'analysis_date': analysis_date}).scalar()
+    else:
+        grid_count_sql = text("""
+            SELECT COUNT(*) FROM city_grid_density
+            WHERE city_id = :city_id AND analysis_date = CURRENT_DATE
+        """)
+        grid_count = conn.execute(grid_count_sql, {'city_id': city_id}).scalar()
     
     if not grid_count or grid_count == 0:
         return None
@@ -131,26 +153,47 @@ def calculate_city_redundancy(conn, city_id: str, top_percent: float = 1.0):
     top_n = max(1, int(grid_count * top_percent / 100.0))
     
     # 3. 通过空间连接计算 top N% 网格内的实际 scene 数
-    hotspot_sql = text("""
-        WITH top_grids AS (
-            SELECT geometry
-            FROM city_grid_density
-            WHERE city_id = :city_id AND analysis_date = CURRENT_DATE
-            ORDER BY bbox_count DESC
-            LIMIT :top_n
-        )
-        SELECT 
-            COUNT(DISTINCT b.scene_token) as hotspot_scenes,
-            COUNT(b.*) as hotspot_bboxes
-        FROM top_grids tg
-        LEFT JOIN clips_bbox_unified b ON ST_Intersects(tg.geometry, b.geometry)
-        WHERE b.city_id = :city_id AND b.all_good = true
-    """)
-    
-    hotspot = conn.execute(hotspot_sql, {
-        'city_id': city_id,
-        'top_n': top_n
-    }).fetchone()
+    if analysis_date:
+        hotspot_sql = text("""
+            WITH top_grids AS (
+                SELECT geometry
+                FROM city_grid_density
+                WHERE city_id = :city_id AND analysis_date = :analysis_date
+                ORDER BY bbox_count DESC
+                LIMIT :top_n
+            )
+            SELECT 
+                COUNT(DISTINCT b.scene_token) as hotspot_scenes,
+                COUNT(b.*) as hotspot_bboxes
+            FROM top_grids tg
+            LEFT JOIN clips_bbox_unified b ON ST_Intersects(tg.geometry, b.geometry)
+            WHERE b.city_id = :city_id AND b.all_good = true
+        """)
+        hotspot = conn.execute(hotspot_sql, {
+            'city_id': city_id,
+            'top_n': top_n,
+            'analysis_date': analysis_date
+        }).fetchone()
+    else:
+        hotspot_sql = text("""
+            WITH top_grids AS (
+                SELECT geometry
+                FROM city_grid_density
+                WHERE city_id = :city_id AND analysis_date = CURRENT_DATE
+                ORDER BY bbox_count DESC
+                LIMIT :top_n
+            )
+            SELECT 
+                COUNT(DISTINCT b.scene_token) as hotspot_scenes,
+                COUNT(b.*) as hotspot_bboxes
+            FROM top_grids tg
+            LEFT JOIN clips_bbox_unified b ON ST_Intersects(tg.geometry, b.geometry)
+            WHERE b.city_id = :city_id AND b.all_good = true
+        """)
+        hotspot = conn.execute(hotspot_sql, {
+            'city_id': city_id,
+            'top_n': top_n
+        }).fetchone()
     
     if not hotspot:
         return None
@@ -200,6 +243,10 @@ def main():
                        help='分析的top百分比（默认1%%）')
     parser.add_argument('--cities', nargs='+',
                        help='指定分析的城市列表')
+    parser.add_argument('--sort-by-scenes', action='store_true',
+                       help='按scene数量从多到少排序城市（会增加启动时间）')
+    parser.add_argument('--analysis-date', type=str,
+                       help='指定分析日期（格式：YYYY-MM-DD），默认使用表中最新日期')
     parser.add_argument('--export-csv', action='store_true',
                        help='导出CSV报告')
     
@@ -222,25 +269,62 @@ def main():
             print(f"🚀 空间冗余分析 (Top {args.top_percent}%)")
             print("=" * 60)
             
+            # 确定分析日期
+            if args.analysis_date:
+                target_date = args.analysis_date
+                print(f"📅 使用指定日期: {target_date}")
+            else:
+                # 自动获取表中最新日期
+                max_date_sql = text("""
+                    SELECT MAX(analysis_date) 
+                    FROM city_grid_density
+                """)
+                target_date = conn.execute(max_date_sql).scalar()
+                
+                if not target_date:
+                    print("\n❌ city_grid_density 表中没有数据")
+                    print("💡 提示:")
+                    print("   1. 先运行: python analyze_spatial_redundancy.py --create-table")
+                    print("   2. 再运行: python batch_grid_analysis.py")
+                    print("   3. 最后运行: python analyze_spatial_redundancy.py")
+                    return 1
+                
+                print(f"📅 自动使用最新日期: {target_date}")
+            
             # 获取城市列表
             if args.cities:
                 cities = args.cities
                 print(f"🎯 分析指定城市: {cities}")
             else:
-                # 按 scene 数量从多到少排序
-                result = conn.execute(text("""
-                    SELECT 
-                        cgd.city_id,
-                        COUNT(DISTINCT cbu.scene_token) as scene_count
-                    FROM city_grid_density cgd
-                    LEFT JOIN clips_bbox_unified cbu 
-                        ON cgd.city_id = cbu.city_id AND cbu.all_good = true
-                    WHERE cgd.analysis_date = CURRENT_DATE
-                    GROUP BY cgd.city_id
-                    ORDER BY scene_count DESC, cgd.city_id
-                """))
-                cities = [row.city_id for row in result]
-                print(f"📊 分析所有城市: 共 {len(cities)} 个（按scene数量排序）")
+                if args.sort_by_scenes:
+                    # 按 scene 数量从多到少排序（较慢，需要统计）
+                    print(f"⏳ 正在统计各城市scene数量...")
+                    result = conn.execute(text("""
+                        SELECT 
+                            city_id,
+                            COUNT(DISTINCT scene_token) as scene_count
+                        FROM clips_bbox_unified
+                        WHERE city_id IN (
+                            SELECT DISTINCT city_id 
+                            FROM city_grid_density 
+                            WHERE analysis_date = :target_date
+                        )
+                        AND all_good = true
+                        GROUP BY city_id
+                        ORDER BY scene_count DESC, city_id
+                    """), {'target_date': target_date})
+                    cities = [row.city_id for row in result]
+                    print(f"📊 分析所有城市: 共 {len(cities)} 个（按scene数量排序）")
+                else:
+                    # 快速模式：不排序
+                    result = conn.execute(text("""
+                        SELECT DISTINCT city_id 
+                        FROM city_grid_density
+                        WHERE analysis_date = :target_date
+                        ORDER BY city_id
+                    """), {'target_date': target_date})
+                    cities = [row.city_id for row in result]
+                    print(f"📊 分析所有城市: 共 {len(cities)} 个")
             
             if not cities:
                 print("\n❌ 没有找到城市数据")
@@ -255,7 +339,7 @@ def main():
             results = []
             
             for city_id in cities:
-                metrics = calculate_city_redundancy(conn, city_id, args.top_percent)
+                metrics = calculate_city_redundancy(conn, city_id, args.top_percent, target_date)
                 if metrics:
                     results.append(metrics)
                     print(f"✓ {city_id}: 冗余指数 {metrics['redundancy_index']} "

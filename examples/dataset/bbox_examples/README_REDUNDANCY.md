@@ -14,17 +14,26 @@ python examples/dataset/bbox_examples/batch_grid_analysis.py
 
 ### 3. 运行冗余分析
 ```bash
-# 默认分析（top 1%）
+# 默认分析（top 1%，自动使用最新日期，快速模式）
 python examples/dataset/bbox_examples/analyze_spatial_redundancy.py
+
+# 按 scene 数量排序（会增加几秒启动时间）
+python examples/dataset/bbox_examples/analyze_spatial_redundancy.py --sort-by-scenes
 
 # 分析 top 5%
 python examples/dataset/bbox_examples/analyze_spatial_redundancy.py --top-percent 5
+
+# 指定分析日期（分析历史数据）
+python examples/dataset/bbox_examples/analyze_spatial_redundancy.py --analysis-date 2025-10-09
 
 # 指定城市
 python examples/dataset/bbox_examples/analyze_spatial_redundancy.py --cities A263 B001
 
 # 导出 CSV
 python examples/dataset/bbox_examples/analyze_spatial_redundancy.py --export-csv
+
+# 组合使用
+python examples/dataset/bbox_examples/analyze_spatial_redundancy.py --sort-by-scenes --analysis-date 2025-10-09 --export-csv
 ```
 
 ---
