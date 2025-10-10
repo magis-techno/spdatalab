@@ -18,6 +18,24 @@
 3. **Notebook 保持轻量**：Notebook 作为探索、展示或回归复现的载体，统一通过导入 `spdatalab` 中的函数来运行。
 4. **测试可覆盖**：拆出的函数要能够在 `tests/` 中编写单测或集成测试（可借助模拟的 SQLAlchemy engine 或临时文件）。
 
+## 项目聚焦清单（实时更新）
+
+**关键信息**
+- 环境：使用 `venv\Scripts\python.exe` 运行 Python，敏感配置放在 `.env`，常用流程可通过 `Makefile` 中的命令触发。
+- 核心回归：`pytest -k bbox`、`pytest tests/test_bbox_cli.py tests/test_bbox_core.py` 用于验证 bbox 模块拆分后的主流程。
+- 数据基线：`tests/data/baseline/` 保存关键指标输出，对比脚本依赖该目录作为参考值。
+
+**待办（Open）**
+- [ ] CLI 与示例收口：完善 `spdatalab.dataset.bbox.cli` 的参数校验与日志输出，让 `examples/` 下脚本全部转调 `main()`。
+- [ ] Notebook 精简：抽离 Notebook 中复用函数到 `analysis/notebook_support.py`（或按领域拆分模块），并启用 `nbstripout` 钩子清理输出。
+- [ ] 验证脚本：实现 `scripts/testing/compare_analysis_output.py`，在迁移前后对比核心 CSV/图表结果。
+- [ ] 文档同步：更新 `README.md` 与 Notebook 指南，补充新的命令行入口与运行步骤。
+- [ ] CI 扩展：在流水线增加 `pytest --nbmake` 与最小化 CLI 冒烟用例，防止回归被遗漏。
+
+**已完成**
+- [x] bbox 核心逻辑迁移至 `core.py`，覆盖成功、失败与重试路径的单元测试已经生效。
+- [x] `legacy.py` 通过依赖注入复用新的 IO/几何工具，Notebook 在迁移期间仍能调用旧入口。
+
 ---
 
 ## 推荐的模块分层
