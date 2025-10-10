@@ -41,6 +41,14 @@ except ImportError:
 from sqlalchemy import create_engine, text
 import pandas as pd
 
+# 常量定义
+# Grid 大小：0.002度 × 0.002度
+GRID_SIZE_DEGREES = 0.002
+# 1度约等于111km（在赤道附近）
+KM_PER_DEGREE = 111.0
+# 单个 grid 的面积（km²）
+SINGLE_GRID_AREA_KM2 = (GRID_SIZE_DEGREES * KM_PER_DEGREE) ** 2  # ≈ 0.049 km²
+
 
 def create_density_table(conn):
     """创建city_grid_density基础表"""
@@ -90,14 +98,16 @@ def create_density_table(conn):
 
 
 def calculate_city_redundancy(conn, city_id: str, top_percent: float = 1.0):
-    """计算单个城市的冗余度指标"""
+    """计算单个城市的冗余度指标
     
-    # 1. 城市总体统计
+    使用 grid 面积统一计算，避免分子分母不一致的问题。
+    """
+    
+    # 1. 城市总体统计（只需要 scene 和 bbox 数量）
     total_sql = text("""
         SELECT 
             COUNT(DISTINCT scene_token) as total_scenes,
-            COUNT(*) as total_bboxes,
-            SUM(ST_Area(geometry::geography)) / 1000000.0 as total_area_km2
+            COUNT(*) as total_bboxes
         FROM clips_bbox_unified
         WHERE city_id = :city_id AND all_good = true
     """)
@@ -107,7 +117,7 @@ def calculate_city_redundancy(conn, city_id: str, top_percent: float = 1.0):
     if not total or total.total_scenes == 0:
         return None
     
-    # 2. 获取grid统计
+    # 2. 获取该城市有数据的 grid 统计
     grid_count_sql = text("""
         SELECT COUNT(*) FROM city_grid_density
         WHERE city_id = :city_id AND analysis_date = CURRENT_DATE
@@ -117,9 +127,10 @@ def calculate_city_redundancy(conn, city_id: str, top_percent: float = 1.0):
     if not grid_count or grid_count == 0:
         return None
     
+    # 计算 top N% 对应的 grid 数量
     top_n = max(1, int(grid_count * top_percent / 100.0))
     
-    # 3. 通过空间连接计算top N%网格的实际scene数
+    # 3. 通过空间连接计算 top N% 网格内的实际 scene 数
     hotspot_sql = text("""
         WITH top_grids AS (
             SELECT geometry
@@ -130,8 +141,7 @@ def calculate_city_redundancy(conn, city_id: str, top_percent: float = 1.0):
         )
         SELECT 
             COUNT(DISTINCT b.scene_token) as hotspot_scenes,
-            COUNT(b.*) as hotspot_bboxes,
-            SUM(ST_Area(tg.geometry::geography)) / 1000000.0 as hotspot_area_km2
+            COUNT(b.*) as hotspot_bboxes
         FROM top_grids tg
         LEFT JOIN clips_bbox_unified b ON ST_Intersects(tg.geometry, b.geometry)
         WHERE b.city_id = :city_id AND b.all_good = true
@@ -145,13 +155,23 @@ def calculate_city_redundancy(conn, city_id: str, top_percent: float = 1.0):
     if not hotspot:
         return None
     
-    # 4. 计算指标
-    total_area = float(total.total_area_km2) if total.total_area_km2 else 0.001
-    hotspot_area = float(hotspot.hotspot_area_km2) if hotspot.hotspot_area_km2 else 0.001
+    # 4. 使用 grid 面积统一计算指标
+    # 分母：所有有数据的 grid 的总面积
+    total_grid_area_km2 = grid_count * SINGLE_GRID_AREA_KM2
     
-    area_pct = (hotspot_area / total_area) * 100
+    # 分子：top N% grid 的总面积
+    hotspot_grid_area_km2 = top_n * SINGLE_GRID_AREA_KM2
+    
+    # 面积百分比（理论上应该接近 top_percent）
+    area_pct = (top_n / grid_count) * 100 if grid_count > 0 else 0
+    
+    # Scene 百分比
     scene_pct = (hotspot.hotspot_scenes / total.total_scenes) * 100 if total.total_scenes > 0 else 0
+    
+    # BBox 百分比
     bbox_pct = (hotspot.hotspot_bboxes / total.total_bboxes) * 100 if total.total_bboxes > 0 else 0
+    
+    # 冗余指数 = scene占比 / 面积占比
     redundancy = scene_pct / area_pct if area_pct > 0 else 0
     
     return {
@@ -159,7 +179,9 @@ def calculate_city_redundancy(conn, city_id: str, top_percent: float = 1.0):
         'total_scenes': int(total.total_scenes),
         'total_bboxes': int(total.total_bboxes),
         'total_grids': grid_count,
+        'total_grid_area_km2': round(total_grid_area_km2, 2),
         'top_n_grids': top_n,
+        'hotspot_grid_area_km2': round(hotspot_grid_area_km2, 2),
         'hotspot_scenes': int(hotspot.hotspot_scenes),
         'hotspot_bboxes': int(hotspot.hotspot_bboxes),
         'area_percentage': round(area_pct, 2),
@@ -205,13 +227,20 @@ def main():
                 cities = args.cities
                 print(f"🎯 分析指定城市: {cities}")
             else:
+                # 按 scene 数量从多到少排序
                 result = conn.execute(text("""
-                    SELECT DISTINCT city_id FROM city_grid_density
-                    WHERE analysis_date = CURRENT_DATE
-                    ORDER BY city_id
+                    SELECT 
+                        cgd.city_id,
+                        COUNT(DISTINCT cbu.scene_token) as scene_count
+                    FROM city_grid_density cgd
+                    LEFT JOIN clips_bbox_unified cbu 
+                        ON cgd.city_id = cbu.city_id AND cbu.all_good = true
+                    WHERE cgd.analysis_date = CURRENT_DATE
+                    GROUP BY cgd.city_id
+                    ORDER BY scene_count DESC, cgd.city_id
                 """))
                 cities = [row.city_id for row in result]
-                print(f"📊 分析所有城市: 共 {len(cities)} 个")
+                print(f"📊 分析所有城市: 共 {len(cities)} 个（按scene数量排序）")
             
             if not cities:
                 print("\n❌ 没有找到城市数据")
@@ -230,7 +259,8 @@ def main():
                 if metrics:
                     results.append(metrics)
                     print(f"✓ {city_id}: 冗余指数 {metrics['redundancy_index']} "
-                          f"({metrics['area_percentage']:.1f}%面积 → {metrics['scene_percentage']:.1f}%场景)")
+                          f"({metrics['area_percentage']:.1f}%面积[{metrics['top_n_grids']}/{metrics['total_grids']}grid] "
+                          f"→ {metrics['scene_percentage']:.1f}%场景[{metrics['hotspot_scenes']}/{metrics['total_scenes']}])")
                 else:
                     print(f"✗ {city_id}: 无数据")
             
@@ -245,6 +275,8 @@ def main():
             print(f"📈 汇总统计")
             print(f"=" * 60)
             print(f"分析城市数: {len(df)}")
+            print(f"总场景数: {df['total_scenes'].sum():,}")
+            print(f"总网格数: {df['total_grids'].sum():,}")
             print(f"平均冗余指数: {df['redundancy_index'].mean():.2f}")
             print(f"中位数: {df['redundancy_index'].median():.2f}")
             print(f"范围: {df['redundancy_index'].min():.2f} ~ {df['redundancy_index'].max():.2f}")
@@ -264,7 +296,8 @@ def main():
             top5 = df.nlargest(5, 'redundancy_index')
             for i, row in enumerate(top5.itertuples(), 1):
                 print(f"  {i}. {row.city_id}: 冗余指数 {row.redundancy_index} "
-                      f"({row.area_percentage:.1f}%面积包含{row.scene_percentage:.1f}%场景)")
+                      f"({row.area_percentage:.1f}%面积[{row.top_n_grids}grid/{row.total_grid_area_km2:.1f}km²] "
+                      f"包含{row.scene_percentage:.1f}%场景[{row.hotspot_scenes}/{row.total_scenes}])")
             
             # 导出CSV
             if args.export_csv:
@@ -273,6 +306,10 @@ def main():
                 df_sorted.to_csv(output_file, index=False, encoding='utf-8-sig')
                 print(f"\n📄 已导出: {output_file}")
             
+            print(f"\n💡 计算方法说明:")
+            print(f"   - 面积计算：使用网格(grid)面积统一计算")
+            print(f"   - 单个grid：{GRID_SIZE_DEGREES}° × {GRID_SIZE_DEGREES}° ≈ {SINGLE_GRID_AREA_KM2:.3f} km²")
+            print(f"   - 冗余指数：scene占比 / 面积占比（越高表示数据越集中）")
             print(f"\n💡 下一步:")
             print(f"   - 在Jupyter Notebook中进行可视化分析")
             print(f"   - 在QGIS中加载 city_grid_density 表查看空间分布")
