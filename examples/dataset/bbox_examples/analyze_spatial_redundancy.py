@@ -192,7 +192,7 @@ def main():
             if args.create_table:
                 create_density_table(conn)
                 print("\n💡 表创建完成，现在可以运行分析：")
-                print("   1. 先生成grid数据: python batch_top1_analysis.py")
+                print("   1. 先生成grid数据: python batch_grid_analysis.py")
                 print("   2. 再分析冗余: python analyze_spatial_redundancy.py")
                 return 0
             
@@ -217,7 +217,7 @@ def main():
                 print("\n❌ 没有找到城市数据")
                 print("💡 提示:")
                 print("   1. 先运行: python analyze_spatial_redundancy.py --create-table")
-                print("   2. 再运行: python batch_top1_analysis.py")
+                print("   2. 再运行: python batch_grid_analysis.py")
                 print("   3. 最后运行: python analyze_spatial_redundancy.py")
                 return 1
             

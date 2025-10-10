@@ -1,19 +1,32 @@
 #!/usr/bin/env python3
 """
-批量城市热点分析脚本
+批量城市Grid密度分析脚本
 ===============================
 
-遍历所有城市，提取每个城市的top热点区域（支持固定数量或百分比）
+批量为多个城市生成grid密度数据，调用run_overlap_analysis.py进行分析。
+结果存入city_grid_density表，供后续空间冗余分析使用。
+
+主要功能：
+- 批量分析多个城市的bbox空间分布
+- 生成网格(grid)密度统计数据
+- 支持固定数量(--top-n)或百分比(--top-percent)两种模式
+- 汇总结果到指定表供后续分析
 
 使用方法：
-    # 使用百分比（默认前1%）
-    python examples/dataset/bbox_examples/batch_top1_analysis.py --top-percent 1
+    # 分析所有城市（默认前1%最密集网格）
+    python examples/dataset/bbox_examples/batch_grid_analysis.py
     
-    # 使用固定数量
-    python examples/dataset/bbox_examples/batch_top1_analysis.py --top-n 1
+    # 分析指定城市
+    python examples/dataset/bbox_examples/batch_grid_analysis.py --cities A263 B001
+    
+    # 使用百分比模式（返回前5%最密集网格）
+    python examples/dataset/bbox_examples/batch_grid_analysis.py --top-percent 5
+    
+    # 使用固定数量模式（每个城市返回前10个最密集网格）
+    python examples/dataset/bbox_examples/batch_grid_analysis.py --top-n 10
     
     # 自定义输出表
-    python examples/dataset/bbox_examples/batch_top1_analysis.py --top-percent 5 --output-table city_top5pct_hotspots
+    python examples/dataset/bbox_examples/batch_grid_analysis.py --top-percent 5 --output-table city_top5pct_hotspots
 """
 
 import sys
