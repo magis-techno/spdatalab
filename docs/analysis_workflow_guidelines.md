@@ -1,0 +1,122 @@
+# 分析脚本与 Notebook 管理最佳实践（结合现有 `src/` 结构）
+
+经过梳理 `src/spdatalab/` 目录可以看到：
+
+- `spdatalab.dataset` 中的 `bbox.py`、`quality_check_trajectory_query.py` 等文件同时承担了 **数据访问、批处理调度、命令行入口** 等职责；
+- `spdatalab.fusion` 模块内已有较规范的分析器（如 `toll_station_analysis.py`、`integrated_trajectory_analysis.py`），但仍混杂着面向 CLI 的代码（例如 `multimodal_cli.py`）；
+- `spdatalab.common` 中提供了数据库、文件系统等工具，可以继续沉淀通用依赖；
+- `examples/` 目录下的脚本（如 `dataset/bbox_examples/run_overlap_analysis.py`）为了兼容 Docker 做了大量环境配置，与核心分析逻辑耦合紧密。
+
+因此在规划 Notebook 与分析脚本的归宿时，需要先明确“**核心分析逻辑**”“**命令行入口**”“**一次性脚本 / Notebook**”三类产物的边界，再沿用项目现有的包结构去拆分。
+
+---
+
+## 目标
+
+1. **逻辑沉淀到 `src/`**：核心算法、数据库查询、数据整理等逻辑应存在于 `spdatalab.*` 包中，供 CLI、Notebook、测试复用。
+2. **CLI 仅做编排**：命令行程序只负责解析参数、拼装配置、调用模块函数，减少状态管理、日志、信号处理等重复实现。
+3. **Notebook 保持轻量**：Notebook 作为探索、展示或回归复现的载体，统一通过导入 `spdatalab` 中的函数来运行。
+4. **测试可覆盖**：拆出的函数要能够在 `tests/` 中编写单测或集成测试（可借助模拟的 SQLAlchemy engine 或临时文件）。
+
+---
+
+## 推荐的模块分层
+
+### 1. 按业务域拆分核心模块
+
+| 现有位置 | 推荐调整 | 说明 |
+| --- | --- | --- |
+| `src/spdatalab/dataset/bbox.py` | `src/spdatalab/dataset/bbox/` 包<br> ├─ `core.py`：bbox 导入、重叠分析等纯逻辑<br> ├─ `io.py`：和数据库、Hive、Parquet 的交互<br> └─ `pipeline.py`：批处理调度、进度跟踪 | 让原先单文件中耦合的 CLI、工具类、全局状态拆分成可组合的函数/类；`LightweightProgressTracker` 等可以迁移到 `pipeline.py` 或 `common/progress.py`。 |
+| `examples/dataset/bbox_examples/run_overlap_analysis.py` | `src/spdatalab/dataset/bbox/cli.py` | CLI 负责解析参数、构造 engine、调用 `core.run_overlap`。示例脚本可以保留极简入口，仅转调 `spdatalab.dataset.bbox.cli.main`。 |
+| `src/spdatalab/fusion/multimodal_cli.py` | `src/spdatalab/fusion/cli/multimodal.py` | 将 CLI 与 `fusion` 下的分析器解耦，便于未来增加更多 CLI；核心逻辑继续放在 `fusion/*.py` 中。 |
+| 一次性的分析脚本 (`examples/one_time/*.py`) | `scripts/one_time/`（若需要长期留存） | 与部署相关的脚本应放在 `scripts/`，通过 `Makefile`/`tox`/`poetry` 命令调度。 |
+
+> **命名建议**：保持 `spdatalab.<domain>.<feature>.core` 负责业务逻辑，`spdatalab.<domain>.<feature>.cli` 负责参数解析和编排，`examples/` 只保留调用示例或 Notebook。
+
+### 2. Notebook 辅助模块
+
+- 在 `src/spdatalab/analysis/notebook_support.py`（或按领域拆分到 `fusion/notebook.py`、`dataset/notebook.py`）中提供绘图、表格渲染、参数管理等工具，Notebook 直接导入这些函数。
+- 若 Notebook 中有数据校验、指标统计等可复用逻辑，应优先放到 `spdatalab.analysis.metrics` 等模块。
+
+### 3. 公共基础设施
+
+- 复用 `spdatalab.common` 下的 `io_hive.py`、`io_obs.py`、`config.py` 等工具，并将新的通用能力（如信号处理、进度记录）也沉淀到这里，避免散落在 CLI 中。
+- 针对 SQLAlchemy engine、配置文件等初始化逻辑，可在 `spdatalab.common.factories` 中集中定义。
+
+---
+
+## Notebook 与 CLI 的工作流
+
+1. **提炼逻辑**（以 bbox 重叠分析为例）
+   - 在 `spdatalab.dataset.bbox.core` 中实现 `run_overlap`、`calculate_density` 等纯函数。
+   - 将现有 `LightweightProgressTracker` 等状态类拆出，并在核心函数中通过依赖注入使用。
+   - 对数据库访问写成 `Repository`/`Gateway` 模式，方便在测试中替换成内存实现。
+
+2. **封装命令行**
+   - 在 `spdatalab.dataset.bbox.cli.build_parser()` 中集中定义参数；
+   - `main()` 负责解析参数、加载配置、调用 `core.run_overlap()`，并返回退出码；
+   - 通过 `if __name__ == "__main__": raise SystemExit(main())` 提升可测试性；
+   - `examples/dataset/bbox_examples/run_overlap_analysis.py` 精简为：
+     ```python
+     from spdatalab.dataset.bbox.cli import main
+
+     if __name__ == "__main__":
+         raise SystemExit(main())
+     ```
+
+3. **整理 Notebook**
+   - Notebook 只导入 `spdatalab.dataset.bbox.core` 中的函数与配置；
+   - 所有绘图、转换、导出逻辑放在 `analysis`/`common` 模块中，以 Python 脚本形式保存；
+   - 提交前通过 `nbstripout` 或 `jupyter nbconvert --ClearOutputPreprocessor` 清理输出；
+   - 若 Notebook 需要批量运行，可配合 `papermill` 或 `pytest --nbmake` 执行。
+
+4. **测试与验证**
+   - 在 `tests/dataset/test_bbox_overlap.py` 中构造小型数据集（或使用 SQLite 内存库）验证 `run_overlap` 的关键路径；
+   - 对 CLI 层使用 `pytest` 的 `CliRunner`（或 `subprocess.run`）验证参数解析和输出文件；
+   - 为 `fusion` 模块的分析器编写集成测试，校验配置读取与数据处理的协同。
+
+---
+
+## 迁移步骤建议
+
+1. **创建新包结构**：先建立 `src/spdatalab/dataset/bbox/{__init__,core,cli,io,pipeline}.py`、`src/spdatalab/fusion/cli/` 等文件，并补充导出。
+2. **搬运核心逻辑**：把 `examples/dataset/bbox_examples/run_overlap_analysis.py`、`src/spdatalab/dataset/bbox.py` 中的核心函数移动到 `core.py`，保留原有调用路径以兼容旧接口（例如在 `bbox.py` 中保留对新函数的包装并标记弃用）。
+3. **统一 CLI**：在 `scripts/` 或 `examples/` 中的入口统一调用新的 `main()`，保留旧脚本但打印迁移提示；
+4. **整理 Notebook**：按 Notebook 引用的函数逐个迁移到 `src/`；对 Notebook 进行 `nbstripout` 处理并在 README 中记录运行方式；
+5. **补充测试与自动化**：在 `tests/` 中新增单测，并为常用任务编写 `make analysis-bbox-overlap` 等命令；
+6. **持续演进**：后续新增分析逻辑时先在 `src/` 中实现，再决定是否发布到 CLI/Notebook/示例脚本中。
+
+---
+
+## 渐进式推进与质量保障
+
+即便整体目标看上去跨度较大，也可以通过以下做法拆解为安全、可验证的迭代，避免迁移过程中“跑偏”：
+
+1. **建立里程碑与验收标准**
+   - 先在项目管理工具或 `docs/` 中记录目标结构、命名规则、完成标准，确保所有人对“成功长什么样”有统一认知；
+   - 每个里程碑限定范围（如“完成 bbox 模块拆分并回归测试通过”），PR 只聚焦一个里程碑。
+2. **保持双写期**
+   - 刚开始拆分时保留旧入口（如 `bbox.py` 的原函数）并调用新实现，对比运行日志或结果文件，确认输出一致后再移除旧代码；
+   - 对 Notebook 采用“导入新模块 + 保留旧单元”方式验证差异，通过 `nbdime` 等工具查看输出差别。
+3. **强化自动化验证**
+   - 为关键函数编写单测，并在 CI 中引入 `pytest -k bbox`、`pytest -k fusion` 等分组用例，避免回归被忽略；
+   - CLI 层使用冒烟测试（运行小型数据集、比对核心指标）锁定行为，必要时把指标快照存入 `tests/data/expected/`；
+   - 对 Notebook 可使用 `papermill` 或 `pytest --nbmake` 定期执行，以确保迁移后的引用仍然生效。
+4. **小步提交 + 代码评审**
+   - 拆解为“创建新文件夹”“迁移核心函数”“替换 CLI 调用”“更新示例脚本”等多个 PR，避免一次性大改；
+   - 在 PR 描述中记录迁移影响范围、回滚方式以及下一步计划，评审时重点检查接口兼容性和测试覆盖。
+5. **数据与配置回归**
+   - 在迁移前后保存关键分析结果（例如指标 CSV、图表 JSON），通过自动比对或人工 spot check 确认无异常；
+   - 若涉及配置文件或环境变量，先在 `.env.example`/`docs` 中同步更新并告知使用者迁移步骤。
+
+这样处理可以让结构调整在“随做随验证”的节奏下推进，既保证现有分析任务持续可用，也为后续扩展打好基础。
+
+---
+
+## 额外工具建议
+
+- **配置管理**：结合 `pydantic-settings` 或 `hydra` 将分析参数、数据库连接集中维护。
+- **进度与日志**：将进度追踪、日志格式等封装在 `spdatalab.common.logging` 中，CLI 统一复用。
+- **分析产出管理**：使用 `mlflow`/`wandb` 等工具记录实验参数与结果，便于 Notebook、CLI、批处理共享产出。
+
+通过以上调整，可以在保留现有业务模块划分的基础上，清晰地区分“核心分析能力”“命令行入口”和“示例/一次性脚本”，显著降低 Notebook 与脚本的维护成本，同时提升代码复用度与测试覆盖率。
