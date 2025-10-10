@@ -542,9 +542,15 @@ def main():
             print(f"📊 网格大小: {args.grid_size}° × {args.grid_size}° (约200m×200m)")
             print(f"🎯 分析方法: bbox密度分析")
         
-        analysis_sql = f"""
+        # 🔥 新版SQL：先保存完整grid数据，再提取top N%
+        # 分两步执行：
+        # 1. INSERT所有grid到 city_grid_density
+        # 2. 从 city_grid_density 提取top N%到 bbox_overlap_analysis_results
+        
+        # 步骤1：保存完整grid数据
+        save_grid_sql = f"""
             WITH bbox_bounds AS (
-                -- 🚀 第1步：提取bbox边界（一次性几何计算，约11k次）
+                -- 🚀 第1步：提取bbox边界（一次性几何计算）
                 SELECT 
                     id,
                     subdataset_name,
@@ -609,32 +615,68 @@ def main():
                 GROUP BY grid_x, grid_y
                 HAVING COUNT(*) >= {args.density_threshold}
                    AND ({not args.calculate_area} OR SUM(bbox_area) >= {args.min_overlap_area})
-            ),
-            all_hotspots AS (
-                -- 📊 所有符合条件的热点（用于统计和百分比计算）
+            )
+            -- 💾 保存所有grid到基础表
+            INSERT INTO city_grid_density 
+            (city_id, analysis_date, grid_x, grid_y, grid_size, bbox_count, 
+             subdataset_count, scene_count, involved_subdatasets, involved_scenes, 
+             total_bbox_area, geometry)
+            SELECT 
+                '{args.city}' as city_id,
+                CURRENT_DATE as analysis_date,
+                grid_x,
+                grid_y,
+                {args.grid_size} as grid_size,
+                bbox_count_in_grid as bbox_count,
+                subdataset_count,
+                scene_count,
+                involved_subdatasets,
+                involved_scenes,
+                total_bbox_area,
+                grid_geom as geometry
+            FROM grid_density_stats
+            ON CONFLICT (city_id, analysis_date, grid_x, grid_y) 
+            DO UPDATE SET
+                bbox_count = EXCLUDED.bbox_count,
+                subdataset_count = EXCLUDED.subdataset_count,
+                scene_count = EXCLUDED.scene_count,
+                involved_subdatasets = EXCLUDED.involved_subdatasets,
+                involved_scenes = EXCLUDED.involved_scenes,
+                total_bbox_area = EXCLUDED.total_bbox_area,
+                geometry = EXCLUDED.geometry;
+            """
+        
+        # 步骤2：从完整数据中提取top N%到结果表
+        extract_top_sql = f"""
+            WITH all_hotspots AS (
+                -- 从完整grid数据中排序
                 SELECT 
                     grid_x,
                     grid_y,
-                    bbox_count_in_grid,
+                    bbox_count,
                     subdataset_count,
                     scene_count,
                     involved_subdatasets,
                     involved_scenes,
                     total_bbox_area,
-                    grid_geom,
-                    ROW_NUMBER() OVER (ORDER BY bbox_count_in_grid DESC) as density_rank
-                FROM grid_density_stats
-                ORDER BY bbox_count_in_grid DESC
+                    geometry,
+                    ROW_NUMBER() OVER (ORDER BY bbox_count DESC) as density_rank
+                FROM city_grid_density
+                WHERE city_id = '{args.city}' 
+                AND analysis_date = CURRENT_DATE
+                ORDER BY bbox_count DESC
             ),
             hotspot_summary AS (
-                -- 📈 生成汇总统计信息
+                -- 生成汇总统计
                 SELECT 
                     COUNT(*) as total_hotspots,
-                    MAX(bbox_count_in_grid) as max_density,
-                    MIN(bbox_count_in_grid) as min_density,
-                    ROUND(AVG(bbox_count_in_grid)::numeric, 2) as avg_density,
-                    ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY bbox_count_in_grid)::numeric, 2) as median_density
-                FROM grid_density_stats
+                    MAX(bbox_count) as max_density,
+                    MIN(bbox_count) as min_density,
+                    ROUND(AVG(bbox_count)::numeric, 2) as avg_density,
+                    ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY bbox_count)::numeric, 2) as median_density
+                FROM city_grid_density
+                WHERE city_id = '{args.city}' 
+                AND analysis_date = CURRENT_DATE
             )
             INSERT INTO {analysis_table} 
             (analysis_id, hotspot_rank, overlap_count, total_overlap_area, 
@@ -642,19 +684,19 @@ def main():
             SELECT 
                 '{analysis_id}' as analysis_id,
                 density_rank as hotspot_rank,
-                bbox_count_in_grid as overlap_count,
+                bbox_count as overlap_count,
                 total_bbox_area as total_overlap_area,
                 subdataset_count,
                 scene_count,
                 involved_subdatasets,
                 involved_scenes,
-                grid_geom as geometry,
+                geometry,
                 '{{"analysis_type": "bbox_density", "city_filter": "{args.city}", "grid_size": {args.grid_size}, "density_threshold": {args.density_threshold}, "calculate_area": {str(args.calculate_area).lower()}, "grid_coords": "' || CONCAT('(', grid_x, ',', grid_y, ')') || '", "total_hotspots": ' || (SELECT total_hotspots FROM hotspot_summary) || ', "max_density": ' || (SELECT max_density FROM hotspot_summary) || ', "avg_density": ' || (SELECT avg_density FROM hotspot_summary) || '}}' as analysis_params
             FROM all_hotspots
             WHERE density_rank <= {f"{args.top_n}" if args.top_n is not None else f"GREATEST(1, ROUND((SELECT total_hotspots FROM hotspot_summary) * {args.top_percent / 100.0}))"};
             """
         
-        print(f"⚡ 执行bbox密度分析SQL...")
+        print(f"⚡ 执行bbox密度分析SQL（两步法）...")
         print(f"💡 可以使用 Ctrl+C 安全退出")
         
         analysis_start_time = datetime.now()
@@ -663,21 +705,43 @@ def main():
         with engine.connect() as conn:
             current_connection = conn  # 保存连接引用
             
-            print(f"🚀 开始执行SQL... ({analysis_start_time.strftime('%H:%M:%S')})")
-            sql_start_time = datetime.now()
+            # 步骤1：保存完整grid数据
+            print(f"📊 步骤1/2: 保存完整grid数据到 city_grid_density... ({analysis_start_time.strftime('%H:%M:%S')})")
+            step1_start_time = datetime.now()
             
-            conn.execute(text(analysis_sql))
-            check_shutdown()  # SQL执行后检查
+            conn.execute(text(save_grid_sql))
+            check_shutdown()
             
-            sql_end_time = datetime.now()
-            sql_duration = (sql_end_time - sql_start_time).total_seconds()
+            step1_end_time = datetime.now()
+            step1_duration = (step1_end_time - step1_start_time).total_seconds()
+            
+            conn.commit()
+            print(f"✅ 步骤1完成，耗时: {step1_duration:.2f}秒")
+            
+            # 统计保存了多少grid
+            grid_count_sql = text(f"""
+                SELECT COUNT(*) FROM city_grid_density 
+                WHERE city_id = '{args.city}' AND analysis_date = CURRENT_DATE;
+            """)
+            grid_count = conn.execute(grid_count_sql).scalar()
+            print(f"💾 已保存 {grid_count:,} 个grid到基础表")
+            
+            # 步骤2：提取top N%到结果表
+            print(f"🎯 步骤2/2: 提取top {args.top_percent if args.top_n is None else args.top_n}% 到结果表...")
+            step2_start_time = datetime.now()
+            
+            conn.execute(text(extract_top_sql))
+            check_shutdown()
+            
+            step2_end_time = datetime.now()
+            step2_duration = (step2_end_time - step2_start_time).total_seconds()
             
             conn.commit()
             commit_time = datetime.now()
-            commit_duration = (commit_time - sql_end_time).total_seconds()
             
-            print(f"✅ SQL执行完成，耗时: {sql_duration:.2f}秒")
-            print(f"✅ 提交完成，耗时: {commit_duration:.2f}秒")
+            sql_duration = step1_duration + step2_duration
+            
+            print(f"✅ 步骤2完成，耗时: {step2_duration:.2f}秒")
             print(f"🔍 正在统计结果...")
             current_connection = None  # 清除连接引用
             
