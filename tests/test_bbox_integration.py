@@ -230,6 +230,25 @@ class TestBboxIntegration(unittest.TestCase):
         with self.assertRaises(json.JSONDecodeError):
             load_scene_ids_from_json(str(invalid_json_file))
 
+    def test_load_scene_ids_from_json_locale_fallback(self):
+        """当文件使用系统编码时应回退到 locale 编码"""
+
+        json_file = self.temp_dir / "locale_encoded.json"
+        manifest = {
+            "subdatasets": [
+                {"scene_ids": ["scene_é01", "scene_é02"]},
+            ]
+        }
+        json_file.write_bytes(json.dumps(manifest, ensure_ascii=False).encode("cp1252"))
+
+        with patch(
+            "spdatalab.dataset.bbox.io.locale.getpreferredencoding",
+            return_value="cp1252",
+        ):
+            scene_ids = load_scene_ids_from_json(str(json_file))
+
+        self.assertEqual(sorted(scene_ids), ["scene_é01", "scene_é02"])
+
 class TestBboxPerformance(unittest.TestCase):
     """测试bbox性能优化"""
     

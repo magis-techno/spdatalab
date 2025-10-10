@@ -1,5 +1,6 @@
 from __future__ import annotations
 import argparse
+import importlib
 import sys
 import re
 from datetime import datetime
@@ -20,8 +21,8 @@ from .pipeline import (
     PARQUET_AVAILABLE,
     setup_interrupt_handlers,
 )
-from .core import chunk
-from .io import BBoxDataRepository, load_scene_ids
+from .core import chunk, merge_metadata_with_bboxes
+from .io import BBoxDataRepository
 
 LOCAL_DSN = "postgresql+psycopg://postgres:postgres@local_pg:5432/postgres"
 POINT_TABLE = "public.ddi_data_points"
@@ -31,6 +32,24 @@ interrupted = False
 interrupt_flag = InterruptFlag()
 
 
+def _resolve_bbox_attr(name: str):
+    """Return the attribute from the bbox package, honouring runtime patches."""
+
+    module = sys.modules.get(__package__)
+    if module is None:
+        module = importlib.import_module(__package__)
+    return getattr(module, name)
+
+
+def _make_repository(engine, *, point_table: str = POINT_TABLE, hive_cursor_factory=None):
+    return BBoxDataRepository(
+        engine=engine,
+        point_table=point_table,
+        hive_cursor_factory=hive_cursor_factory,
+        scene_loader=_resolve_bbox_attr("load_scene_ids"),
+        metadata_fetcher=_resolve_bbox_attr("fetch_meta"),
+        bbox_fetcher=_resolve_bbox_attr("fetch_bbox_with_geometry"),
+    )
 def _default_interrupt_message(signum: int, _frame: object | None) -> None:
     print(f"\n???????({signum})???????..")
     print("??????????????..")
@@ -1107,7 +1126,7 @@ def process_subdataset_parallel(args):
         # 为每个进程创建独立的数据库连接
         from sqlalchemy import create_engine
         eng = create_engine(dsn, future=True)
-        repo = BBoxDataRepository(engine=eng, point_table=POINT_TABLE)
+        repo = _make_repository(eng)
 
         # 创建独立的进度跟踪器
         sub_work_dir = f"{work_dir}/{subdataset_name}"
@@ -1172,7 +1191,7 @@ def run_with_partitioning_parallel(input_path, batch=1000, insert_batch=1000, wo
     print(f"仅维护视图: {maintain_view_only}")
     
     eng = create_engine(LOCAL_DSN, future=True)
-    repo = BBoxDataRepository(engine=eng, point_table=POINT_TABLE)
+    repo = _make_repository(eng)
 
     # 如果只是维护视图
     if maintain_view_only:
@@ -1351,7 +1370,7 @@ def run_with_partitioning_sequential(input_path, batch=1000, insert_batch=1000, 
     print(f"仅维护视图: {maintain_view_only}")
     
     eng = create_engine(LOCAL_DSN, future=True)
-    repo = BBoxDataRepository(engine=eng, point_table=POINT_TABLE)
+    repo = _make_repository(eng)
 
     # 如果只是维护视图
     if maintain_view_only:
@@ -1464,6 +1483,8 @@ def process_subdataset_scenes(repo, scene_ids, table_name, batch_size, insert_ba
     Returns:
         (processed_count, inserted_count) 元组
     """
+    batch_insert_fn = _resolve_bbox_attr("batch_insert_to_postgis")
+
     processed_count = 0
     inserted_count = 0
     
@@ -1510,36 +1531,37 @@ def process_subdataset_scenes(repo, scene_ids, table_name, batch_size, insert_ba
             
             # 获取边界框和几何对象
             try:
-                bbox_gdf = repo.fetch_bbox_geometries(meta.data_name.tolist())
-                if bbox_gdf.empty:
-                    print(f"    [批次 {batch_num}] 没有找到边界框数据，跳过")
-                    for token in meta.scene_token:
-                        tracker.save_failed_record(token, "无法获取边界框数据", batch_num, "fetch_bbox")
-                    continue
-                
-                print(f"    [批次 {batch_num}] 获取到 {len(bbox_gdf)} 条边界框数据")
-                
+                bbox_frame = repo.fetch_bbox_geometries(meta.data_name.tolist())
             except Exception as e:
                 print(f"    [批次 {batch_num}] 获取边界框失败: {str(e)}")
                 for token in meta.scene_token:
                     tracker.save_failed_record(token, f"获取边界框异常: {str(e)}", batch_num, "fetch_bbox")
                 continue
+
+            bbox_empty = getattr(bbox_frame, "empty", True)
+            if bbox_empty:
+                print(f"    [批次 {batch_num}] 没有找到边界框数据，跳过")
+                for token in meta.scene_token:
+                    tracker.save_failed_record(token, "无法获取边界框数据", batch_num, "fetch_bbox")
+                continue
+
+            print(f"    [批次 {batch_num}] 获取到 {len(bbox_frame)} 条边界框数据")
             
             # 检查中断信号
             if interrupted:
                 break
             
-                        # 合并数据
+            # 合并数据
             try:
-                merged = meta.merge(bbox_gdf, left_on='data_name', right_on='dataset_name', how='inner')
+                merged = merge_metadata_with_bboxes(meta, bbox_frame)
                 if merged.empty:
                     print(f"    [批次 {batch_num}] 合并后数据为空，跳过")
                     for token in meta.scene_token:
                         tracker.save_failed_record(token, "元数据与边界框数据无法匹配", batch_num, "data_merge")
                     continue
-                    
+
                 print(f"    [批次 {batch_num}] 合并后得到 {len(merged)} 条记录")
-                
+
                 # 创建基础字段的数据
                 base_columns = ['scene_token', 'data_name', 'event_id', 'city_id', 'timestamp', 'all_good']
                 final_data = merged[base_columns].copy()
@@ -1575,9 +1597,9 @@ def process_subdataset_scenes(repo, scene_ids, table_name, batch_size, insert_ba
                 
                 # 创建最终的GeoDataFrame
                 final_gdf = gpd.GeoDataFrame(
-                    final_data, 
-                    geometry=merged['geometry'], 
-                    crs=4326
+                    final_data,
+                    geometry=merged['geometry'],
+                    crs=merged.crs or 4326
                 )
                 
             except Exception as e:
@@ -1592,12 +1614,13 @@ def process_subdataset_scenes(repo, scene_ids, table_name, batch_size, insert_ba
             
             # 批量插入到指定表
             try:
-                batch_inserted = batch_insert_to_postgis(
-                    final_gdf, repo.engine, 
+                batch_inserted = batch_insert_fn(
+                    final_gdf,
+                    repo.engine,
                     table_name=table_name,  # 使用指定的分表名称
-                    batch_size=insert_batch_size, 
-                    tracker=tracker, 
-                    batch_num=batch_num
+                    batch_size=insert_batch_size,
+                    tracker=tracker,
+                    batch_num=batch_num,
                 )
                 inserted_count += batch_inserted
                 processed_count += len(final_gdf)
@@ -1659,14 +1682,17 @@ def run(input_path, batch=1000, insert_batch=1000, create_table=False, retry_fai
     
     print(f"开始处理输入文件: {input_path}")
     print(f"工作目录: {work_dir}")
-    
+
+    load_scene_ids_fn = _resolve_bbox_attr("load_scene_ids")
+    batch_insert_fn = _resolve_bbox_attr("batch_insert_to_postgis")
+
     # 智能加载scene_id列表
     try:
         if retry_failed:
             scene_ids = tracker.load_failed_tokens()
             print(f"重试模式：加载了 {len(scene_ids)} 个失败的scene_id")
         else:
-            all_scene_ids = load_scene_ids(input_path)
+            all_scene_ids = load_scene_ids_fn(input_path)
             scene_ids = tracker.get_remaining_tokens(all_scene_ids)
     except Exception as e:
         print(f"加载输入文件失败: {str(e)}")
@@ -1677,6 +1703,7 @@ def run(input_path, batch=1000, insert_batch=1000, create_table=False, retry_fai
         return
     
     eng = create_engine(LOCAL_DSN, future=True)
+    repo = _make_repository(eng)
     
     # 创建表（如果需要）
     if create_table:
@@ -1735,21 +1762,22 @@ def run(input_path, batch=1000, insert_batch=1000, create_table=False, retry_fai
             
             # 获取边界框和几何对象（直接从PostGIS获取原始几何）
             try:
-                bbox_gdf = repo.fetch_bbox_geometries(meta.data_name.tolist())
-                if bbox_gdf.empty:
-                    print(f"[批次 {batch_num}] 没有找到边界框数据，跳过")
-                    # 记录获取边界框失败的tokens
-                    for token in meta.scene_token:
-                        tracker.save_failed_record(token, "无法获取边界框数据", batch_num, "fetch_bbox")
-                    continue
-                    
-                print(f"[批次 {batch_num}] 获取到 {len(bbox_gdf)} 条边界框数据")
-                
+                bbox_frame = repo.fetch_bbox_geometries(meta.data_name.tolist())
             except Exception as e:
                 print(f"[批次 {batch_num}] 获取边界框失败: {str(e)}")
                 for token in meta.scene_token:
                     tracker.save_failed_record(token, f"获取边界框异常: {str(e)}", batch_num, "fetch_bbox")
                 continue
+
+            bbox_empty = getattr(bbox_frame, "empty", True)
+            if bbox_empty:
+                print(f"[批次 {batch_num}] 没有找到边界框数据，跳过")
+                # 记录获取边界框失败的tokens
+                for token in meta.scene_token:
+                    tracker.save_failed_record(token, "无法获取边界框数据", batch_num, "fetch_bbox")
+                continue
+
+            print(f"[批次 {batch_num}] 获取到 {len(bbox_frame)} 条边界框数据")
             
             # 检查中断信号
             if interrupted:
@@ -1758,23 +1786,23 @@ def run(input_path, batch=1000, insert_batch=1000, create_table=False, retry_fai
             
             # 合并数据
             try:
-                merged = meta.merge(bbox_gdf, left_on='data_name', right_on='dataset_name', how='inner')
+                merged = merge_metadata_with_bboxes(meta, bbox_frame)
                 if merged.empty:
                     print(f"[批次 {batch_num}] 合并后数据为空，跳过")
                     # 记录合并失败的tokens
                     for token in meta.scene_token:
                         tracker.save_failed_record(token, "元数据与边界框数据无法匹配", batch_num, "data_merge")
                     continue
-                    
+
                 print(f"[批次 {batch_num}] 合并后得到 {len(merged)} 条记录")
-                
+
                 # 创建最终的GeoDataFrame
                 final_gdf = gpd.GeoDataFrame(
-                    merged[['scene_token', 'data_name', 'event_id', 'city_id', 'timestamp', 'all_good']], 
-                    geometry=merged['geometry'], 
-                    crs=4326
+                    merged[['scene_token', 'data_name', 'event_id', 'city_id', 'timestamp', 'all_good']],
+                    geometry=merged['geometry'],
+                    crs=merged.crs or 4326
                 )
-                
+
             except Exception as e:
                 print(f"[批次 {batch_num}] 数据合并失败: {str(e)}")
                 for token in meta.scene_token:
@@ -1788,11 +1816,12 @@ def run(input_path, batch=1000, insert_batch=1000, create_table=False, retry_fai
             
             # 批量插入数据库
             try:
-                batch_inserted = batch_insert_to_postgis(
-                    final_gdf, repo.engine, 
-                    batch_size=insert_batch, 
-                    tracker=tracker, 
-                    batch_num=batch_num
+                batch_inserted = batch_insert_fn(
+                    final_gdf,
+                    repo.engine,
+                    batch_size=insert_batch,
+                    tracker=tracker,
+                    batch_num=batch_num,
                 )
                 total_inserted += batch_inserted
                 total_processed += len(final_gdf)
