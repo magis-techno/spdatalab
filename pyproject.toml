@@ -20,6 +20,8 @@ dependencies = [
 dev = [
     "pyarrow",
     "pytest",
+    "nbstripout",
+    "nbmake",
 ]
 
 [project.urls]

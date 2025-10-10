@@ -75,7 +75,7 @@ clean-fdw:
 
 # 显示帮助信息
 help:
-	@echo "Spatial-Data-Lab 开发环境管理"
+        @echo "Spatial-Data-Lab 开发环境管理"
 	@echo ""
 	@echo "基础命令："
 	@echo "  make up        - 启动开发环境"
@@ -99,6 +99,18 @@ help:
 	@echo "  spdatalab process_bbox [参数]        # 第二阶段：处理边界框"
 	@echo ""
 	@echo "注意："
-	@echo "  使用init-fdw前请先修改sql/init_fdw.sql中的连接参数"
+        @echo "  使用init-fdw前请先修改sql/init_fdw.sql中的连接参数"
 
-.PHONY: up down psql init-db clean-bbox clean-toll-station init-routes clean-routes init-fdw check-fdw clean-fdw help
+# ------------------------------------------------------------- analysis tooling
+
+test-analysis:
+	pytest -k bbox
+
+test-notebooks:
+	SPDATALAB_NOTEBOOK_FAST=1 pytest --nbmake examples/notebooks/city_hotspot_analysis.ipynb
+
+ci-analysis:
+	$(MAKE) test-analysis
+	$(MAKE) test-notebooks
+
+.PHONY: up down psql init-db clean-bbox clean-toll-station init-routes clean-routes init-fdw check-fdw clean-fdw help test-analysis test-notebooks ci-analysis

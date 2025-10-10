@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import warnings
 
-from . import core, io, pipeline  # re-export planned modules
+from . import core, io, pipeline, summary  # re-export planned modules
 from .io import (  # noqa: F401 - surface the new IO helpers at package root
     BBoxDataRepository,
     fetch_bbox_with_geometry,
@@ -35,6 +35,7 @@ __all__ = [
     "core",
     "io",
     "pipeline",
+    "summary",
     "BBoxDataRepository",
     "fetch_bbox_with_geometry",
     "fetch_meta",

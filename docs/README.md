@@ -10,6 +10,7 @@
 - **[BBox处理指南](bbox_integration_guide.md)** - 边界框处理专门指南
 - **[空间连接指南](spatial_join.md)** - 空间数据处理和连接
 - **[基础设施指南](infrastructure_guide.md)** - 环境搭建和配置
+- **[Notebook 使用与规范](notebook_guide.md)** - Notebook 工作流、nbstripout、回归测试
 
 ### 专业功能
 - **[收费站分析](toll_station_analysis.md)** - 收费站轨迹分析

@@ -26,11 +26,11 @@
 - 数据基线：`tests/data/baseline/` 保存关键指标输出，对比脚本依赖该目录作为参考值。
 
 **待办（Open）**
-- [ ] CLI 与示例收口：完善 `spdatalab.dataset.bbox.cli` 的参数校验与日志输出，让 `examples/` 下脚本全部转调 `main()`。
-- [ ] Notebook 精简：抽离 Notebook 中复用函数到 `analysis/notebook_support.py`（或按领域拆分模块），并启用 `nbstripout` 钩子清理输出。
-- [ ] 验证脚本：实现 `scripts/testing/compare_analysis_output.py`，在迁移前后对比核心 CSV/图表结果。
-- [ ] 文档同步：更新 `README.md` 与 Notebook 指南，补充新的命令行入口与运行步骤。
-- [ ] CI 扩展：在流水线增加 `pytest --nbmake` 与最小化 CLI 冒烟用例，防止回归被遗漏。
+- [x] CLI 与示例收口：完善 `spdatalab.dataset.bbox.cli` 的参数校验与日志输出，让 `examples/` 下脚本全部转调 `main()`。
+- [x] Notebook 精简：抽离 Notebook 中复用函数到 `analysis/notebook_support.py`（或按领域拆分模块），并启用 `nbstripout` 钩子清理输出。
+- [x] 验证脚本：实现 `scripts/testing/compare_analysis_output.py`，在迁移前后对比核心 CSV/图表结果。
+- [x] 文档同步：更新 `README.md` 与 Notebook 指南，补充新的命令行入口与运行步骤。
+- [x] CI 扩展：在流水线增加 `pytest --nbmake` 与最小化 CLI 冒烟用例，防止回归被遗漏。
 
 **已完成**
 - [x] bbox 核心逻辑迁移至 `core.py`，覆盖成功、失败与重试路径的单元测试已经生效。
