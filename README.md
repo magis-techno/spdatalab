@@ -65,6 +65,31 @@ python -m spdatalab.cli process_bbox \
   --batch 1000
 ```
 
+### 分析 CLI 与结果校验
+
+```bash
+# 启动 bbox 重叠分析（新版 CLI，具备参数校验和日志输出）
+python -m spdatalab.dataset.bbox.cli overlap \
+  --input data/bbox_manifest.json \
+  --batch 500 \
+  --insert-batch 500 \
+  --work-dir ./logs/bbox_overlap
+
+# 汇总热点结果（支持 --dry-run 查看待处理城市）
+python -m spdatalab.dataset.bbox.cli batch-top1 \
+  --output-table city_top1_hotspots \
+  --top-percent 1.0 \
+  --max-cities 20
+
+# 快速比对分析结果与基线
+scripts/testing/compare_analysis_output.py \
+  --current outputs/2024-01-01 \
+  --baseline tests/data/baseline \
+  --tolerance 1e-5
+```
+
+> 📎 `examples/dataset/bbox_examples/*.py` 现已全部代理到新的 CLI，请直接使用 `python -m spdatalab.dataset.bbox.cli ...`。
+
 ## 📁 项目结构
 
 ```text
