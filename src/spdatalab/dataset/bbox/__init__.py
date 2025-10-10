@@ -11,6 +11,15 @@ from __future__ import annotations
 import warnings
 
 from . import core, io, pipeline  # re-export planned modules
+from .io import (  # noqa: F401 - surface the new IO helpers at package root
+    BBoxDataRepository,
+    fetch_bbox_with_geometry,
+    fetch_meta,
+    load_scene_ids,
+    load_scene_ids_from_json,
+    load_scene_ids_from_parquet,
+    load_scene_ids_from_text,
+)
 from . import legacy as _legacy  # noqa: F401
 from .legacy import *  # noqa: F401,F403 - temporary shim for compatibility
 
@@ -22,5 +31,16 @@ warnings.warn(
     stacklevel=2,
 )
 
-__all__ = ["core", "io", "pipeline"]
+__all__ = [
+    "core",
+    "io",
+    "pipeline",
+    "BBoxDataRepository",
+    "fetch_bbox_with_geometry",
+    "fetch_meta",
+    "load_scene_ids",
+    "load_scene_ids_from_json",
+    "load_scene_ids_from_parquet",
+    "load_scene_ids_from_text",
+]
 __all__ += [name for name in dir(_legacy) if not name.startswith("_")]
