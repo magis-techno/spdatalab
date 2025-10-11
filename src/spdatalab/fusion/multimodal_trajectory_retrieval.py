@@ -901,5 +901,6 @@ __all__ = [
 
 # CLI支持
 if __name__ == '__main__':
-    from .multimodal_cli import main
-    main()
+    from spdatalab.fusion.cli.multimodal import main
+
+    raise SystemExit(main())

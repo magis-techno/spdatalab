@@ -81,6 +81,13 @@ python -m spdatalab.dataset.bbox.cli batch-top1 \
   --top-percent 1.0 \
   --max-cities 20
 
+# 多模态轨迹检索（统一入口在 fusion.cli.multimodal）
+python -m spdatalab.fusion.cli.multimodal \
+  --text "bicycle crossing intersection" \
+  --collection "ddi_collection_camera_encoded_1" \
+  --count 10 \
+  --output-geojson outputs/multimodal_results.geojson
+
 # 快速比对分析结果与基线
 scripts/testing/compare_analysis_output.py \
   --current outputs/2024-01-01 \

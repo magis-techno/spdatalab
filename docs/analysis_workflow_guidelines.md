@@ -3,7 +3,7 @@
 经过梳理 `src/spdatalab/` 目录可以看到：
 
 - `spdatalab.dataset` 中的 `bbox.py`、`quality_check_trajectory_query.py` 等文件同时承担了 **数据访问、批处理调度、命令行入口** 等职责；
-- `spdatalab.fusion` 模块内已有较规范的分析器（如 `toll_station_analysis.py`、`integrated_trajectory_analysis.py`），但仍混杂着面向 CLI 的代码（例如 `multimodal_cli.py`）；
+- `spdatalab.fusion` 模块内已有较规范的分析器（如 `toll_station_analysis.py`、`integrated_trajectory_analysis.py`），早期的 `multimodal_cli.py` 现已收敛为薄包装，真正的 CLI 入口迁移到 `fusion.cli.multimodal`；
 - `spdatalab.common` 中提供了数据库、文件系统等工具，可以继续沉淀通用依赖；
 - `examples/` 目录下的脚本（如 `dataset/bbox_examples/run_overlap_analysis.py`）为了兼容 Docker 做了大量环境配置，与核心分析逻辑耦合紧密。
 
@@ -46,7 +46,7 @@
 | --- | --- | --- |
 | `src/spdatalab/dataset/bbox.py` | `src/spdatalab/dataset/bbox/` 包<br> ├─ `core.py`：bbox 导入、重叠分析等纯逻辑<br> ├─ `io.py`：和数据库、Hive、Parquet 的交互<br> └─ `pipeline.py`：批处理调度、进度跟踪 | 让原先单文件中耦合的 CLI、工具类、全局状态拆分成可组合的函数/类；`LightweightProgressTracker` 等可以迁移到 `pipeline.py` 或 `common/progress.py`。 |
 | `examples/dataset/bbox_examples/run_overlap_analysis.py` | `src/spdatalab/dataset/bbox/cli.py` | CLI 负责解析参数、构造 engine、调用 `core.run_overlap`。示例脚本可以保留极简入口，仅转调 `spdatalab.dataset.bbox.cli.main`。 |
-| `src/spdatalab/fusion/multimodal_cli.py` | `src/spdatalab/fusion/cli/multimodal.py` | 将 CLI 与 `fusion` 下的分析器解耦，便于未来增加更多 CLI；核心逻辑继续放在 `fusion/*.py` 中。 |
+| `src/spdatalab/fusion/multimodal_cli.py`（兼容层） | `src/spdatalab/fusion/cli/multimodal.py`（已落地） | 将 CLI 与 `fusion` 下的分析器解耦，便于未来增加更多 CLI；核心逻辑继续放在 `fusion/*.py` 中，示例命令改用 `python -m spdatalab.fusion.cli.multimodal`。 |
 | 一次性的分析脚本 (`examples/one_time/*.py`) | `scripts/one_time/`（若需要长期留存） | 与部署相关的脚本应放在 `scripts/`，通过 `Makefile`/`tox`/`poetry` 命令调度。 |
 
 > **命名建议**：保持 `spdatalab.<domain>.<feature>.core` 负责业务逻辑，`spdatalab.<domain>.<feature>.cli` 负责参数解析和编排，`examples/` 只保留调用示例或 Notebook。
