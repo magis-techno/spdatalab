@@ -140,9 +140,11 @@ def calculate_city_redundancy(conn, city_id: str, top_percent: float = 1.0, anal
         """)
         grid_count = conn.execute(grid_count_sql, {'city_id': city_id, 'analysis_date': analysis_date}).scalar()
     else:
+        # 使用子查询获取最新日期，避免日期类型传递问题
         grid_count_sql = text("""
             SELECT COUNT(*) FROM city_grid_density
-            WHERE city_id = :city_id AND analysis_date = CURRENT_DATE
+            WHERE city_id = :city_id 
+            AND analysis_date = (SELECT MAX(analysis_date) FROM city_grid_density)
         """)
         grid_count = conn.execute(grid_count_sql, {'city_id': city_id}).scalar()
     
@@ -175,11 +177,13 @@ def calculate_city_redundancy(conn, city_id: str, top_percent: float = 1.0, anal
             'analysis_date': analysis_date
         }).fetchone()
     else:
+        # 使用子查询获取最新日期，避免日期类型传递问题
         hotspot_sql = text("""
             WITH top_grids AS (
                 SELECT geometry
                 FROM city_grid_density
-                WHERE city_id = :city_id AND analysis_date = CURRENT_DATE
+                WHERE city_id = :city_id 
+                AND analysis_date = (SELECT MAX(analysis_date) FROM city_grid_density)
                 ORDER BY bbox_count DESC
                 LIMIT :top_n
             )
@@ -299,30 +303,56 @@ def main():
                 if args.sort_by_scenes:
                     # 按 scene 数量从多到少排序（较慢，需要统计）
                     print(f"⏳ 正在统计各城市scene数量...")
-                    result = conn.execute(text("""
-                        SELECT 
-                            city_id,
-                            COUNT(DISTINCT scene_token) as scene_count
-                        FROM clips_bbox_unified
-                        WHERE city_id IN (
-                            SELECT DISTINCT city_id 
-                            FROM city_grid_density 
-                            WHERE analysis_date = :target_date
-                        )
-                        AND all_good = true
-                        GROUP BY city_id
-                        ORDER BY scene_count DESC, city_id
-                    """), {'target_date': target_date})
+                    # 使用子查询避免日期类型传递问题
+                    if args.analysis_date:
+                        result = conn.execute(text("""
+                            SELECT 
+                                city_id,
+                                COUNT(DISTINCT scene_token) as scene_count
+                            FROM clips_bbox_unified
+                            WHERE city_id IN (
+                                SELECT DISTINCT city_id 
+                                FROM city_grid_density 
+                                WHERE analysis_date = :target_date
+                            )
+                            AND all_good = true
+                            GROUP BY city_id
+                            ORDER BY scene_count DESC, city_id
+                        """), {'target_date': target_date})
+                    else:
+                        result = conn.execute(text("""
+                            SELECT 
+                                city_id,
+                                COUNT(DISTINCT scene_token) as scene_count
+                            FROM clips_bbox_unified
+                            WHERE city_id IN (
+                                SELECT DISTINCT city_id 
+                                FROM city_grid_density 
+                                WHERE analysis_date = (SELECT MAX(analysis_date) FROM city_grid_density)
+                            )
+                            AND all_good = true
+                            GROUP BY city_id
+                            ORDER BY scene_count DESC, city_id
+                        """))
                     cities = [row.city_id for row in result]
                     print(f"📊 分析所有城市: 共 {len(cities)} 个（按scene数量排序）")
                 else:
                     # 快速模式：不排序
-                    result = conn.execute(text("""
-                        SELECT DISTINCT city_id 
-                        FROM city_grid_density
-                        WHERE analysis_date = :target_date
-                        ORDER BY city_id
-                    """), {'target_date': target_date})
+                    # 使用子查询避免日期类型传递问题
+                    if args.analysis_date:
+                        result = conn.execute(text("""
+                            SELECT DISTINCT city_id 
+                            FROM city_grid_density
+                            WHERE analysis_date = :target_date
+                            ORDER BY city_id
+                        """), {'target_date': target_date})
+                    else:
+                        result = conn.execute(text("""
+                            SELECT DISTINCT city_id 
+                            FROM city_grid_density
+                            WHERE analysis_date = (SELECT MAX(analysis_date) FROM city_grid_density)
+                            ORDER BY city_id
+                        """))
                     cities = [row.city_id for row in result]
                     print(f"📊 分析所有城市: 共 {len(cities)} 个")
             
