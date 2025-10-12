@@ -38,6 +38,7 @@ if TYPE_CHECKING and PARQUET_AVAILABLE:
 
 from ..common.file_utils import open_file, ensure_dir
 from ..common.io_hive import hive_cursor
+from .scene_list_generator import SceneListGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -338,22 +339,23 @@ class DatasetManager:
             子数据集名称
         """
         try:
-            # 使用正则表达式提取子数据集名称
-            # 匹配模式：/god/(子数据集名称)/train_god_...
+            dataset_match = re.search(r'/dataset_([^/]+)/train_', obs_path)
+            if dataset_match:
+                return dataset_match.group(1)
+
             pattern = r'/god/([^/]+)/train_god_'
             match = re.search(pattern, obs_path)
             if match:
                 return match.group(1)
-            else:
-                # 如果正则匹配失败，尝试从路径结构中提取
-                parts = obs_path.split('/')
-                for i, part in enumerate(parts):
-                    if part == 'god' and i + 1 < len(parts):
-                        candidate = parts[i + 1]
-                        if 'GOD_E2E' in candidate:
-                            return candidate
-                # 最后的备选方案
-                return Path(obs_path).parent.name
+
+            parts = obs_path.split('/')
+            for i, part in enumerate(parts):
+                if part == 'god' and i + 1 < len(parts):
+                    candidate = parts[i + 1]
+                    if candidate:
+                        return candidate
+
+            return Path(obs_path).parent.name
         except Exception as e:
             logger.warning(f"提取子数据集名称失败: {obs_path}, 错误: {str(e)}")
             return Path(obs_path).parent.name
@@ -397,36 +399,49 @@ class DatasetManager:
             try:
                 with open(cache_file, 'rb') as f:
                     cached_scene_ids = pickle.load(f)
-                logger.debug(f"从缓存加载 {file_path}: {len(cached_scene_ids)} 个scene_id")
-                return cached_scene_ids
+                if cached_scene_ids:
+                    logger.debug(f"从缓存加载 {file_path}: {len(cached_scene_ids)} 个scene_id")
+                    return cached_scene_ids
+                logger.debug(f"缓存 {file_path} 为空，重新生成scene_id列表")
             except Exception as e:
                 logger.warning(f"读取缓存失败 {cache_file}: {e}")
-        
-        from .scene_list_generator import SceneListGenerator
         
         scene_ids = []
         generator = SceneListGenerator()
         
         try:
-            for scene in generator.iter_scenes_from_file(file_path):
-                scene_id = scene.get('scene_id')
-                if scene_id:
-                    scene_ids.append(scene_id)
-                    
-            logger.info(f"从 {file_path} 提取到 {len(scene_ids)} 个scene_id")
-            
-            # 保存缓存
-            try:
-                with open(cache_file, 'wb') as f:
-                    pickle.dump(scene_ids, f)
-                logger.debug(f"已缓存 {file_path}")
-            except Exception as e:
-                logger.warning(f"保存缓存失败 {cache_file}: {e}")
-            
+            iterable = generator.iter_scenes_from_file(file_path)
         except Exception as e:
             logger.error(f"提取scene_id失败: {file_path}, 错误: {str(e)}")
             self.stats['failed_files'] += 1
-            
+            return scene_ids
+
+        try:
+            for scene in iterable or []:
+                scene_id = None
+                if isinstance(scene, dict):
+                    scene_id = scene.get('scene_id')
+                else:
+                    scene_id = getattr(scene, 'scene_id', None)
+
+                if scene_id:
+                    scene_ids.append(scene_id)
+
+            logger.info(f"从 {file_path} 提取到 {len(scene_ids)} 个scene_id")
+
+            # 保存缓存
+            if scene_ids:
+                try:
+                    with open(cache_file, 'wb') as f:
+                        pickle.dump(scene_ids, f)
+                    logger.debug(f"已缓存 {file_path}")
+                except Exception as e:
+                    logger.warning(f"保存缓存失败 {cache_file}: {e}")
+
+        except Exception as e:
+            logger.error(f"提取scene_id失败: {file_path}, 错误: {str(e)}")
+            self.stats['failed_files'] += 1
+
         return scene_ids
         
     def build_dataset_from_training_json(self, json_file: str, dataset_name: str = None, 
@@ -565,9 +580,10 @@ class DatasetManager:
             
             if scene_count > 0:
                 self.stats['processed_files'] += 1
-                self.stats['total_scenes'] += scene_count
+                effective_total = scene_count * (factor + 1)
+                self.stats['total_scenes'] += effective_total
                 self.stats['total_subdatasets'] += 1
-                
+
                 # 创建子数据集（与txt方式完全相同的结构）
                 subdataset = SubDataset(
                     name=subdataset_name,
@@ -580,9 +596,15 @@ class DatasetManager:
                 
                 dataset.subdatasets.append(subdataset)
                 dataset.total_unique_scenes += scene_count
-                dataset.total_scenes += scene_count * factor
-                
-                logger.info(f"添加子数据集: {subdataset_name}, 场景数: {scene_count}, 倍增因子: {factor}")
+                dataset.total_scenes += effective_total
+
+                logger.info(
+                    "添加子数据集: %s, 场景数: %s, 倍增因子: %s, 总样本(含原始): %s",
+                    subdataset_name,
+                    scene_count,
+                    factor,
+                    effective_total,
+                )
             else:
                 self.stats['failed_files'] += 1
                 logger.warning(f"子数据集 {subdataset_name} 没有有效场景")
@@ -711,12 +733,8 @@ class DatasetManager:
         
     def _save_dataset_parquet(self, dataset: Dataset, output_file: str):
         """保存数据集为Parquet格式。"""
-        if not PARQUET_AVAILABLE:
-            raise ImportError("需要安装 pandas 和 pyarrow 才能使用 parquet 格式: pip install pandas pyarrow")
-            
-        # 准备数据
         data_rows = []
-        
+
         for subdataset in dataset.subdatasets:
             for scene_id in subdataset.scene_ids:
                 data_rows.append({
@@ -729,18 +747,25 @@ class DatasetManager:
                     'scene_id': scene_id,
                     'metadata': json.dumps(subdataset.metadata)
                 })
-        
-        # 验证数据
+
         if not data_rows:
-            raise ValueError(f"数据集为空，无法保存为Parquet格式。数据集 '{dataset.name}' 包含 {len(dataset.subdatasets)} 个子数据集，但没有有效的场景ID。")
-        
-        # 创建DataFrame
-        df = pd.DataFrame(data_rows)
-        
-        # 保存为parquet
-        df.to_parquet(output_file, index=False, compression='snappy')
-        
-        # 同时保存数据集元信息为JSON
+            raise ValueError(
+                f"数据集为空，无法保存为Parquet格式。数据集 '{dataset.name}' 包含 {len(dataset.subdatasets)} 个子数据集，但没有有效的场景ID。"
+            )
+
+        if PARQUET_AVAILABLE:
+            df = pd.DataFrame(data_rows)
+            df.to_parquet(output_file, index=False, compression='snappy')
+            storage_format = 'parquet'
+        else:
+            logger.warning(
+                "pyarrow 未安装，使用JSON回退格式写入 %s。可安装 pandas+pyarrow 获得原生parquet支持。",
+                output_file,
+            )
+            with open_file(output_file, 'w') as handle:
+                json.dump({'rows': data_rows}, handle, ensure_ascii=False, indent=2)
+            storage_format = 'json-fallback'
+
         meta_file = Path(output_file).with_suffix('.meta.json')
         meta_info = {
             'name': dataset.name,
@@ -750,14 +775,15 @@ class DatasetManager:
             'total_unique_scenes': dataset.total_unique_scenes,
             'subdataset_count': len(dataset.subdatasets),
             'metadata': dataset.metadata,
-            'format_version': '1.0'
+            'format_version': '1.0',
+            'storage_format': storage_format,
         }
-        
+
         with open(meta_file, 'w', encoding='utf-8') as f:
             json.dump(meta_info, f, ensure_ascii=False, indent=2)
-            
-        logger.info(f"数据集已保存到 {output_file} (Parquet格式)")
-        logger.info(f"元信息已保存到 {meta_file}")
+
+        logger.info("数据集已保存到 %s (%s)", output_file, storage_format)
+        logger.info("元信息已保存到 %s", meta_file)
         
     def load_dataset(self, dataset_file: str) -> Dataset:
         """从文件加载数据集。
