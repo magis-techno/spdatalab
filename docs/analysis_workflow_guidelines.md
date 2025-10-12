@@ -3,7 +3,7 @@
 经过梳理 `src/spdatalab/` 目录可以看到：
 
 - `spdatalab.dataset` 中的 `bbox.py`、`quality_check_trajectory_query.py` 等文件同时承担了 **数据访问、批处理调度、命令行入口** 等职责；
-- `spdatalab.fusion` 模块内已有较规范的分析器（如 `toll_station_analysis.py`、`integrated_trajectory_analysis.py`），早期的 `multimodal_cli.py` 现已收敛为薄包装，真正的 CLI 入口迁移到 `fusion.cli.multimodal`；
+- `spdatalab.fusion` 模块内已有较规范的分析器（如 `toll_station_analysis.py`、`integrated_trajectory_analysis.py`），但仍混杂着面向 CLI 的代码（例如 `multimodal_cli.py`）；
 - `spdatalab.common` 中提供了数据库、文件系统等工具，可以继续沉淀通用依赖；
 - `examples/` 目录下的脚本（如 `dataset/bbox_examples/run_overlap_analysis.py`）为了兼容 Docker 做了大量环境配置，与核心分析逻辑耦合紧密。
 
@@ -18,24 +18,6 @@
 3. **Notebook 保持轻量**：Notebook 作为探索、展示或回归复现的载体，统一通过导入 `spdatalab` 中的函数来运行。
 4. **测试可覆盖**：拆出的函数要能够在 `tests/` 中编写单测或集成测试（可借助模拟的 SQLAlchemy engine 或临时文件）。
 
-## 项目聚焦清单（实时更新）
-
-**关键信息**
-- 环境：使用 `venv\Scripts\python.exe` 运行 Python，敏感配置放在 `.env`，常用流程可通过 `Makefile` 中的命令触发。
-- 核心回归：`pytest -k bbox`、`pytest tests/test_bbox_cli.py tests/test_bbox_core.py` 用于验证 bbox 模块拆分后的主流程。
-- 数据基线：`tests/data/baseline/` 保存关键指标输出，对比脚本依赖该目录作为参考值。
-
-**待办（Open）**
-- [x] CLI 与示例收口：完善 `spdatalab.dataset.bbox.cli` 的参数校验与日志输出，让 `examples/` 下脚本全部转调 `main()`。
-- [x] Notebook 精简：抽离 Notebook 中复用函数到 `analysis/notebook_support.py`（或按领域拆分模块），并启用 `nbstripout` 钩子清理输出。
-- [x] 验证脚本：实现 `scripts/testing/compare_analysis_output.py`，在迁移前后对比核心 CSV/图表结果。
-- [x] 文档同步：更新 `README.md` 与 Notebook 指南，补充新的命令行入口与运行步骤。
-- [x] CI 扩展：在流水线增加 `pytest --nbmake` 与最小化 CLI 冒烟用例，防止回归被遗漏。
-
-**已完成**
-- [x] bbox 核心逻辑迁移至 `core.py`，覆盖成功、失败与重试路径的单元测试已经生效。
-- [x] `legacy.py` 通过依赖注入复用新的 IO/几何工具，Notebook 在迁移期间仍能调用旧入口。
-
 ---
 
 ## 推荐的模块分层
@@ -46,7 +28,7 @@
 | --- | --- | --- |
 | `src/spdatalab/dataset/bbox.py` | `src/spdatalab/dataset/bbox/` 包<br> ├─ `core.py`：bbox 导入、重叠分析等纯逻辑<br> ├─ `io.py`：和数据库、Hive、Parquet 的交互<br> └─ `pipeline.py`：批处理调度、进度跟踪 | 让原先单文件中耦合的 CLI、工具类、全局状态拆分成可组合的函数/类；`LightweightProgressTracker` 等可以迁移到 `pipeline.py` 或 `common/progress.py`。 |
 | `examples/dataset/bbox_examples/run_overlap_analysis.py` | `src/spdatalab/dataset/bbox/cli.py` | CLI 负责解析参数、构造 engine、调用 `core.run_overlap`。示例脚本可以保留极简入口，仅转调 `spdatalab.dataset.bbox.cli.main`。 |
-| `src/spdatalab/fusion/multimodal_cli.py`（兼容层） | `src/spdatalab/fusion/cli/multimodal.py`（已落地） | 将 CLI 与 `fusion` 下的分析器解耦，便于未来增加更多 CLI；核心逻辑继续放在 `fusion/*.py` 中，示例命令改用 `python -m spdatalab.fusion.cli.multimodal`。 |
+| `src/spdatalab/fusion/multimodal_cli.py` | `src/spdatalab/fusion/cli/multimodal.py` | 将 CLI 与 `fusion` 下的分析器解耦，便于未来增加更多 CLI；核心逻辑继续放在 `fusion/*.py` 中。 |
 | 一次性的分析脚本 (`examples/one_time/*.py`) | `scripts/one_time/`（若需要长期留存） | 与部署相关的脚本应放在 `scripts/`，通过 `Makefile`/`tox`/`poetry` 命令调度。 |
 
 > **命名建议**：保持 `spdatalab.<domain>.<feature>.core` 负责业务逻辑，`spdatalab.<domain>.<feature>.cli` 负责参数解析和编排，`examples/` 只保留调用示例或 Notebook。
@@ -128,80 +110,6 @@
    - 若涉及配置文件或环境变量，先在 `.env.example`/`docs` 中同步更新并告知使用者迁移步骤。
 
 这样处理可以让结构调整在“随做随验证”的节奏下推进，既保证现有分析任务持续可用，也为后续扩展打好基础。
-
----
-
-## 实施路线图与 Codex 协同指南
-
-为了把上述目标落地，可以按“准备 → 模块拆分 → CLI/Notebook 收口 → 回归验证”的节奏推进，并结合 Codex（或其他 AI 编码助手）提
-高迭代效率。以下给出一个可直接执行的路线图：
-
-### 当前进度快照（2024-04-27）
-
-| 阶段 | 子任务 | 状态 | 说明 |
-| --- | --- | --- | --- |
-| 1. 模块拆分 | 迁移核心函数到 `spdatalab.dataset.bbox.core` | ✅ 已完成 | 新的 `run_overlap_analysis` 管线以及配套的仓库协议、GeoDataFrame 工具函数已经在 `core.py` 内落地，并通过针对成功/失败/重试场景的单元测试覆盖。 |
-| 1. 模块拆分 | legacy 层兼容补丁 | ✅ 已完成 | `legacy.py` 现已通过依赖注入复用新的 IO、合并与几何工具，确保 Notebook 与现有测试在迁移期间仍可调用旧入口。 |
-| 2. CLI 与 Notebook 收口 | 更新 CLI 入口、Notebook 引导 | ⏳ 进行中 | 后续需要将示例脚本切换为调用新的核心函数，并在 Notebook 指南中同步运行方式。 |
-
-### 0. 准备阶段（1 天）
-
-1. **梳理现状**
-   - 使用 `tree src/spdatalab/dataset -L 2`、`tree examples -L 2` 快速确认涉及的脚本范围。
-   - 记录每个脚本/Notebook 的入口、输入输出路径，整理到一张“现状 -> 目标”对照表（可放在 `docs/analysis_migration_tracker.md`）。
-2. **搭建基线**
-   - 本地跑通当前 Notebook/脚本的关键流程（至少 `run_overlap_analysis.py`、`batch_top1_analysis.py` 各跑一次），把结果 CSV/图表保存到
-     `tests/data/baseline/` 供后续比对。
-   - 若还未建立自动化环境，在 `Makefile` 增加 `make test-analysis`，里面执行最小化数据集的冒烟用例。
-3. **Codex 使用准备**
-   - 明确一次只让 Codex 修改一个小目标（例如“把 run_overlap_analysis 迁移到 core.py”），并把上下文（现状文件、目标文件、接口约束）
-     写成提示模板，后续直接复用。
-   - 约定提示结构：`[背景] → [当前代码片段] → [期望改动] → [验收标准]`，避免“请帮我重构整个模块”这类宽泛描述。
-
-### 1. 模块拆分（3~5 天）
-
-1. **新目录骨架**
-   - 先创建空文件：`touch src/spdatalab/dataset/bbox/{__init__,core,cli,io,pipeline}.py`。
-   - 更新 `src/spdatalab/dataset/__init__.py` 导出新的子模块，以便 Notebook/CLI 后续导入。
-2. **迁移核心函数**
-   - 以 `bbox.py` 为例：
-     1. 把纯逻辑函数（数据过滤、重叠计算等）复制到 `core.py`，保留原测试。
-     2. 将数据库连接、配置读取移到 `io.py`，在 `core.py` 中通过参数传入。
-     3. `pipeline.py` 只保留调度器、进度条。
-   - 每一步迁移都在旧文件中添加 shim，并在 docstring 中标记 `Deprecated: use spdatalab.dataset.bbox.core.*`。
-3. **Codex 协同技巧**
-   - 让 Codex 先生成目标文件的骨架（类/函数签名和 docstring），再手动或分批迁移实现，避免一次 diff 过大。
-   - 对于需要理解上下文的片段，先让 Codex 帮忙生成“迁移 checklist”或“依赖图”，再根据 checklist 分段执行。
-   - 每次生成后立即使用 `pytest tests/dataset/test_bbox_overlap.py -k smoke` 验证，失败再补充提示说明错误信息。
-
-### 2. CLI 与 Notebook 收口（2~3 天）
-
-1. **CLI 调整**
-   - 在 `cli.py` 中写清 `build_parser()`、`main()`，并把参数解析逻辑与核心函数串联。
-   - 原 `examples/*` 脚本改为调用 `main()`，保留一段迁移说明日志（`logger.warning("This script now proxies to spdatalab..." )`）。
-   - 为新的 CLI 写 `tests/cli/test_bbox_cli.py`，至少包含参数解析、输出路径存在等用例。
-2. **Notebook 清理**
-   - 把 Notebook 中的函数提炼到 `analysis/notebook_support.py`，Notebook 单元只保留 `import` 和可视化调用。
-   - 引入 `nbstripout` 到 git hook（可在 `.pre-commit-config.yaml` 新增配置）保证输出为空。
-   - 若需要批量运行，新增 `scripts/examples/batch_notebook_runner.py`，统一调 `papermill`。
-3. **Codex 协同技巧**
-   - 用 Codex 生成 CLI 的 argparse 模板、测试样例；但在提示中明确“保留 main 函数可调用”“不要执行副作用”。
-   - 对 Notebook 重构时，让 Codex 把 Notebook 里粘贴的函数转换成 Python 模块，并提醒它使用现有的 `core` API。
-
-### 3. 回归验证与收尾（1~2 天）
-
-1. **结果对比**
-   - 编写 `scripts/testing/compare_analysis_output.py`，读取 `tests/data/baseline/` 与最新运行结果，输出差异。
-   - 在 CI 中加入该脚本或 `pytest --nbmake`，保证 Notebook/CLI 在最小样本下可跑通。
-2. **文档与培训**
-   - 更新 `docs/analysis_workflow_guidelines.md`（本文）、`README.md` 中的运行方式。
-   - 组织一次分享或录屏，演示“如何使用新的 CLI + Notebook 支撑流程”。
-3. **Codex 使用复盘**
-   - 汇总高效的提示模板和常见误区（如忽略相对路径、改动过多 import），存入团队知识库。
-   - 后续遇到新的分析模块时，直接复用上述模板和步骤。
-
-通过上述阶段化推进 + Codex 辅助，可以把大型重构拆解成一系列可验证的小步骤：每个步骤都能在 PR 中清晰展示改动、配套测试与验证结果，
-并且任何时候都能通过双写和基线对比快速发现偏差。
 
 ---
 

@@ -8,12 +8,14 @@ license = {text = "MIT"}
 dependencies = [
     "click",
     "pandas",
-    "geopandas", 
+    "geopandas",
     "sqlalchemy",
     "psycopg[binary]",
     "python-dotenv",
     "requests",
     "shapely",
+    "numpy",
+    "scikit-learn",
 ]
 
 [project.optional-dependencies]
