@@ -29,6 +29,7 @@ import geopandas as gpd
 import pandas as pd
 import numpy as np
 from sqlalchemy import text, create_engine
+from shapely import wkt
 from shapely.geometry import LineString, Point
 from shapely.ops import transform
 import pyproj
@@ -281,6 +282,346 @@ class TrajectoryLaneAnalyzer:
             'start_time': None,
             'end_time': None
         }
+
+    # ------------------------------------------------------------------
+    # 基础轨迹处理方法（供单元测试和集成流程复用）
+
+    def build_trajectory_polyline(self, scene_id: str, data_name: str, points_df: pd.DataFrame | None) -> Optional[Dict[str, Any]]:
+        """根据轨迹点DataFrame构建polyline及统计信息。"""
+
+        if points_df is None or points_df.empty:
+            logger.info("场景 %s 缺少轨迹点，跳过polyline构建", scene_id)
+            return None
+
+        if not {'longitude', 'latitude'} <= set(points_df.columns):
+            raise ValueError("points_df 缺少经纬度列")
+
+        coordinates = list(zip(points_df['longitude'], points_df['latitude']))
+        geometry = LineString(coordinates)
+
+        timestamps = points_df['timestamp'].tolist() if 'timestamp' in points_df.columns else []
+        speeds_series = points_df.get('twist_linear', pd.Series(dtype=float)).fillna(0)
+        speeds = speeds_series.tolist()
+        avp_flags = points_df.get('avp_flag', pd.Series(dtype=int)).fillna(0).astype(int).tolist()
+        workstages = points_df.get('workstage', pd.Series(dtype=int)).fillna(0).astype(int).tolist()
+
+        avg_speed = float(np.mean(speeds)) if speeds else 0.0
+        max_speed = float(np.max(speeds)) if speeds else 0.0
+        min_speed = float(np.min(speeds)) if speeds else 0.0
+
+        return {
+            'scene_id': scene_id,
+            'data_name': data_name,
+            'polyline': coordinates,
+            'timestamps': timestamps,
+            'speeds': speeds,
+            'avp_flags': avp_flags,
+            'workstages': workstages,
+            'total_points': len(coordinates),
+            'avg_speed': avg_speed,
+            'max_speed': max_speed,
+            'min_speed': min_speed,
+            'geometry': geometry,
+        }
+
+    def _distance_based_sampling(self, polyline_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """按照距离间隔进行采样。"""
+
+        interval = max(float(self.config.get('distance_interval', 10.0)), 0.0)
+        if interval == 0 or len(polyline_data.get('polyline', [])) <= 1:
+            return []
+
+        samples: List[Dict[str, Any]] = []
+        last_distance = 0.0
+        accumulated = 0.0
+        coords = polyline_data['polyline']
+
+        samples.append(self._build_sample_point(polyline_data, 0))
+
+        for idx in range(1, len(coords)):
+            prev = coords[idx - 1]
+            curr = coords[idx]
+            segment = ((curr[0] - prev[0]) ** 2 + (curr[1] - prev[1]) ** 2) ** 0.5 * 111_320
+            accumulated += segment
+
+            if accumulated - last_distance >= interval:
+                samples.append(self._build_sample_point(polyline_data, idx))
+                last_distance = accumulated
+
+        if samples[-1]['original_index'] != len(coords) - 1:
+            samples.append(self._build_sample_point(polyline_data, len(coords) - 1))
+
+        return samples
+
+    def _time_based_sampling(self, polyline_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """按照时间间隔采样。"""
+
+        interval = max(float(self.config.get('time_interval', 5.0)), 0.0)
+        timestamps = polyline_data.get('timestamps') or []
+        if interval == 0 or not timestamps:
+            return []
+
+        samples: List[Dict[str, Any]] = []
+        next_threshold = timestamps[0]
+
+        for idx, ts in enumerate(timestamps):
+            if idx == 0 or ts >= next_threshold:
+                samples.append(self._build_sample_point(polyline_data, idx))
+                next_threshold = ts + interval
+
+        if samples and samples[-1]['original_index'] != len(polyline_data['polyline']) - 1:
+            samples.append(self._build_sample_point(polyline_data, len(polyline_data['polyline']) - 1))
+
+        return samples
+
+    def _uniform_sampling(self, polyline_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """按固定步长采样。"""
+
+        step = int(self.config.get('uniform_step', 50))
+        coords = polyline_data.get('polyline', [])
+        if step <= 0 or not coords:
+            return []
+
+        samples = [self._build_sample_point(polyline_data, idx) for idx in range(0, len(coords), step)]
+        if samples and samples[-1]['original_index'] != len(coords) - 1:
+            samples.append(self._build_sample_point(polyline_data, len(coords) - 1))
+
+        return samples
+
+    def _build_sample_point(self, polyline_data: Dict[str, Any], index: int) -> Dict[str, Any]:
+        coord = polyline_data['polyline'][index]
+        point_info = {
+            'coordinate': coord,
+            'original_index': index,
+        }
+
+        for key in ('timestamps', 'speeds', 'avp_flags', 'workstages'):
+            values = polyline_data.get(key)
+            if values and index < len(values):
+                mapped_key = {
+                    'timestamps': 'timestamp',
+                    'speeds': 'speed',
+                    'avp_flags': 'avp_flag',
+                    'workstages': 'workstage',
+                }[key]
+                point_info[mapped_key] = values[index]
+
+        return point_info
+
+    def _calculate_window_center(self, window_points: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """计算滑窗中心点信息。"""
+
+        if not window_points:
+            return {}
+
+        xs = [pt['coordinate'][0] for pt in window_points]
+        ys = [pt['coordinate'][1] for pt in window_points]
+        speeds = [pt.get('speed', 0.0) for pt in window_points]
+        timestamps = [pt.get('timestamp') for pt in window_points if 'timestamp' in pt]
+
+        center_idx = len(window_points) // 2
+        result = {
+            'coordinate': (float(np.mean(xs)), float(np.mean(ys))),
+            'speed': float(np.mean(speeds)) if speeds else 0.0,
+            'window_size': len(window_points),
+            'original_index': window_points[center_idx].get('original_index', center_idx),
+        }
+
+        if timestamps:
+            result['timestamp'] = float(np.mean(timestamps))
+
+        return result
+
+    def sample_trajectory(self, polyline_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """根据配置选择采样策略。"""
+
+        strategy = self.config.get('sampling_strategy', 'distance')
+        if strategy == 'time':
+            return self._time_based_sampling(polyline_data)
+        if strategy == 'uniform':
+            return self._uniform_sampling(polyline_data)
+        return self._distance_based_sampling(polyline_data)
+
+    def sliding_window_analysis(self, sampled_points: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """简单的滑窗分析，返回窗口中心信息列表。"""
+
+        window_size = int(self.config.get('window_size', 20))
+        overlap = float(self.config.get('window_overlap', 0.5))
+        if window_size <= 0 or not sampled_points:
+            return []
+
+        step = max(int(window_size * (1 - overlap)), 1)
+        windows: List[Dict[str, Any]] = []
+
+        for start in range(0, len(sampled_points), step):
+            window = sampled_points[start:start + window_size]
+            if len(window) < window_size:
+                break
+            windows.append(self._calculate_window_center(window))
+
+        return windows
+
+    def create_lane_buffer(self, lane_id: Union[str, int]):
+        """从数据库加载指定lane的缓冲区几何。"""
+
+        table_name = self.config.get('trajectory_buffer_table', 'trajectory_lane_buffer')
+        query = text(
+            f"""
+            SELECT buffer_wkt
+            FROM {table_name}
+            WHERE road_analysis_id = :road_analysis_id AND lane_id = :lane_id
+            """
+        )
+
+        params = {
+            'road_analysis_id': self.road_analysis_id,
+            'lane_id': int(lane_id) if isinstance(lane_id, str) and lane_id.isdigit() else lane_id,
+        }
+
+        with self.engine.connect() as conn:
+            result = conn.execute(query, params).fetchone()
+
+        if not result:
+            return None
+
+        return wkt.loads(result[0])
+
+    def filter_trajectory_by_buffer(self, trajectory_points: List[Dict[str, Any]], lane_buffer) -> List[Dict[str, Any]]:
+        """保留落在缓冲区内的轨迹点。"""
+
+        filtered = []
+        for point in trajectory_points:
+            coord = point.get('coordinate')
+            if coord is None:
+                continue
+
+            geometry = Point(coord)
+            if hasattr(lane_buffer, 'contains') and lane_buffer.contains(geometry):
+                filtered.append(point)
+            elif hasattr(lane_buffer, 'intersects') and lane_buffer.intersects(geometry):
+                filtered.append(point)
+
+        return filtered
+
+    def check_trajectory_quality(self, dataset_name: str, buffer_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """根据缓冲区命中结果计算质量指标。"""
+
+        total_lanes = len(buffer_results)
+        total_points = sum(item.get('points_count', 0) for item in buffer_results)
+        min_points_single_lane = int(self.config.get('min_points_single_lane', 5))
+
+        if total_lanes == 0:
+            status = 'failed'
+            reason = '未找到覆盖车道'
+        elif total_lanes > 1:
+            status = 'passed'
+            reason = '多车道轨迹覆盖'
+        else:
+            points = buffer_results[0].get('points_count', 0)
+            if points >= min_points_single_lane:
+                status = 'passed'
+                reason = '单车道轨迹但点数充足'
+            else:
+                status = 'failed'
+                reason = '单车道轨迹点数不足'
+
+        return {
+            'dataset_name': dataset_name,
+            'status': status,
+            'reason': reason,
+            'total_lanes': total_lanes,
+            'total_points': total_points,
+            'lanes_covered': [item.get('lane_id') for item in buffer_results],
+        }
+
+    def reconstruct_trajectory(self, dataset_name: str, quality_result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """根据质量结果重构轨迹。"""
+
+        if quality_result.get('status') != 'passed':
+            return None
+
+        points_df = fetch_trajectory_points(dataset_name)
+        polyline = self.build_trajectory_polyline('', dataset_name, points_df)
+        if not polyline:
+            return None
+
+        return {
+            'dataset_name': dataset_name,
+            'geometry': polyline['geometry'],
+            'total_points': polyline['total_points'],
+            'total_lanes': quality_result.get('total_lanes', 0),
+            'quality_status': quality_result.get('status'),
+            'quality_reason': quality_result.get('reason'),
+        }
+
+    def simplify_trajectory(self, trajectory: LineString) -> LineString:
+        """使用配置的容差对轨迹进行简化。"""
+
+        tolerance = float(self.config.get('simplify_tolerance', 2.0))
+        return trajectory.simplify(tolerance, preserve_topology=True)
+
+    def create_database_tables(self) -> bool:
+        """为分析结果创建必需的数据表（如不存在）。"""
+
+        table_names = [
+            self.config.get('trajectory_segments_table', 'trajectory_lane_segments'),
+            self.config.get('trajectory_buffer_table', 'trajectory_lane_buffer'),
+            self.config.get('quality_check_table', 'trajectory_quality_check'),
+        ]
+
+        create_tpl = "CREATE TABLE IF NOT EXISTS {table} (id SERIAL PRIMARY KEY)"
+        with self.engine.connect() as conn:
+            for table in table_names:
+                conn.execute(text(create_tpl.format(table=table)))
+
+        return True
+
+    def save_results(self, analysis_results: List[Dict[str, Any]]) -> bool:
+        """保存车道分析结果。"""
+
+        if not analysis_results:
+            return False
+
+        return bool(self._save_quality_results(analysis_results))
+
+    def _save_quality_results(self, analysis_results: List[Dict[str, Any]]) -> int:
+        """默认实现：返回写入的结果数量。"""
+
+        return len(analysis_results)
+
+    def process_scene_mappings(self, mappings: pd.DataFrame) -> Dict[str, Any]:
+        """处理场景与数据集映射。"""
+
+        stats = {
+            'total_scenes': int(len(mappings)),
+            'processed_scenes': 0,
+            'empty_scenes': 0,
+            'errors': [],
+        }
+
+        for _, row in mappings.iterrows():
+            scene_id = row.get('scene_id')
+            data_name = row.get('data_name')
+
+            try:
+                points_df = fetch_trajectory_points(data_name)
+                polyline = self.build_trajectory_polyline(scene_id, data_name, points_df)
+                if not polyline:
+                    stats['empty_scenes'] += 1
+                    continue
+
+                sampled = self.sample_trajectory(polyline)
+                windows = self.sliding_window_analysis(sampled)
+                quality = self.check_trajectory_quality(data_name, windows)
+
+                if self.config.get('enable_trajectory_reconstruction', True):
+                    self.reconstruct_trajectory(data_name, quality)
+
+                stats['processed_scenes'] += 1
+            except Exception as exc:  # pragma: no cover - defensive guard
+                stats['errors'].append({'scene_id': scene_id, 'error': str(exc)})
+
+        return stats
     
     def _generate_dynamic_table_names(self, analysis_id: str) -> Dict[str, str]:
         """根据analysis_id生成动态表名

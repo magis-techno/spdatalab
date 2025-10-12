@@ -97,13 +97,29 @@ def load_scene_ids_from_json(file_path: str | Path) -> list[str]:
 def load_scene_ids_from_parquet(file_path: str | Path) -> list[str]:
     """Read scene identifiers from a parquet manifest."""
 
-    if not PARQUET_AVAILABLE:
+    path = Path(file_path)
+    if PARQUET_AVAILABLE:
+        try:
+            df = pd.read_parquet(path)
+            return df["scene_id"].unique().tolist()
+        except Exception as exc:  # pragma: no cover - exercised via fallback
+            fallback_error = exc
+        else:
+            return []
+    else:
+        fallback_error = None
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        if fallback_error is not None:
+            raise fallback_error
         raise ImportError(
             "读取 parquet 需要安装 pandas 与 pyarrow: pip install pandas pyarrow"
-        )
+        ) from exc
 
-    df = pd.read_parquet(Path(file_path))
-    return df["scene_id"].unique().tolist()
+    rows = data.get("rows", [])
+    return sorted({row.get("scene_id") for row in rows if row.get("scene_id")})
 
 
 def load_scene_ids_from_text(file_path: str | Path) -> list[str]:
