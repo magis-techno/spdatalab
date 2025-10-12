@@ -176,7 +176,7 @@ def main():
             print("      cd examples/dataset/bbox_examples")
             print("      python run_overlap_analysis.py --city A72 --top-n 1")
             print("   2. 运行批量分析:")
-            print("      python batch_top1_analysis.py --cities A72 --max-cities 1")
+            print("      python batch_grid_analysis.py --cities A72 --max-cities 1")
         return 0
     else:
         return 1
