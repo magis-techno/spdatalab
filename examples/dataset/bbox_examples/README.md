@@ -6,13 +6,18 @@
 
 ```
 bbox_examples/
-├── README.md                           # 本文档
-├── run_overlap_analysis.py             # 🎯 主分析脚本（推荐）
-├── create_indexes.py                   # 🔧 索引优化工具
-├── *.sql                               # SQL脚本文件
-└── sql/                                # SQL脚本集合
-    ├── create_analysis_tables.sql      # 创建分析结果表
-    └── qgis_views.sql                  # QGIS兼容视图
+├── README.md                              # 本文档
+├── run_overlap_analysis.py                # 🎯 主分析脚本（推荐）
+├── analyze_spatial_redundancy.py          # 📊 空间冗余度分析
+├── batch_grid_analysis.py                 # 🗂️ 批量网格分析
+├── grid_clustering_analysis.py            # 🔬 网格聚类分析
+├── analyze_grid_multimodal_similarity.py  # 🔍 Grid多模态相似性分析（新）
+├── GRID_MULTIMODAL_ANALYSIS_GUIDE.md      # 📖 多模态分析使用指南
+├── create_indexes.py                      # 🔧 索引优化工具
+├── *.sql                                  # SQL脚本文件
+└── sql/                                   # SQL脚本集合
+    ├── create_analysis_tables.sql         # 创建分析结果表
+    └── qgis_views.sql                     # QGIS兼容视图
 ```
 
 ## 🎯 功能特性
@@ -36,7 +41,45 @@ bbox_examples/
 - **专业样式**：内置推荐的颜色方案和符号设置
 - **🛡️ 优雅退出**：支持 `Ctrl+C` 安全中断，自动清理资源
 
+### 🔍 Grid多模态相似性分析（新功能）
+- **冗余Grid定位**：自动从空间冗余分析结果中选择高冗余grid
+- **数据集提取**：通过空间连接提取grid内的dataset_name列表
+- **多模态检索**：调用多模态API进行文本/图片检索
+- **相似度分析**：统计分布、直方图、按dataset分组分析
+- **智能过滤**：支持城市级别和dataset级别的精确过滤
+- **可扩展性**：预留图片下载和视觉相似度分析接口
+
 ## 🚀 快速开始
+
+### 0. Grid多模态相似性分析（新功能）
+
+```bash
+# 前置步骤：确保已运行冗余分析
+python examples/dataset/bbox_examples/analyze_spatial_redundancy.py --create-table
+python examples/dataset/bbox_examples/batch_grid_analysis.py
+
+# 基础使用：分析A72城市最高冗余grid的"白天"相似性
+python examples/dataset/bbox_examples/analyze_grid_multimodal_similarity.py --city A72
+
+# 指定grid排名和查询文本
+python examples/dataset/bbox_examples/analyze_grid_multimodal_similarity.py \
+    --city A72 \
+    --grid-rank 2 \
+    --query-text "夜晚"
+
+# 完整参数示例
+python examples/dataset/bbox_examples/analyze_grid_multimodal_similarity.py \
+    --city A72 \
+    --grid-rank 1 \
+    --query-text "白天" \
+    --collection ddi_collection_camera_encoded_2 \
+    --max-results 200 \
+    --top-n 15 \
+    --analysis-date 2025-10-09
+
+# 查看详细使用指南
+cat examples/dataset/bbox_examples/GRID_MULTIMODAL_ANALYSIS_GUIDE.md
+```
 
 ### 1. 基础使用（推荐新版本）
 
@@ -467,10 +510,12 @@ gdf.to_file("overlap_hotspots.geojson", driver="GeoJSON")
 
 ## 📚 相关文档
 
+- [Grid多模态相似性分析指南](GRID_MULTIMODAL_ANALYSIS_GUIDE.md) 🆕
 - [BBox模块文档](../../../docs/dataset_management.md)
 - [空间分析指南](../../../docs/spatial_join_usage_guide.md)
 - [QGIS可视化指南](../../visualization/)
 - [数据库连接配置](../../../sql/README_FDW.md)
+- [多模态数据检索器](../../../src/spdatalab/dataset/multimodal_data_retriever.py)
 
 ---
 

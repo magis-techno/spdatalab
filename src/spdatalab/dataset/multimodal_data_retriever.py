@@ -170,7 +170,9 @@ class MultimodalRetriever:
     
     def retrieve_by_text(self, text: str, collection: str, count: int = 5, 
                         start: int = 0, start_time: Optional[int] = None, 
-                        end_time: Optional[int] = None) -> List[Dict]:
+                        end_time: Optional[int] = None,
+                        dataset_name: Optional[List[str]] = None,
+                        filter_dict: Optional[Dict] = None) -> List[Dict]:
         """文本检索，包含API限制控制
         
         Args:
@@ -180,9 +182,39 @@ class MultimodalRetriever:
             start: 起始偏移量，默认0
             start_time: 事件开始时间，13位时间戳（可选）
             end_time: 事件结束时间，13位时间戳（可选）
+            dataset_name: 指定要搜索的数据集名称列表（可选）
+            filter_dict: 高级过滤条件字典（可选），格式参考API文档的filter结构
             
         Returns:
             检索结果列表
+            
+        Examples:
+            # 基础文本检索
+            results = retriever.retrieve_by_text("bicycle", "ddi_collection_camera_encoded_1")
+            
+            # 在指定数据集中检索
+            results = retriever.retrieve_by_text(
+                "bicycle", 
+                "ddi_collection_camera_encoded_1",
+                dataset_name=["dataset_a_2025/01/01/10:00:00-10:05:00"]
+            )
+            
+            # 使用城市过滤（通过filter_dict）
+            filter_shanghai = {
+                "conditions": [[{
+                    "field": "ddi_basic.city_code",
+                    "func": "$eq",
+                    "value": "310000",
+                    "format": "int32"
+                }]],
+                "logic": ["$and"],
+                "cursorKey": None
+            }
+            results = retriever.retrieve_by_text(
+                "bicycle",
+                "ddi_collection_camera_encoded_1",
+                filter_dict=filter_shanghai
+            )
         """
         # 1. 验证单次查询限制（≤10000）
         if count > self.max_single_count:
@@ -211,6 +243,15 @@ class MultimodalRetriever:
             payload["start_time"] = start_time
         if end_time is not None:
             payload["end_time"] = end_time
+        
+        # 添加新的可选参数
+        if dataset_name is not None:
+            payload["dataset_name"] = dataset_name
+            logger.debug(f"添加dataset_name过滤: {len(dataset_name)}个数据集")
+        
+        if filter_dict is not None:
+            payload["filter"] = filter_dict
+            logger.debug(f"添加高级过滤条件: {filter_dict}")
         
         logger.info(f"🔍 执行文本检索: '{text}', collection={collection}, camera={camera}, start={start}, count={count}")
         if start_time or end_time:
@@ -287,7 +328,9 @@ class MultimodalRetriever:
     
     def retrieve_by_images(self, images: List[str], collection: str, count: int = 5,
                           start: int = 0, start_time: Optional[int] = None,
-                          end_time: Optional[int] = None) -> List[Dict]:
+                          end_time: Optional[int] = None,
+                          dataset_name: Optional[List[str]] = None,
+                          filter_dict: Optional[Dict] = None) -> List[Dict]:
         """图片检索，包含API限制控制
         
         Args:
@@ -297,6 +340,8 @@ class MultimodalRetriever:
             start: 起始偏移量，默认0
             start_time: 事件开始时间，13位时间戳（可选）
             end_time: 事件结束时间，13位时间戳（可选）
+            dataset_name: 指定要搜索的数据集名称列表（可选）
+            filter_dict: 高级过滤条件字典（可选），格式参考API文档的filter结构
             
         Returns:
             检索结果列表
@@ -332,6 +377,15 @@ class MultimodalRetriever:
             payload["start_time"] = start_time
         if end_time is not None:
             payload["end_time"] = end_time
+        
+        # 添加新的可选参数
+        if dataset_name is not None:
+            payload["dataset_name"] = dataset_name
+            logger.debug(f"添加dataset_name过滤: {len(dataset_name)}个数据集")
+        
+        if filter_dict is not None:
+            payload["filter"] = filter_dict
+            logger.debug(f"添加高级过滤条件: {filter_dict}")
         
         logger.info(f"🔍 执行图片检索: {len(images)}张图片, collection={collection}, camera={camera}, start={start}, count={count}")
         if start_time or end_time:
