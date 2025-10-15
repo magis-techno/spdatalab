@@ -162,14 +162,16 @@ def extract_grid_datasets(conn, grid_info: Dict) -> Tuple[List[str], Dict]:
     print(f"\n📦 提取Grid内的数据")
     print("=" * 60)
     
-    # 通过空间连接获取grid内的所有bbox
+    # 方案2：使用involved_scenes（避免空间计算，性能更优）
+    # UNNEST产生的数据量很小（grid内scene数量），通过scene_token索引JOIN效率很高
     sql = text("""
         SELECT DISTINCT 
             b.dataset_name,
             b.scene_token,
             b.subdataset_name
-        FROM city_grid_density g
-        JOIN clips_bbox_unified b ON ST_Intersects(g.geometry, b.geometry)
+        FROM city_grid_density g,
+             UNNEST(g.involved_scenes) as scene_token
+        JOIN clips_bbox_unified b ON b.scene_token = scene_token
         WHERE g.city_id = :city_id 
           AND g.grid_x = :grid_x 
           AND g.grid_y = :grid_y
