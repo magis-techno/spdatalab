@@ -164,9 +164,10 @@ def extract_grid_datasets(conn, grid_info: Dict) -> Tuple[List[str], Dict]:
     
     # 方案2：使用involved_scenes（避免空间计算，性能更优）
     # UNNEST产生的数据量很小（grid内scene数量），通过scene_token索引JOIN效率很高
+    # 注意：clips_bbox_unified视图使用的列名是data_name而不是dataset_name
     sql = text("""
         SELECT DISTINCT 
-            b.dataset_name,
+            b.data_name,
             b.scene_token,
             b.subdataset_name
         FROM city_grid_density g,
@@ -177,7 +178,7 @@ def extract_grid_datasets(conn, grid_info: Dict) -> Tuple[List[str], Dict]:
           AND g.grid_y = :grid_y
           AND g.analysis_date = :analysis_date
           AND b.all_good = true
-        ORDER BY b.dataset_name, b.scene_token
+        ORDER BY b.data_name, b.scene_token
     """)
     
     results = conn.execute(sql, {
@@ -191,8 +192,8 @@ def extract_grid_datasets(conn, grid_info: Dict) -> Tuple[List[str], Dict]:
         print(f"⚠️ Grid内没有找到有效的bbox数据")
         return [], {}
     
-    # 提取唯一的dataset_name
-    dataset_names = list(set(row.dataset_name for row in results if row.dataset_name))
+    # 提取唯一的dataset_name（从data_name列获取）
+    dataset_names = list(set(row.data_name for row in results if row.data_name))
     
     # 统计信息
     scene_tokens = list(set(row.scene_token for row in results if row.scene_token))
@@ -201,8 +202,8 @@ def extract_grid_datasets(conn, grid_info: Dict) -> Tuple[List[str], Dict]:
     # 按dataset统计scene数量
     dataset_scene_count = Counter()
     for row in results:
-        if row.dataset_name and row.scene_token:
-            dataset_scene_count[row.dataset_name] += 1
+        if row.data_name and row.scene_token:
+            dataset_scene_count[row.data_name] += 1
     
     stats = {
         'total_datasets': len(dataset_names),
