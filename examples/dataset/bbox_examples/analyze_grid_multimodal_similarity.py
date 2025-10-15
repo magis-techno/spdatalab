@@ -170,8 +170,8 @@ def extract_grid_datasets(conn, grid_info: Dict) -> Tuple[List[str], Dict]:
             b.scene_token,
             b.subdataset_name
         FROM city_grid_density g,
-             UNNEST(g.involved_scenes) as scene_token
-        JOIN clips_bbox_unified b ON b.scene_token = scene_token
+             UNNEST(g.involved_scenes) as unnested_scene
+        JOIN clips_bbox_unified b ON b.scene_token = unnested_scene
         WHERE g.city_id = :city_id 
           AND g.grid_x = :grid_x 
           AND g.grid_y = :grid_y
