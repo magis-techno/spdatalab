@@ -1,0 +1,1977 @@
+# Cursor 聊天记录 - 工作区 96665030c10a38ad7fb06c239f8221a4
+# 提取时间: 2025-10-15 15:08:16
+# 总消息数: 105 条
+# 多模态相关: 1 条
+================================================================================
+
+[1] [Unknown Time]
+这里的系统变量的生效，我想做一个脚本。只声明NAVSIM_EXP_ROOT和NAVSIM_DEVKIT_ROOT。 这里路径写死，/mnt/sdb/StyleDrive/exp.   + /mnt/sdb/StyleDrive/navsim
+================================================================================
+
+[2] [Unknown Time]
+(/mnt/sdb/conda_envs/styledrive) liminzhen@adas:/mnt/sdb/StyleDrive$ bash scripts/caching/caching_training_tran_diff.sh
+/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/config_loader_impl.py:214: UserWarning: provider=hydra.searchpath in main, path=/mnt/sdb/StyleDrive/navsim/navsim/planning/script/config/common is not available.
+  warnings.warn(
+[2025-07-29 19:31:27,037][__main__][INFO] - Global Seed set to 0
+Seed set to 0
+[2025-07-29 19:31:27,040][__main__][INFO] - Building Worker
+[2025-07-29 19:31:29,941][navsim.planning.utils.multithreading.worker_ray_no_torch][INFO] - Not using GPU in ray
+[2025-07-29 19:31:29,941][navsim.planning.utils.multithreading.worker_ray_no_torch][INFO] - Starting ray local!
+terminate called after throwing an instance of 'std::system_error'
+  what():  Resource temporarily unavailable
+scripts/caching/caching_training_tran_diff.sh: line 5: 42918 Aborted                 (core dumped) python $NAVSIM_DEVKIT_ROOT/planning/script/run_dataset_caching.py agent=diffusiondrive_style_agent experiment_name=training_diffusiondrive_style_agent train_test_split=styletrain cache_path=$NAVSIM_EXP_ROOT/training_cache
+================================================================================
+
+[3] [Unknown Time]
+帮我看一下这个是什么错误：=== StyleDrive Environment Check ===
+
+1. Environment Variables:
+   ✓ NAVSIM_DEVKIT_ROOT: /mnt/sdb/StyleDrive/navsim
+   ✓ NAVSIM_EXP_ROOT: /mnt/sdb/StyleDrive/exp
+
+2. Path Existence:
+   ✓ NAVSIM_DEVKIT_ROOT directory exists
+   ✓ NAVSIM_EXP_ROOT directory exists
+
+3. Key Files:
+   ✓ Training config file exists
+   ✓ Low resource worker config exists
+
+4. System Resources:
+   CPU cores: 72
+   Available memory: 1.2T
+
+=== Check Complete ===
+(/mnt/sdb/conda_envs/styledrive) liminzhen@adas:/mnt/sdb/StyleDrive$ chmod +x scripts/caching/caching_training_tran_diff.sh
+(/mnt/sdb/conda_envs/styledrive) liminzhen@adas:/mnt/sdb/StyleDrive$ bash scripts/caching/caching_training_tran_diff.sh
+[2025-07-29 19:37:55,119][__main__][INFO] - Global Seed set to 0
+Seed set to 0
+[2025-07-29 19:37:55,121][__main__][INFO] - Building Worker
+[2025-07-29 19:37:58,011][navsim.planning.utils.multithreading.worker_ray_no_torch][INFO] - Not using GPU in ray
+[2025-07-29 19:37:58,011][navsim.planning.utils.multithreading.worker_ray_no_torch][INFO] - Starting ray local!
+Error executing job with overrides: ['agent=diffusiondrive_style_agent', 'experiment_name=training_diffusiondrive_style_agent', 'train_test_split=styletrain', 'cache_path=/mnt/sdb/StyleDrive/exp/training_cache']
+Error in call to target 'navsim.planning.utils.multithreading.worker_ray_no_torch.RayDistributedNoTorch':
+RuntimeError('Resource temporarily unavailable')
+full_key: worker
+
+Set the environment variable HYDRA_FULL_ERROR=1 for a complete stack trace.
+================================================================================
+
+[4] [Unknown Time]
+报错如下：(/mnt/sdb/conda_envs/styledrive) liminzhen@adas:/mnt/sdb/StyleDrive$ bash scripts/caching/caching_training_tran_diff.sh
+[2025-07-29 19:43:24,989][__main__][INFO] - Global Seed set to 0
+Seed set to 0
+[2025-07-29 19:43:24,991][__main__][INFO] - Building Worker
+[2025-07-29 19:43:27,800][navsim.planning.utils.multithreading.worker_ray_no_torch][INFO] - Not using GPU in ray
+[2025-07-29 19:43:27,800][navsim.planning.utils.multithreading.worker_ray_no_torch][INFO] - Starting ray local!
+2025-07-29 19:43:31,452 INFO worker.py:1927 -- Started a local Ray instance.
+[2025-07-29 19:43:40,686 E 44214 44597] core_worker_process.cc:308: Failed to get the system config from raylet because it is dead. Worker will terminate. Status: RpcError: RPC Error message: failed to connect to all addresses; last error: UNKNOWN: ipv4:10.246.236.87:34095: Failed to connect to remote host: Connection refused; RPC Error details:  rpc_code: 14 .Please see `raylet.out` for more details.
+(/mnt/sdb/conda_envs/styledrive) liminzhen@adas:/mnt/sdb/StyleDrive$ bash scripts/caching/caching_training_tran_diff
+caching_training_tran_diff_fixed.sh  caching_training_tran_diff.sh
+(/mnt/sdb/conda_envs/styledrive) liminzhen@adas:/mnt/sdb/StyleDrive$ bash scripts/caching/caching_training_tran_diff_fixed.sh
+Using NAVSIM_DEVKIT_ROOT: /mnt/sdb/StyleDrive/navsim
+Using NAVSIM_EXP_ROOT: /mnt/sdb/StyleDrive/exp
+[2025-07-29 19:44:27,818][__main__][INFO] - Global Seed set to 0
+Seed set to 0
+[2025-07-29 19:44:27,820][__main__][INFO] - Building Worker
+[2025-07-29 19:44:30,713][navsim.planning.utils.multithreading.worker_ray_no_torch][INFO] - Not using GPU in ray
+[2025-07-29 19:44:30,713][navsim.planning.utils.multithreading.worker_ray_no_torch][INFO] - Starting ray local!
+Error executing job with overrides: ['agent=diffusiondrive_style_agent', 'experiment_name=training_diffusiondrive_style_agent', 'train_test_split=styletrain', 'cache_path=/mnt/sdb/StyleDrive/exp/training_cache', 'worker=ray_low_resource']
+Error in call to target 'navsim.planning.utils.multithreading.worker_ray_no_torch.RayDistributedNoTorch':
+RuntimeError('Resource temporarily unavailable')
+full_key: worker
+
+Set the environment variable HYDRA_FULL_ERROR=1 for a complete stack trace.
+================================================================================
+
+[5] [Unknown Time]
+这个成功了，把一些不相干的test文件清一下，然后把这个脚本正式化，markdown里面也记录一下。
+================================================================================
+
+[6] [Unknown Time]
+(/mnt/sdb/conda_envs/styledrive) liminzhen@adas:/mnt/sdb/StyleDrive$ bash scripts/caching/caching_training_sequential.sh
+Using NAVSIM_DEVKIT_ROOT: /mnt/sdb/StyleDrive/navsim
+Using NAVSIM_EXP_ROOT: /mnt/sdb/StyleDrive/exp
+Using sequential worker (single-threaded, most stable)
+[2025-07-29 19:59:46,181][__main__][INFO] - Global Seed set to 0
+Seed set to 0
+[2025-07-29 19:59:46,183][__main__][INFO] - Building Worker
+[2025-07-29 19:59:46,184][nuplan.planning.utils.multithreading.worker_pool][INFO] - Worker: Sequential
+[2025-07-29 19:59:46,184][nuplan.planning.utils.multithreading.worker_pool][INFO] - Number of nodes: 1
+Number of CPUs per node: 1
+Number of GPUs per node: 0
+Number of threads across all nodes: 1
+[2025-07-29 19:59:46,184][__main__][INFO] - Building SceneLoader
+Loading logs: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1192/1192 [01:27<00:00, 13.58it/s]
+[2025-07-29 20:01:16,061][__main__][INFO] - Extracted 25657 scenarios for training/validation dataset
+[2025-07-29 20:01:17,862][timm.models._builder][INFO] - Loading pretrained weights from Hugging Face hub (timm/resnet34.a1_in1k)
+Failed to load image encoder with error: (MaxRetryError("HTTPSConnectionPool(host='cdn-lfs.hf.co', port=443): Max retries exceeded with url: /repos/e8/ca/e8ca73717f8f4fc61eba9407f4a925ad59b5aacaa67dc2e46a2a4dfc4fb1b7b9/829a220f9529d2b1ffdc8719d3273463001e0daf411eaf1916865d9db62c0ed2?response-content-disposition=inline%3B+filename*%3DUTF-8%27%27model.safetensors%3B+filename%3D%22model.safetensors%22%3B&Expires=1753794176&Policy=eyJTdGF0ZW1lbnQiOlt7IkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc1Mzc5NDE3Nn19LCJSZXNvdXJjZSI6Imh0dHBzOi8vY2RuLWxmcy5oZi5jby9yZXBvcy9lOC9jYS9lOGNhNzM3MTdmOGY0ZmM2MWViYTk0MDdmNGE5MjVhZDU5YjVhYWNhYTY3ZGMyZTQ2YTJhNGRmYzRmYjFiN2I5LzgyOWEyMjBmOTUyOWQyYjFmZmRjODcxOWQzMjczNDYzMDAxZTBkYWY0MTFlYWYxOTE2ODY1ZDlkYjYyYzBlZDI~cmVzcG9uc2UtY29udGVudC1kaXNwb3NpdGlvbj0qIn1dfQ__&Signature=VshgwQp8aXk1zEVnb5PEDBJTLB-krzKhVLLvt8T0-Nhftjtk-55-weHsr23xNaOtIrpHMs3SG1D5a8DOs-lnvkyC1OyuWoP4N2QwPUQ-r-ik~482KHQx4n9~bYPwAmdkPuxxk26HA9LiNEpgzF3H3PnSwWLlEi2Old7Ckrr9c1fq8iCecjFD~B5e5qGN-HSsxvnviyhQbdnZ1grvXH~1KH5ajLh2iLeE9Cm2TcepqBakA8rWzT-hIXcHqTCx4bPQigzxo9WXdNa5kdosXm3fMDphE~t-WQQwyAo2uOqXcrzq7Wl0RysyLmXgmCd3VQwpwMazbDgFN4cW7ATC3Dpw5w__&Key-Pair-Id=K3RPWS32NSSJCE (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1147)')))"), '(Request ID: 29f6cf5c-f22b-4aa4-9c42-8646661366ad)')
+[2025-07-29 20:01:18,877][timm.models._builder][INFO] - Loading pretrained weights from file (/mnt/sdb/DiffusionDrive/bkb/pytorch_model.bin)
+[2025-07-29 20:01:18,949][timm.models._helpers][INFO] - Loaded  from checkpoint '/mnt/sdb/DiffusionDrive/bkb/pytorch_model.bin'
+[2025-07-29 20:01:18,970][timm.models._builder][INFO] - Missing keys (fc.weight, fc.bias) discovered while loading pretrained weights. This is expected if model is being adapted.
+Error executing job with overrides: ['agent=diffusiondrive_style_agent', 'experiment_name=training_diffusiondrive_style_agent', 'train_test_split=styletrain', 'cache_path=/mnt/sdb/StyleDrive/exp/training_cache', 'worker=sequential']
+Error in call to target 'navsim.agents.diffusiondrive.transfuser_agent.TransfuserAgent':
+FileNotFoundError(2, 'No such file or directory')
+full_key: agent
+
+Set the environment variable HYDRA_FULL_ERROR=1 for a complete stack trace.
+================================================================================
+
+[7] [Unknown Time]
+(/mnt/sdb/conda_envs/styledrive) liminzhen@adas:/mnt/sdb/StyleDrive$ bash scripts/caching/caching_training_sequential.sh
+Using NAVSIM_DEVKIT_ROOT: /mnt/sdb/StyleDrive/navsim
+Using NAVSIM_EXP_ROOT: /mnt/sdb/StyleDrive/exp
+Using sequential worker (single-threaded, most stable)
+[2025-07-29 19:59:46,181][__main__][INFO] - Global Seed set to 0
+Seed set to 0
+[2025-07-29 19:59:46,183][__main__][INFO] - Building Worker
+[2025-07-29 19:59:46,184][nuplan.planning.utils.multithreading.worker_pool][INFO] - Worker: Sequential
+[2025-07-29 19:59:46,184][nuplan.planning.utils.multithreading.worker_pool][INFO] - Number of nodes: 1
+Number of CPUs per node: 1
+Number of GPUs per node: 0
+Number of threads across all nodes: 1
+[2025-07-29 19:59:46,184][__main__][INFO] - Building SceneLoader
+Loading logs: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1192/1192 [01:27<00:00, 13.58it/s]
+[2025-07-29 20:01:16,061][__main__][INFO] - Extracted 25657 scenarios for training/validation dataset
+[2025-07-29 20:01:17,862][timm.models._builder][INFO] - Loading pretrained weights from Hugging Face hub (timm/resnet34.a1_in1k)
+Failed to load image encoder with error: (MaxRetryError("HTTPSConnectionPool(host='cdn-lfs.hf.co', port=443): Max retries exceeded with url: /repos/e8/ca/e8ca73717f8f4fc61eba9407f4a925ad59b5aacaa67dc2e46a2a4dfc4fb1b7b9/829a220f9529d2b1ffdc8719d3273463001e0daf411eaf1916865d9db62c0ed2?response-content-disposition=inline%3B+filename*%3DUTF-8%27%27model.safetensors%3B+filename%3D%22model.safetensors%22%3B&Expires=1753794176&Policy=eyJTdGF0ZW1lbnQiOlt7IkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc1Mzc5NDE3Nn19LCJSZXNvdXJjZSI6Imh0dHBzOi8vY2RuLWxmcy5oZi5jby9yZXBvcy9lOC9jYS9lOGNhNzM3MTdmOGY0ZmM2MWViYTk0MDdmNGE5MjVhZDU5YjVhYWNhYTY3ZGMyZTQ2YTJhNGRmYzRmYjFiN2I5LzgyOWEyMjBmOTUyOWQyYjFmZmRjODcxOWQzMjczNDYzMDAxZTBkYWY0MTFlYWYxOTE2ODY1ZDlkYjYyYzBlZDI~cmVzcG9uc2UtY29udGVudC1kaXNwb3NpdGlvbj0qIn1dfQ__&Signature=VshgwQp8aXk1zEVnb5PEDBJTLB-krzKhVLLvt8T0-Nhftjtk-55-weHsr23xNaOtIrpHMs3SG1D5a8DOs-lnvkyC1OyuWoP4N2QwPUQ-r-ik~482KHQx4n9~bYPwAmdkPuxxk26HA9LiNEpgzF3H3PnSwWLlEi2Old7Ckrr9c1fq8iCecjFD~B5e5qGN-HSsxvnviyhQbdnZ1grvXH~1KH5ajLh2iLeE9Cm2TcepqBakA8rWzT-hIXcHqTCx4bPQigzxo9WXdNa5kdosXm3fMDphE~t-WQQwyAo2uOqXcrzq7Wl0RysyLmXgmCd3VQwpwMazbDgFN4cW7ATC3Dpw5w__&Key-Pair-Id=K3RPWS32NSSJCE (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1147)')))"), '(Request ID: 29f6cf5c-f22b-4aa4-9c42-8646661366ad)')
+[2025-07-29 20:01:18,877][timm.models._builder][INFO] - Loading pretrained weights from file (/mnt/sdb/DiffusionDrive/bkb/pytorch_model.bin)
+[2025-07-29 20:01:18,949][timm.models._helpers][INFO] - Loaded  from checkpoint '/mnt/sdb/DiffusionDrive/bkb/pytorch_model.bin'
+[2025-07-29 20:01:18,970][timm.models._builder][INFO] - Missing keys (fc.weight, fc.bias) discovered while loading pretrained weights. This is expected if model is being adapted.
+Error executing job with overrides: ['agent=diffusiondrive_style_agent', 'experiment_name=training_diffusiondrive_style_agent', 'train_test_split=styletrain', 'cache_path=/mnt/sdb/StyleDrive/exp/training_cache', 'worker=sequential']
+Error in call to target 'navsim.agents.diffusiondrive.transfuser_agent.TransfuserAgent':
+FileNotFoundError(2, 'No such file or directory')
+full_key: agent
+
+Set the environment variable HYDRA_FULL_ERROR=1 for a complete stack trace.; 这里找不到文件具体是什么文件找不到？
+================================================================================
+
+[8] [Unknown Time]
+我运行了更加详细的调测信息命令，信息如下：  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/nuplan/planning/utils/multithreading/worker_utils.py", line 33, in worker_map
+    scattered_objects = worker.map(Task(fn=fn), object_chunks)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/nuplan/planning/utils/multithreading/worker_pool.py", line 117, in map
+    return self._map(task, *aligned_item_lists, verbose=verbose)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/nuplan/planning/utils/multithreading/worker_sequential.py", line 32, in _map
+    output = [
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/nuplan/planning/utils/multithreading/worker_sequential.py", line 33, in <listcomp>
+    task.fn(*args)
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/run_dataset_caching.py", line 38, in cache_features
+    agent: AbstractAgent = instantiate(cfg.agent)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/instantiate/_instantiate2.py", line 222, in instantiate
+    return instantiate_node(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/instantiate/_instantiate2.py", line 339, in instantiate_node
+    return _call_target(_target_, partial, args, kwargs, full_key)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/instantiate/_instantiate2.py", line 97, in _call_target
+    raise InstantiationException(msg) from e
+hydra.errors.InstantiationException: Error in call to target 'navsim.agents.diffusiondrive.transfuser_agent.TransfuserAgent':
+FileNotFoundError(2, 'No such file or directory')
+full_key: agent
+================================================================================
+
+[9] [Unknown Time]
+分析一下这个错误日志：
+No checkpoint path provided. Initializing from scratch.
+Error executing job with overrides: ['agent=diffusiondrive_style_agent', 'experiment_name=training_diffusiondrive_style_agent', 'train_test_split=styletrain', 'cache_path=/mnt/sdb/StyleDrive/exp/training_cache', 'worker=sequential']
+Traceback (most recent call last):
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/instantiate/_instantiate2.py", line 92, in _call_target
+    return _target_(*args, **kwargs)
+  File "/mnt/sdb/StyleDrive/navsim/agents/diffusiondrive/transfuser_agent.py", line 64, in __init__
+    style_dict = json.load(f)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/json/__init__.py", line 293, in load
+    return loads(fp.read(),
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/json/decoder.py", line 337, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/json/decoder.py", line 355, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/run_dataset_caching.py", line 101, in <module>
+    main()
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/main.py", line 90, in decorated_main
+    _run_hydra(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 389, in _run_hydra
+    _run_app(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 452, in _run_app
+    run_and_report(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 216, in run_and_report
+    raise ex
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 213, in run_and_report
+    return func()
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 453, in <lambda>
+    lambda: hydra.run(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/hydra.py", line 132, in run
+    _ = ret.return_value
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/core/utils.py", line 260, in return_value
+    raise self._return_value
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/core/utils.py", line 186, in run_job
+    ret.return_value = task_function(task_cfg)
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/run_dataset_caching.py", line 96, in main
+    _ = worker_map(worker, cache_features, data_points)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/nuplan/planning/utils/multithreading/worker_utils.py", line 33, in worker_map
+    scattered_objects = worker.map(Task(fn=fn), object_chunks)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/nuplan/planning/utils/multithreading/worker_pool.py", line 117, in map
+    return self._map(task, *aligned_item_lists, verbose=verbose)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/nuplan/planning/utils/multithreading/worker_sequential.py", line 32, in _map
+    output = [
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/nuplan/planning/utils/multithreading/worker_sequential.py", line 33, in <listcomp>
+    task.fn(*args)
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/run_dataset_caching.py", line 38, in cache_features
+    agent: AbstractAgent = instantiate(cfg.agent)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/instantiate/_instantiate2.py", line 222, in instantiate
+    return instantiate_node(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/instantiate/_instantiate2.py", line 339, in instantiate_node
+    return _call_target(_target_, partial, args, kwargs, full_key)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/instantiate/_instantiate2.py", line 97, in _call_target
+    raise InstantiationException(msg) from e
+hydra.errors.InstantiationException: Error in call to target 'navsim.agents.diffusiondrive.transfuser_agent.TransfuserAgent':
+JSONDecodeError('Expecting value: line 1 column 1 (char 0)')
+full_key: agent
+================================================================================
+
+[10] [Unknown Time]
+请你给出一个测试的脚本，我需要在另一台机器上运行
+================================================================================
+
+[11] [Unknown Time]
+请你给出一个测试的脚本，我需要在另一台机器上运行。注意数据集的位置在/mnt/sdb/DiffusionDrive/dataset，这个目录下也有extrac_data目录。
+================================================================================
+
+[12] [Unknown Time]
+这里的环境配置是这样的。数据主要复用DiffusionDrive目录下的数据。其他的话是本项目的。
+================================================================================
+
+[13] [Unknown Time]
+跟我解释一下 这里的数据cacheing主要在做啥，尤其是extra_data
+================================================================================
+
+[14] [Unknown Time]
+我运行 @caching_training_sequential.sh 感觉太慢了，运行 @caching_training_tran_diff.sh 报错，Failed to register worker to Raylet IOError Unable to register worker with rayley. Failed to read data from the socket 
+================================================================================
+
+[15] [Unknown Time]
+ray修复能否给我一个脚本
+================================================================================
+
+[16] [Unknown Time]
+我已经在尝试修复ray了，同时我用例threadpool这个。但是遇到这个问题[2025-07-31 16:39:45,281][timm.models._helpers][INFO] - Loaded  from checkpoint '/mnt/sdb/DiffusionDrive/bkb/pytorch_model.bin'
+[2025-07-31 16:39:45,305][timm.models._builder][INFO] - Missing keys (fc.weight, fc.bias) discovered while loading pretrained weights. This is expected if model is being adapted.
+No checkpoint path provided. Initializing from scratch.
+No checkpoint path provided. Initializing from scratch.。 这里很奇怪，似乎已经加载的模型了，为什么还说没有no checkpoint？这里只是做cacheing，为社么还涉及checkpoint？
+================================================================================
+
+[17] [Unknown Time]
+ok，回到用ray，使用ray_fix进行caching之后，又这样的报错：Traceback (most recent call last):
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/run_dataset_caching.py", line 101, in <module>
+    main()
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/main.py", line 90, in decorated_main
+    _run_hydra(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 389, in _run_hydra
+    _run_app(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 452, in _run_app
+    run_and_report(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 216, in run_and_report
+    raise ex
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 213, in run_and_report
+    return func()
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 453, in <lambda>
+    lambda: hydra.run(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/hydra.py", line 132, in run
+    _ = ret.return_value
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/core/utils.py", line 260, in return_value
+    raise self._return_value
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/core/utils.py", line 186, in run_job
+    ret.return_value = task_function(task_cfg)
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/run_dataset_caching.py", line 73, in main
+    worker: WorkerPool = instantiate(cfg.worker)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/instantiate/_instantiate2.py", line 222, in instantiate
+    return instantiate_node(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/instantiate/_instantiate2.py", line 339, in instantiate_node
+    return _call_target(_target_, partial, args, kwargs, full_key)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/instantiate/_instantiate2.py", line 97, in _call_target
+    raise InstantiationException(msg) from e
+hydra.errors.InstantiationException: Error in call to target 'navsim.planning.utils.multithreading.worker_ray_no_torch.RayDistributedNoTorch':
+ValueError('When connecting to an existing cluster, num_cpus and num_gpus must not be provided.')
+full_key: worker
+================================================================================
+
+[18] [Unknown Time]
+看来修复方式不对。Using NAVSIM_DEVKIT_ROOT: /mnt/sdb/StyleDrive/navsim
+Using NAVSIM_EXP_ROOT: /mnt/sdb/StyleDrive/exp
+Using existing Ray cluster
+Ray cluster is running:
+======== Autoscaler status: 2025-07-31 17:00:56.401996 ========
+Node status
+---------------------------------------------------------------
+Active:
+ 1 node_6421c96b2c8c669797d4b23e902a5320c76691d5aa7fc8400e06caca
+Pending:
+ (no pending nodes)
+Recent failures:
+ (no failures)
+
+Resources
+---------------------------------------------------------------
+Total Usage:
+ 0.0/72.0 CPU
+ 0.0/8.0 GPU
+ 0B/1.20TiB memory
+ 0B/186.26GiB object_store_memory
+
+Total Constraints:
+ (no request_resources() constraints)
+Total Demands:
+ (no resource demands)
+[2025-07-31 17:01:31,952][__main__][INFO] - Global Seed set to 0
+Seed set to 0
+[2025-07-31 17:01:31,955][__main__][INFO] - Building Worker
+[2025-07-31 17:01:34,938][navsim.planning.utils.multithreading.worker_ray_no_torch][INFO] - Not using GPU in ray
+[2025-07-31 17:01:34,938][navsim.planning.utils.multithreading.worker_ray_no_torch][INFO] - Starting ray local!
+2025-07-31 17:01:35,050 INFO worker.py:1747 -- Connecting to existing Ray cluster at address: 10.246.236.87:6379...
+Error executing job with overrides: ['agent=diffusiondrive_style_agent', 'experiment_name=training_diffusiondrive_style_agent', 'train_test_split=styletrain', 'cache_path=/mnt/sdb/StyleDrive/exp/training_cache', 'worker=ray_existing_cluster']
+Error in call to target 'navsim.planning.utils.multithreading.worker_ray_no_torch.RayDistributedNoTorch':
+ValueError('When connecting to an existing cluster, num_cpus and num_gpus must not be provided.')
+full_key: worker
+
+Set the environment variable HYDRA_FULL_ERROR=1 for a complete stack trace.
+================================================================================
+
+[19] [Unknown Time]
+(/mnt/sdb/conda_envs/styledrive) liminzhen@adas:/mnt/sdb/StyleDrive$ bash scripts/caching/caching_training_ray_existing.sh
+Using NAVSIM_DEVKIT_ROOT: /mnt/sdb/StyleDrive/navsim
+Using NAVSIM_EXP_ROOT: /mnt/sdb/StyleDrive/exp
+Using existing Ray cluster
+Ray cluster is running:
+======== Autoscaler status: 2025-07-31 17:09:27.311693 ========
+Node status
+---------------------------------------------------------------
+Active:
+ 1 node_6421c96b2c8c669797d4b23e902a5320c76691d5aa7fc8400e06caca
+Pending:
+ (no pending nodes)
+Recent failures:
+ (no failures)
+
+Resources
+---------------------------------------------------------------
+Total Usage:
+ 0.0/72.0 CPU
+ 0.0/8.0 GPU
+ 0B/1.20TiB memory
+ 0B/186.26GiB object_store_memory
+
+Total Constraints:
+ (no request_resources() constraints)
+Total Demands:
+ (no resource demands)
+[2025-07-31 17:10:02,748][__main__][INFO] - Global Seed set to 0
+Seed set to 0
+[2025-07-31 17:10:02,750][__main__][INFO] - Building Worker
+Error executing job with overrides: ['agent=diffusiondrive_style_agent', 'experiment_name=training_diffusiondrive_style_agent_ray', 'train_test_split=styletrain', 'cache_path=/mnt/sdb/StyleDrive/exp/training_cache', 'worker=ray_existing_cluster']
+Error in call to target 'navsim.planning.utils.multithreading.worker_ray_existing.RayExistingCluster':
+TypeError("Can't instantiate abstract class RayExistingCluster with abstract method _map")
+full_key: worker
+
+Set the environment variable HYDRA_FULL_ERROR=1 for a complete stack trace.
+(/mnt/sdb/conda_envs/styledrive) liminzhen@adas:/mnt/sdb/StyleDrive$
+================================================================================
+
+[20] [Unknown Time]
+(/mnt/sdb/conda_envs/styledrive) liminzhen@adas:/mnt/sdb/StyleDrive$ HYDRA_FULL_ERROR=1 bash scripts/caching/caching_training_ray_existing.sh
+Using NAVSIM_DEVKIT_ROOT: /mnt/sdb/StyleDrive/navsim
+Using NAVSIM_EXP_ROOT: /mnt/sdb/StyleDrive/exp
+Using existing Ray cluster
+Ray cluster is running:
+======== Autoscaler status: 2025-07-31 17:15:12.938251 ========
+Node status
+---------------------------------------------------------------
+Active:
+ 1 node_6421c96b2c8c669797d4b23e902a5320c76691d5aa7fc8400e06caca
+Pending:
+ (no pending nodes)
+Recent failures:
+ (no failures)
+
+Resources
+---------------------------------------------------------------
+Total Usage:
+ 0.0/72.0 CPU
+ 0.0/8.0 GPU
+ 0B/1.20TiB memory
+ 0B/186.26GiB object_store_memory
+
+Total Constraints:
+ (no request_resources() constraints)
+Total Demands:
+ (no resource demands)
+[2025-07-31 17:15:48,299][__main__][INFO] - Global Seed set to 0
+Seed set to 0
+[2025-07-31 17:15:48,301][__main__][INFO] - Building Worker
+Error executing job with overrides: ['agent=diffusiondrive_style_agent', 'experiment_name=training_diffusiondrive_style_agent_ray', 'train_test_split=styletrain', 'cache_path=/mnt/sdb/StyleDrive/exp/training_cache', 'worker=ray_existing_cluster']
+Traceback (most recent call last):
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/instantiate/_instantiate2.py", line 92, in _call_target
+    return _target_(*args, **kwargs)
+TypeError: Can't instantiate abstract class RayExistingCluster with abstract method _map
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/run_dataset_caching.py", line 101, in <module>
+    main()
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/main.py", line 90, in decorated_main
+    _run_hydra(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 389, in _run_hydra
+    _run_app(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 452, in _run_app
+    run_and_report(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 216, in run_and_report
+    raise ex
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 213, in run_and_report
+    return func()
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 453, in <lambda>
+    lambda: hydra.run(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/hydra.py", line 132, in run
+    _ = ret.return_value
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/core/utils.py", line 260, in return_value
+    raise self._return_value
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/core/utils.py", line 186, in run_job
+    ret.return_value = task_function(task_cfg)
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/run_dataset_caching.py", line 73, in main
+    worker: WorkerPool = instantiate(cfg.worker)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/instantiate/_instantiate2.py", line 222, in instantiate
+    return instantiate_node(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/instantiate/_instantiate2.py", line 339, in instantiate_node
+    return _call_target(_target_, partial, args, kwargs, full_key)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/instantiate/_instantiate2.py", line 97, in _call_target
+    raise InstantiationException(msg) from e
+hydra.errors.InstantiationException: Error in call to target 'navsim.planning.utils.multithreading.worker_ray_existing.RayExistingCluster':
+TypeError("Can't instantiate abstract class RayExistingCluster with abstract method _map")
+full_key: worker
+================================================================================
+
+[21] [Unknown Time]
+(/mnt/sdb/conda_envs/styledrive) liminzhen@adas:/mnt/sdb/StyleDrive$ HYDRA_FULL_ERROR=1 bash scripts/caching/caching_training_ray_existing.sh
+Using NAVSIM_DEVKIT_ROOT: /mnt/sdb/StyleDrive/navsim
+Using NAVSIM_EXP_ROOT: /mnt/sdb/StyleDrive/exp
+Using existing Ray cluster
+Ray cluster is running:
+======== Autoscaler status: 2025-07-31 17:26:29.177175 ========
+Node status
+---------------------------------------------------------------
+Active:
+ 1 node_6421c96b2c8c669797d4b23e902a5320c76691d5aa7fc8400e06caca
+Pending:
+ (no pending nodes)
+Recent failures:
+ (no failures)
+
+Resources
+---------------------------------------------------------------
+Total Usage:
+ 0.0/72.0 CPU
+ 0.0/8.0 GPU
+ 0B/1.20TiB memory
+ 0B/186.26GiB object_store_memory
+
+Total Constraints:
+ (no request_resources() constraints)
+Total Demands:
+ (no resource demands)
+[2025-07-31 17:27:02,636][__main__][INFO] - Global Seed set to 0
+Seed set to 0
+[2025-07-31 17:27:02,638][__main__][INFO] - Building Worker
+Error executing job with overrides: ['agent=diffusiondrive_style_agent', 'experiment_name=training_diffusiondrive_style_agent_ray', 'train_test_split=styletrain', 'cache_path=/mnt/sdb/StyleDrive/exp/training_cache', 'worker=ray_existing_cluster']
+Traceback (most recent call last):
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/instantiate/_instantiate2.py", line 92, in _call_target
+    return _target_(*args, **kwargs)
+  File "/mnt/sdb/StyleDrive/navsim/planning/utils/multithreading/worker_ray_existing.py", line 40, in __init__
+    super().__init__()
+TypeError: __init__() missing 1 required positional argument: 'config'
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/run_dataset_caching.py", line 101, in <module>
+    main()
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/main.py", line 90, in decorated_main
+    _run_hydra(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 389, in _run_hydra
+    _run_app(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 452, in _run_app
+    run_and_report(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 216, in run_and_report
+    raise ex
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 213, in run_and_report
+    return func()
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 453, in <lambda>
+    lambda: hydra.run(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/hydra.py", line 132, in run
+    _ = ret.return_value
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/core/utils.py", line 260, in return_value
+    raise self._return_value
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/core/utils.py", line 186, in run_job
+    ret.return_value = task_function(task_cfg)
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/run_dataset_caching.py", line 73, in main
+    worker: WorkerPool = instantiate(cfg.worker)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/instantiate/_instantiate2.py", line 222, in instantiate
+    return instantiate_node(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/instantiate/_instantiate2.py", line 339, in instantiate_node
+    return _call_target(_target_, partial, args, kwargs, full_key)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/instantiate/_instantiate2.py", line 97, in _call_target
+    raise InstantiationException(msg) from e
+hydra.errors.InstantiationException: Error in call to target 'navsim.planning.utils.multithreading.worker_ray_existing.RayExistingCluster':
+TypeError("__init__() missing 1 required positional argument: 'config'")
+full_key: worker
+================================================================================
+
+[22] [Unknown Time]
+(/mnt/sdb/conda_envs/styledrive) liminzhen@adas:/mnt/sdb/StyleDrive$ HYDRA_FULL_ERROR=1 bash scripts/caching/run_metric_caching.sh
+2025-07-31 19:13:45,775 INFO {/mnt/sdb/StyleDrive/navsim/planning/script/builders/worker_pool_builder.py:20}  Building WorkerPool...
+2025-07-31 19:13:48,658 INFO {/mnt/sdb/StyleDrive/navsim/planning/utils/multithreading/worker_ray_no_torch.py:51}  Not using GPU in ray
+2025-07-31 19:13:48,658 INFO {/mnt/sdb/StyleDrive/navsim/planning/utils/multithreading/worker_ray_no_torch.py:77}  Starting ray local!
+2025-07-31 19:13:48,760 INFO worker.py:1747 -- Connecting to existing Ray cluster at address: 10.246.236.87:6379...
+Error executing job with overrides: ['train_test_split=styletest', 'cache.cache_path=/mnt/sdb/StyleDrive/exp/metric_cache']
+Traceback (most recent call last):
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/instantiate/_instantiate2.py", line 92, in _call_target
+    return _target_(*args, **kwargs)
+  File "/mnt/sdb/StyleDrive/navsim/planning/utils/multithreading/worker_ray_no_torch.py", line 125, in __init__
+    super().__init__(self.initialize())
+  File "/mnt/sdb/StyleDrive/navsim/planning/utils/multithreading/worker_ray_no_torch.py", line 137, in initialize
+    return initialize_ray(
+  File "/mnt/sdb/StyleDrive/navsim/planning/utils/multithreading/worker_ray_no_torch.py", line 78, in initialize_ray
+    ray.init(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/ray/_private/client_mode_hook.py", line 104, in wrapper
+    return func(*args, **kwargs)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/ray/_private/worker.py", line 1835, in init
+    raise ValueError(
+ValueError: When connecting to an existing cluster, num_cpus and num_gpus must not be provided.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/run_metric_caching.py", line 36, in <module>
+    main()
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/main.py", line 90, in decorated_main
+    _run_hydra(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 389, in _run_hydra
+    _run_app(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 452, in _run_app
+    run_and_report(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 216, in run_and_report
+    raise ex
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 213, in run_and_report
+    return func()
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 453, in <lambda>
+    lambda: hydra.run(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/hydra.py", line 132, in run
+    _ = ret.return_value
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/core/utils.py", line 260, in return_value
+    raise self._return_value
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/core/utils.py", line 186, in run_job
+    ret.return_value = task_function(task_cfg)
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/run_metric_caching.py", line 26, in main
+    worker = build_worker(cfg)
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/builders/worker_pool_builder.py", line 27, in build_worker
+    else instantiate(cfg.worker, output_dir=cfg.output_dir)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/instantiate/_instantiate2.py", line 222, in instantiate
+    return instantiate_node(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/instantiate/_instantiate2.py", line 339, in instantiate_node
+    return _call_target(_target_, partial, args, kwargs, full_key)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/instantiate/_instantiate2.py", line 97, in _call_target
+    raise InstantiationException(msg) from e
+hydra.errors.InstantiationException: Error in call to target 'navsim.planning.utils.multithreading.worker_ray_no_torch.RayDistributedNoTorch':
+ValueError('When connecting to an existing cluster, num_cpus and num_gpus must not be provided.')
+full_key: worker； 先不用改代码，先分析一下是为什么。因为navsim是通用框架，理论上应该不会有很严重的问题
+================================================================================
+
+[23] [Unknown Time]
+的确，我手动ray stop之后就没有报这个问题了，但是报了其他的问题：During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/run_metric_caching.py", line 36, in <module>
+    main()
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/main.py", line 90, in decorated_main
+    _run_hydra(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 389, in _run_hydra
+    _run_app(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 452, in _run_app
+    run_and_report(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 216, in run_and_report
+    raise ex
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 213, in run_and_report
+    return func()
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 453, in <lambda>
+    lambda: hydra.run(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/hydra.py", line 132, in run
+    _ = ret.return_value
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/core/utils.py", line 260, in return_value
+    raise self._return_value
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/core/utils.py", line 186, in run_job
+    ret.return_value = task_function(task_cfg)
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/run_metric_caching.py", line 32, in main
+    cache_data(cfg=cfg, worker=worker)
+  File "/mnt/sdb/StyleDrive/navsim/planning/metric_caching/caching.py", line 142, in cache_data
+    cache_results = worker_map(worker, cache_scenarios, data_points)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/nuplan/planning/utils/multithreading/worker_utils.py", line 33, in worker_map
+    scattered_objects = worker.map(Task(fn=fn), object_chunks)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/nuplan/planning/utils/multithreading/worker_pool.py", line 117, in map
+    return self._map(task, *aligned_item_lists, verbose=verbose)
+  File "/mnt/sdb/StyleDrive/navsim/planning/utils/multithreading/worker_ray_no_torch.py", line 154, in _map
+    return ray_map(task, *item_lists, log_dir=self._log_dir)  # type: ignore
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/nuplan/planning/utils/multithreading/ray_execution.py", line 122, in ray_map
+    raise RuntimeError(exc)
+RuntimeError: ray::wrapped_fn() (pid=11685, ip=10.246.236.87)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/nuplan/planning/utils/multithreading/ray_execution.py", line 59, in wrapped_fn
+    result = fn(*args, **kwargs)
+  File "/mnt/sdb/StyleDrive/navsim/planning/metric_caching/caching.py", line 107, in cache_scenarios
+    result = cache_scenarios_internal(args)
+  File "/mnt/sdb/StyleDrive/navsim/planning/metric_caching/caching.py", line 91, in cache_scenarios_internal
+    file_cache_metadata = cache_single_scenario(scene_dict, processor)
+  File "/mnt/sdb/StyleDrive/navsim/planning/metric_caching/caching.py", line 56, in cache_single_scenario
+    return processor.compute_metric_cache(scenario)
+  File "/mnt/sdb/StyleDrive/navsim/planning/metric_caching/metric_cache_processor.py", line 219, in compute_metric_cache
+    pdm_closed_trajectory = self._pdm_closed.compute_planner_trajectory(planner_input)
+  File "/mnt/sdb/StyleDrive/navsim/planning/simulation/planner/pdm_planner/pdm_closed_planner.py", line 78, in compute_planner_trajectory
+    trajectory = self._get_closed_loop_trajectory(current_input)
+  File "/mnt/sdb/StyleDrive/navsim/planning/simulation/planner/pdm_planner/abstract_pdm_closed_planner.py", line 141, in _get_closed_loop_trajectory
+    proposal_scores = self._scorer.score_proposals(
+TypeError: score_proposals() missing 1 required positional argument: 'style'
+================================================================================
+
+[24] [Unknown Time]
+这里的训练脚本启动后，gpu并没有用满，只用了两张卡
+================================================================================
+
+[25] [Unknown Time]
+这里的训练脚本启动后，gpu并没有用满，只用了两张卡（默认local rank0， rank1）； 这个可以改吗？我有8张卡
+================================================================================
+
+[26] [Unknown Time]
+这篇论文我要重点看一下风格向量是如何注入网络的，尤其的diffusiondrive、transfuser、mlp的方法。
+================================================================================
+
+[27] [Unknown Time]
+这篇论文我要重点看一下风格向量是如何注入网络的，尤其的diffusiondrive、transfuser、mlp的方法。原文部分关键方法我放在这里：To establish a reference point for the community, we implement several baseline models that incorporate representative end-to-end autonomous driving (E2EAD) architectures augmented with
+driving style features. These baselines span different model complexities and design paradigms
+across various stages of E2EAD development. Specifically, we adapt three representative methods:
+• AD-MLP-Style: Based on the AD-MLP baseline Zhai et al. [2023], this model uses a classic
+multi-layer perceptron for trajectory prediction. The input consists of standard ego-centric features
+concatenated with a one-hot encoded driving style vector. The combined features are fed into an
+MLP to produce style-aware trajectory predictions in a simple yet interpretable manner.
+• TransFuser-Style: Built on the TransFuser architecture Chitta et al. [2022], which fuses image and
+LiDAR features for planning, we introduce driving style conditioning by concatenating a one-hot
+style vector with the trajectory query. The fused representation is processed by an MLP to restore
+the original query dimension before being passed to the trajectory head for style-aware generation.
+• DiffusionDrive-Style: Based on the diffusion planning framework Liao et al. [2025], this variant
+conditions the trajectory generation head on a one-hot style vector. The style vector is concatenated
+with agent features and fused via a single-layer MLP, then passed to a regression MLP for trajectory
+prediction. Following DiffusionDrive, this block runs twice in a cascaded manner to refine outputs.
+• WoTE-Style: Built on the BEV World model Li et al. [2025], which forecasts future BEV states
+for trajectory evaluation, this variant incorporates driving style by modifying the offset prediction
+head, following a similar strategy as in DiffusionDrive-Style.
+================================================================================
+
+[28] [Unknown Time]
+请你给我一个tutorial，我需要实现切换s，实现风格切换这个效果，把不同风格的轨迹可以可视化出来
+================================================================================
+
+[29] [Unknown Time]
+请你给我一个tutorial，我需要实现风格切换（推理时是如何注入风格的），实现风格切换这个效果，把不同风格的轨迹可以可视化出来
+================================================================================
+
+[30] [Unknown Time]
+Traceback (most recent call last):
+  File "/mnt/sdb/DiffusionDrive/trajectory_app/test_bev_semantic_features.py", line 29, in test_bev_semantic_features
+    from app import TrajectoryPredictionApp
+  File "/mnt/sdb/DiffusionDrive/trajectory_app/app.py", line 14, in <module>
+    from .inference_engine import TrajectoryInferenceEngine
+ImportError: attempted relative import with no known parent package
+================================================================================
+
+[31] [Unknown Time]
+请你给我一个tutorial，我需要实现风格切换（推理时是如何注入风格的），实现风格切换这个效果，把不同风格的轨迹可以可视化出来。但是注意哈，这里可以做一个app目录， 在这个目录里面实现推理。 具体实现可以参考 这个项目：@https://github.com/magis-techno/DiffusionDrive/tree/main/trajectory_app 这个目录实现了diffusiondrive的预测功能。我们这边是想做diffusiondrive结合style的推理，尽可能复用代码。先不写代码，讲一下方案
+================================================================================
+
+[32] [Unknown Time]
+应用界面都不需要。在jupyternotebook里面呈现就可以，再明确一下方案吧，把需要开发的项做成todolist
+================================================================================
+
+[33] [Unknown Time]
+我觉得可以，有可能再简化一些吗？我就想用diffusiondrive-style结合的这个网络，说白了就是推理一把这个网络。再给一下方案
+================================================================================
+
+[34] [Unknown Time]
+可以，开始干吧
+================================================================================
+
+[35] [Unknown Time]
+这个ipynb太失败了，你先跟我讲一下里面有哪些内容，不要直接写代码
+================================================================================
+
+[36] [Unknown Time]
+6、7不需要。这个看上去没问题，但是我不知道你之前为什么还在那边mock轨迹。 这个轨迹应该是推理推出来的。另外尽可能简化吧。先出一个最简要的版本，基础功能都具备的
+================================================================================
+
+[37] [Unknown Time]
+可以开始干
+================================================================================
+
+[38] [Unknown Time]
+加载数据这里稍微改一下，我不知道场景的token，能否参照这里的实现，可以加载任意场景，先讲方案，不要改代码：@https://github.com/magis-techno/DiffusionDrive/blob/main/test_bev_semantic_features.py 
+================================================================================
+
+[39] [Unknown Time]
+我觉得不行，我要直接复用@https://github.com/magis-techno/DiffusionDrive/blob/main/trajectory_app/app.py @https://github.com/magis-techno/DiffusionDrive/blob/main/trajectory_app/data_manager.py 。这里的代码，实现随机取一个场景
+================================================================================
+
+[40] [Unknown Time]
+我把整个trajectory_app拷贝过来了。尽快复用，先给方案
+================================================================================
+
+[41] [Unknown Time]
+能否把style_trajectory_app完善一下，变成完备的app。可以完全copy trajectory_app里面的代码。 实现之后，我会把trajectory_app删除。
+================================================================================
+
+[42] [Unknown Time]
+能否把style_trajectory_app完善一下，变成完备的app。可以完全copy trajectory_app里面的代码。 实现之后，我会把trajectory_app删除。不过这里还是保持style_trajectory_app很简洁，功能不要太扩展了，就是支持场景的选择（比如随机一个场景），先讲方案，不改代码
+================================================================================
+
+[43] [Unknown Time]
+可以开始干吧
+================================================================================
+
+[44] [Unknown Time]
+我如何运行？我现在不想通过界面启动，能否命令行运行，可以输出文件
+================================================================================
+
+[45] [Unknown Time]
+这个不对啊，都审视一下有没有类似问题
+================================================================================
+
+[46] [Unknown Time]
+这里加载数据的逻辑还是 不太对，参照train_eval脚本，数据集是固定的目录，然后通过split里面来确认要哪个数据集。 所以是不用指定数据集路径的（sensor_blobs、navsim_logs都是在不同目录，无法指定一个目录搞定），请你按照最小改动的原则，给出修改方案
+================================================================================
+
+[47] [Unknown Time]
+我运行run_style_demo报错。主要是加载数据目录报错。这里加载数据的逻辑还是 不太对，参照train_eval脚本，数据集是固定的目录，然后通过split里面来确认要哪个数据集。 所以是不用指定数据集路径的（sensor_blobs、navsim_logs都是在不同目录，无法指定一个目录搞定），请你按照最小改动的原则，给出修改方案，先不改代码
+================================================================================
+
+[48] [Unknown Time]
+参数名改一下，就是和原来保持一致是split，因为也可能输入mini作为参数。 我还是准备运行run_style_demo进行测试，修改代码。不需要尝试运行
+================================================================================
+
+[49] [Unknown Time]
+报错如下，是不是再仔细梳理一下，不要再发生类似的问题，先不改代码，讲问题和方案：Warning: navsim visualization modules not available. Using simplified plotting.
+🚀 启动StyleTrajectoryApp命令行版本
+============================================================
+📁 输出目录: /mnt/sdb/StyleDrive/style_trajectory_results
+
+🔧 初始化应用...
+  - 检查点: bkb/benchmark-diffusiondrive-style.ckpt
+  - 数据集split: mini
+  - 数据集根目录: /mnt/sdb/DiffusionDrive/dataset
+  - 学习率: 0.0006
+2025-08-01 09:44:30,758 - style_trajectory_app.app - INFO - Initializing style trajectory application components...
+2025-08-01 09:44:30,758 - style_trajectory_app.app - INFO - Loading DiffusionDrive-Style model...
+2025-08-01 09:44:30,821 - style_trajectory_app.inference_engine - INFO - Initializing style-aware inference engine
+2025-08-01 09:44:30,821 - style_trajectory_app.inference_engine - INFO - Checkpoint: bkb/benchmark-diffusiondrive-style.ckpt
+2025-08-01 09:44:30,821 - style_trajectory_app.inference_engine - INFO - Using device: cuda
+2025-08-01 09:44:31,302 - timm.models._builder - INFO - Loading pretrained weights from file (/mnt/sdb/DiffusionDrive/bkb/pytorch_model.bin)
+2025-08-01 09:44:31,379 - timm.models._helpers - INFO - Loaded  from checkpoint '/mnt/sdb/DiffusionDrive/bkb/pytorch_model.bin'
+2025-08-01 09:44:31,398 - timm.models._builder - INFO - Missing keys (fc.weight, fc.bias) discovered while loading pretrained weights. This is expected if model is being adapted.
+2025-08-01 09:44:34,634 - style_trajectory_app.inference_engine - INFO - Loading checkpoint from: bkb/benchmark-diffusiondrive-style.ckpt
+2025-08-01 09:44:35,779 - style_trajectory_app.inference_engine - INFO - Model loaded successfully in 4.96s
+2025-08-01 09:44:35,779 - style_trajectory_app.inference_engine - INFO - Model device: cuda
+2025-08-01 09:44:35,779 - style_trajectory_app.inference_engine - INFO - CUDA available: True
+2025-08-01 09:44:35,779 - style_trajectory_app.inference_engine - INFO - Sensor config: SensorConfig(cam_f0=[3], cam_l0=[3], cam_l1=[3], cam_l2=[3], cam_r0=[3], cam_r1=[3], cam_r2=[3], cam_b0=[3], lidar_pc=[3])
+2025-08-01 09:44:35,779 - style_trajectory_app.inference_engine - INFO - Model parameters are on: cuda:0
+2025-08-01 09:44:35,779 - style_trajectory_app.inference_engine - WARNING - Device mismatch detected! Expected: cuda, Found: cuda:0
+2025-08-01 09:44:35,779 - style_trajectory_app.app - INFO - Initializing data manager...
+Loading logs: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 64/64 [00:08<00:00,  7.43it/s]
+2025-08-01 09:44:44,394 - style_trajectory_app.data_manager - INFO - Data manager initialized with 3615 scenes
+2025-08-01 09:44:44,394 - style_trajectory_app.data_manager - INFO - NavSim logs path: /mnt/sdb/DiffusionDrive/dataset/navsim_logs/mini
+2025-08-01 09:44:44,394 - style_trajectory_app.data_manager - INFO - Sensor blobs path: /mnt/sdb/DiffusionDrive/dataset/sensor_blobs/mini
+2025-08-01 09:44:44,395 - style_trajectory_app.data_manager - INFO - Dataset split: mini
+❌ 应用初始化失败: 'StyleTrajectoryDataManager' object has no attribute 'dataset_path'
+================================================================================
+
+[50] [Unknown Time]
+好的修改吧。不用尝试运行
+================================================================================
+
+[51] [Unknown Time]
+已经生效了很好。 另外我想有参照 @tutorial_visualization.ipynb 里面的方法，我想在bev视角下也可视化几个轨迹，这样对轨迹的理解更加充分。帮我设计方案，最小改动；先不写代码
+================================================================================
+
+[52] [Unknown Time]
+好的，写代码吧
+================================================================================
+
+[53] [Unknown Time]
+我其实想可视化看一下评测的结果，比如其中任意一个评测对象，会计算pdm（针对此项目还会结合style的判别），能否在from navsim.visualization的基础上，把评测的结果也打印出来？ 先给方案。我理解新开发的量应该不大，因为复用的是已有的eval和vis的代码。先不要写代码
+================================================================================
+
+[54] [Unknown Time]
+我觉得可以，开始开发吧。注意可视化的这部分，充分复用add_annotation_to_bev_ax这个方案。并且这个渲染，向上是x的正方向，向左是y的正方向
+================================================================================
+
+[55] [Unknown Time]
+运行了脚本后有这个报错，先分析原因，不要改代码。看一下这个报错：(/mnt/sdb/conda_envs/styledrive) liminzhen@adas:/mnt/sdb/StyleDrive$ bash scripts/evaluation/run_pdm_score_with_visualization.sh /mnt/sdb/StyleDrive/exp/training_diffusiondrive_style_agent/2025.07.31.19.35.42/lightning_logs/version_0/checkpoints/last.ckpt  diffusiondrive_style_agent
+Running PDM evaluation with visualization...
+Checkpoint: /mnt/sdb/StyleDrive/exp/training_diffusiondrive_style_agent/2025.07.31.19.35.42/lightning_logs/version_0/checkpoints/last.ckpt
+Agent: diffusiondrive_style_agent
+Split: styletest
+Traceback (most recent call last):
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/run_pdm_score_with_visualization.py", line 23, in <module>
+    from navsim.planning.metric_caching.metric_cache_processor import MetricCacheLoader
+ImportError: cannot import name 'MetricCacheLoader' from 'navsim.planning.metric_caching.metric_cache_processor' (/mnt/sdb/StyleDrive/navsim/planning/metric_caching/metric_cache_processor.py)
+Evaluation completed. Check output directory for visualizations.
+================================================================================
+
+[56] [Unknown Time]
+排查并修改至正确，不用尝试运行
+================================================================================
+
+[57] [Unknown Time]
+把这个import错误修改掉吧。最小改动原则
+================================================================================
+
+[58] [Unknown Time]
+又报了另一个同类型错误，build_observation_wrapper无法import
+================================================================================
+
+[59] [Unknown Time]
+last.ckpt  diffusiondrive_style_agent
+Running PDM evaluation with visualization...
+Checkpoint: /mnt/sdb/StyleDrive/exp/training_diffusiondrive_style_agent/2025.07.31.19.35.42/lightning_logs/version_0/checkpoints/last.ckpt
+Agent: diffusiondrive_style_agent
+Split: styletest
+Traceback (most recent call last):
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/run_pdm_score_with_visualization.py", line 298, in <module>
+    main()
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/main.py", line 90, in decorated_main
+    _run_hydra(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 389, in _run_hydra
+    _run_app(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 452, in _run_app
+    run_and_report(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 216, in run_and_report
+    raise ex
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 213, in run_and_report
+    return func()
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 453, in <lambda>
+    lambda: hydra.run(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/hydra.py", line 105, in run
+    cfg = self.compose_config(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/hydra.py", line 594, in compose_config
+    cfg = self.config_loader.load_configuration(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/config_loader_impl.py", line 141, in load_configuration
+    return self._load_configuration_impl(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/config_loader_impl.py", line 242, in _load_configuration_impl
+    defaults_list = create_defaults_list(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/defaults_list.py", line 750, in create_defaults_list
+    defaults, tree = _create_defaults_list(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/defaults_list.py", line 720, in _create_defaults_list
+    defaults_tree = _create_defaults_tree(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/defaults_list.py", line 356, in _create_defaults_tree
+    ret = _create_defaults_tree_impl(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/defaults_list.py", line 457, in _create_defaults_tree_impl
+    return _expand_virtual_root(repo, root, overrides, skip_missing)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/defaults_list.py", line 280, in _expand_virtual_root
+    subtree = _create_defaults_tree_impl(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/defaults_list.py", line 577, in _create_defaults_tree_impl
+    add_child(children, new_root)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/defaults_list.py", line 520, in add_child
+    subtree_ = _create_defaults_tree_impl(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/defaults_list.py", line 577, in _create_defaults_tree_impl
+    add_child(children, new_root)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/defaults_list.py", line 520, in add_child
+    subtree_ = _create_defaults_tree_impl(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/defaults_list.py", line 488, in _create_defaults_tree_impl
+    config_not_found_error(repo=repo, tree=root)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/defaults_list.py", line 804, in config_not_found_error
+    raise MissingConfigException(
+hydra.errors.MissingConfigException: In 'default_run_pdm_score': Could not find 'agent/constant_velocity_agent'
+
+Config search path:
+        provider=hydra, path=pkg://hydra.conf
+        provider=main, path=file:///mnt/sdb/StyleDrive/navsim/planning/script/config/pdm_scoring
+        provider=schema, path=structured://
+Evaluation completed. Check output directory for visualizations.
+================================================================================
+
+[60] [Unknown Time]
+ok 已经起ray的任务了，但是又报错了：Error executing job with overrides: ['train_test_split=styletest', 'agent=diffusiondrive_style_agent', 'agent.checkpoint_path=/mnt/sdb/StyleDrive/exp/training_diffusiondrive_style_agent/2025.07.31.19.35.42/lightning_logs/version_0/checkpoints/last.ckpt', 'experiment_name=eval_diffusiondrive_style_agent_with_viz', 'enable_visualization=true', 'max_visualizations=20']
+Traceback (most recent call last):
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/run_pdm_score_with_visualization.py", line 298, in <module>
+    main()
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/main.py", line 90, in decorated_main
+    _run_hydra(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 389, in _run_hydra
+    _run_app(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 452, in _run_app
+    run_and_report(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 216, in run_and_report
+    raise ex
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 213, in run_and_report
+    return func()
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 453, in <lambda>
+    lambda: hydra.run(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/hydra.py", line 132, in run
+    _ = ret.return_value
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/core/utils.py", line 260, in return_value
+    raise self._return_value
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/core/utils.py", line 186, in run_job
+    ret.return_value = task_function(task_cfg)
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/run_pdm_score_with_visualization.py", line 254, in main
+    worker = build_worker(cfg.worker)
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/builders/worker_pool_builder.py", line 24, in build_worker
+    is_target_type(cfg.worker, SingleMachineParallelExecutor)
+AttributeError: 'str' object has no attribute 'worker'
+Evaluation completed. Check output directory for visualizations.
+================================================================================
+
+[61] [Unknown Time]
+报错 hydra.error.ConfigComposiitionException: Multiple values for workers. to overrdie a value use 'override worker: sequential'
+================================================================================
+
+[62] [Unknown Time]
+还是报错，能否看一下做的思路是否正确？先给方案，不要改代码：Error executing job with overrides: ['train_test_split=styletest', 'agent=diffusiondrive_style_agent', 'agent.checkpoint_path=/mnt/sdb/StyleDrive/exp/training_diffusiondrive_style_agent/2025.07.31.19.35.42/lightning_logs/version_0/checkpoints/last.ckpt', 'experiment_name=eval_diffusiondrive_style_agent_with_viz', 'enable_visualization=true', 'max_visualizations=20']
+Traceback (most recent call last):
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/run_pdm_score_with_visualization.py", line 298, in <module>
+    main()
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/main.py", line 90, in decorated_main
+    _run_hydra(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 389, in _run_hydra
+    _run_app(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 452, in _run_app
+    run_and_report(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 216, in run_and_report
+    raise ex
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 213, in run_and_report
+    return func()
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 453, in <lambda>
+    lambda: hydra.run(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/hydra.py", line 132, in run
+    _ = ret.return_value
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/core/utils.py", line 260, in return_value
+    raise self._return_value
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/core/utils.py", line 186, in run_job
+    ret.return_value = task_function(task_cfg)
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/run_pdm_score_with_visualization.py", line 254, in main
+    worker = build_worker(cfg.worker)
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/builders/worker_pool_builder.py", line 24, in build_worker
+    is_target_type(cfg.worker, SingleMachineParallelExecutor)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/dictconfig.py", line 359, in __getattr__
+    self._format_and_raise(key=key, value=None, cause=e)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/base.py", line 231, in _format_and_raise
+    format_and_raise(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/_utils.py", line 819, in format_and_raise
+    _raise(ex, cause)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/_utils.py", line 797, in _raise
+    raise ex.with_traceback(sys.exc_info()[2])  # set env var OC_CAUSE=1 for full trace
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/dictconfig.py", line 351, in __getattr__
+    return self._get_impl(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/dictconfig.py", line 442, in _get_impl
+    node = self._get_child(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/basecontainer.py", line 73, in _get_child
+    child = self._get_node(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/dictconfig.py", line 475, in _get_node
+    self._validate_get(key)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/dictconfig.py", line 164, in _validate_get
+    self._format_and_raise(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/base.py", line 231, in _format_and_raise
+    format_and_raise(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/_utils.py", line 899, in format_and_raise
+    _raise(ex, cause)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/_utils.py", line 797, in _raise
+    raise ex.with_traceback(sys.exc_info()[2])  # set env var OC_CAUSE=1 for full trace
+omegaconf.errors.ConfigAttributeError: Key 'worker' is not in struct
+    full_key: worker.worker
+    object_type=dict
+Evaluation completed. Check output directory for visualizations.
+================================================================================
+
+[63] [Unknown Time]
+可以啊 那之前改的无效的修改是不是要回退？
+================================================================================
+
+[64] [Unknown Time]
+Error executing job with overrides: ['train_test_split=styletest', 'agent=diffusiondrive_style_agent', 'agent.checkpoint_path=/mnt/sdb/StyleDrive/exp/training_diffusiondrive_style_agent/2025.07.31.19.35.42/lightning_logs/version_0/checkpoints/last.ckpt', 'experiment_name=eval_diffusiondrive_style_agent_with_viz', 'enable_visualization=true', 'max_visualizations=20']
+Traceback (most recent call last):
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/run_pdm_score_with_visualization.py", line 298, in <module>
+    main()
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/main.py", line 90, in decorated_main
+    _run_hydra(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 389, in _run_hydra
+    _run_app(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 452, in _run_app
+    run_and_report(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 216, in run_and_report
+    raise ex
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 213, in run_and_report
+    return func()
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 453, in <lambda>
+    lambda: hydra.run(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/hydra.py", line 132, in run
+    _ = ret.return_value
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/core/utils.py", line 260, in return_value
+    raise self._return_value
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/core/utils.py", line 186, in run_job
+    ret.return_value = task_function(task_cfg)
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/run_pdm_score_with_visualization.py", line 254, in main
+    worker = build_worker(cfg.worker)
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/builders/worker_pool_builder.py", line 24, in build_worker
+    is_target_type(cfg.worker, SingleMachineParallelExecutor)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/dictconfig.py", line 359, in __getattr__
+    self._format_and_raise(key=key, value=None, cause=e)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/base.py", line 231, in _format_and_raise
+    format_and_raise(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/_utils.py", line 819, in format_and_raise
+    _raise(ex, cause)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/_utils.py", line 797, in _raise
+    raise ex.with_traceback(sys.exc_info()[2])  # set env var OC_CAUSE=1 for full trace
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/dictconfig.py", line 351, in __getattr__
+    return self._get_impl(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/dictconfig.py", line 442, in _get_impl
+    node = self._get_child(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/basecontainer.py", line 73, in _get_child
+    child = self._get_node(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/dictconfig.py", line 475, in _get_node
+    self._validate_get(key)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/dictconfig.py", line 164, in _validate_get
+    self._format_and_raise(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/base.py", line 231, in _format_and_raise
+    format_and_raise(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/_utils.py", line 899, in format_and_raise
+    _raise(ex, cause)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/_utils.py", line 797, in _raise
+    raise ex.with_traceback(sys.exc_info()[2])  # set env var OC_CAUSE=1 for full trace
+omegaconf.errors.ConfigAttributeError: Key 'worker' is not in struct
+    full_key: worker.worker
+    object_type=dict
+Evaluation completed. Check output directory for visualizations.
+================================================================================
+
+[65] [Unknown Time]
+Traceback (most recent call last):
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/config_loader_impl.py", line 379, in _apply_overrides_to_config
+    OmegaConf.update(cfg, key, value, merge=True)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/omegaconf.py", line 741, in update
+    root.__setattr__(last_key, value)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/dictconfig.py", line 337, in __setattr__
+    raise e
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/dictconfig.py", line 334, in __setattr__
+    self.__set_impl(key, value)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/dictconfig.py", line 318, in __set_impl
+    self._set_item_impl(key, value)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/basecontainer.py", line 549, in _set_item_impl
+    self._validate_set(key, value)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/dictconfig.py", line 180, in _validate_set
+    target = self._get_node(key) if key is not None else self
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/dictconfig.py", line 475, in _get_node
+    self._validate_get(key)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/dictconfig.py", line 164, in _validate_get
+    self._format_and_raise(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/base.py", line 231, in _format_and_raise
+    format_and_raise(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/_utils.py", line 899, in format_and_raise
+    _raise(ex, cause)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/omegaconf/_utils.py", line 797, in _raise
+    raise ex.with_traceback(sys.exc_info()[2])  # set env var OC_CAUSE=1 for full trace
+omegaconf.errors.ConfigAttributeError: Key 'enable_visualization' is not in struct
+    full_key: enable_visualization
+    object_type=dict
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/mnt/sdb/StyleDrive/navsim/planning/script/run_pdm_score.py", line 262, in <module>
+    main()
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/main.py", line 90, in decorated_main
+    _run_hydra(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 389, in _run_hydra
+    _run_app(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 452, in _run_app
+    run_and_report(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 216, in run_and_report
+    raise ex
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 213, in run_and_report
+    return func()
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/utils.py", line 453, in <lambda>
+    lambda: hydra.run(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/hydra.py", line 105, in run
+    cfg = self.compose_config(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/hydra.py", line 594, in compose_config
+    cfg = self.config_loader.load_configuration(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/config_loader_impl.py", line 141, in load_configuration
+    return self._load_configuration_impl(
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/config_loader_impl.py", line 265, in _load_configuration_impl
+    ConfigLoaderImpl._apply_overrides_to_config(config_overrides, cfg)
+  File "/mnt/sdb/conda_envs/styledrive/lib/python3.9/site-packages/hydra/_internal/config_loader_impl.py", line 381, in _apply_overrides_to_config
+    raise ConfigCompositionException(
+hydra.errors.ConfigCompositionException: Could not override 'enable_visualization'.
+To append to your config use +enable_visualization=true
+Evaluation completed. Check output directory for visualizations.
+================================================================================
+
+[66] [Unknown Time]
+报错 failed to generate visualization for *** ‘interpolatedTrajectory’ object has no attribute ‘pose’
+================================================================================
+
+[67] [Unknown Time]
+还是报一样的错
+================================================================================
+
+[68] [Unknown Time] *** 多模态 ***
+我找了给代码解读，他说的对吗？理解一下，然后还是帮我指出在训练阶段、推理阶段，是如何注入风格的：一、训练阶段：相对 DiffusionDrive 的改动点（在哪一层、怎么改）
+1) 数据侧：给样本加上风格 one-hot（缓存/加载）
+入口：navsim/planning/script/run_training.py
+将 agent._with_style 与 agent._styletrain_path 传入 Dataset(...)。
+
+数据集：navsim/planning/training/dataset.py
+
+Dataset.__init__：如果 with_style=True 且 style_path_root 给到，则读取 JSON，得到每个 token 的风格标签（A/N/C）。
+
+Dataset.cache_dataset()：在缓存特征时，把风格转成 one-hot(3)，塞入 data_dict["style_feature"]，随其他特征一起落盘。
+
+__getitem__ 读缓存时，会把 style_feature 连同普通特征一起交给模型。
+
+小结：数据流水线新增了 “为每个样本附带 style_feature（one-hot）” 这一步。
+
+2) 模型侧：在“规划头”前融合风格
+两条实现都在“规划/轨迹头”环节注入，不改感知主干。
+
+TransFuser（非扩散版）
+文件：navsim/agents/transfuser/transfuser_model.py
+做法：
+
+self._with_style 打开时，定义 self._style_project = Linear(d_model+3 → d_model)；
+
+forward() 里把 style_feature 扩展到 N 个轨迹查询的批次维，与 trajectory_query 拼接，再过 style_project 还原回 d_model，最后进轨迹解码头。
+
+即：“在轨迹查询处拼风格”。
+
+DiffusionDrive（扩散版）
+文件：navsim/agents/diffusiondrive/transfuser_model_v2.py
+做法（本仓实现）：
+
+self._with_style 打开时，同样建 self._style_project = Linear(d_model+3 → d_model)；
+
+forward() 中不是拼在 query，而是把 style_feature 扩展后与 traj_feature 拼接，再过 style_project，然后进入下游的扩散/解码模块（两级细化仍保留）。
+
+即：“在轨迹特征（解码前）拼风格”，位置更靠近任务头。
+（文件里能看到把风格拼在 query 的旧代码被注释掉了，实际使用是拼 traj_feature 这一版。）
+
+小结：**训练相对原始 DiffusionDrive 的“核心差异”**就是：
+
+数据：多了 style_feature；
+
+模型：在规划侧（query 或 traj 特征）拼接 one-hot 风格，然后线性还原维度；
+
+扩散调度、denoiser 结构、损失基本保持一致（multimodal_loss.py 未引入风格项，主要还是分类/回归/多模态损失）。
+================================================================================
+
+[69] [Unknown Time]
+如果要给一个没有基础的人解释，请你把这个过程再解释一下。尤其是diffusiondrive这个解码器是在什么环节，和diffusion的过程又是什么样的。查询层又是什么？diffusiondrive有查询层吗？级联两次是啥意思，哪两次？这个向量one-hot特征一直都是1*3吗？为啥还有compute_features的工作？这个风格难道不是标注好就存起来的吗？还是说只是一个简单的从string到向量的映射
+================================================================================
+
+[70] [Unknown Time]
+这个query_out生产的tf_decoder是啥意思？和query是啥关系？在diffusiondrive里面还有query吗？这个路线是不是都是无中生有的？如何理解边规划边融入驾驶风格？级联两次，每一次的输出会作为下次输入，我咋没看到有什么输出变成下次输入了？具体是哪个？
+================================================================================
+
+[71] [Unknown Time]
+这个plan anchor应该是diffusiondrive这个方案引入的。 diffusion经常会说增加什么condition，这个condition我能理解就是哪个plan anchor吗？ 是不是不加也是可以的，只是收敛比较慢？风格在decoder的轨迹上接入，能算condition吗？diffusiondrive这里，是在decoder之前的feature中注入风格，是吗
+================================================================================
+
+[72] [Unknown Time]
+我又有比较迷茫的地方了，有的是在query前注入condition，有的在query后，有的又在decoder内，能不能先把大致的步骤说一下，有哪些环节，是不是所有这些环节输入的东西，都能叫condition？
+================================================================================
+
+[73] [Unknown Time]
+1. 这个condition的概念有没有滥用啊？condition和一般的输入有啥区别？query初始化里面输入keyval也能算condition吗？2. 为什么transfuser-style要在query后注入，而不是在query初始化注入？3. 注入点5到底有没有注入？diffusiondrive到底是在哪里注入的，是扩散头还是任务头处理还是这俩是一个意思？4. time_embed是啥，是diffusion的基本操作吗？两级级联操作是不是也在扩散头里做的？
+================================================================================
+
+[74] [Unknown Time]
+你提到扩散头里面也会加入plan_anchor，我看这个代码是在forward_train里面。扩散头里面也会加style feature，但是是在forward。有什么区别
+================================================================================
+
+[75] [Unknown Time]
+为什么我看transfuser和diffusiondrive在加入stylefeature的代码是一样的
+================================================================================
+
+[76] [Unknown Time]
+把具体这个信息呈现出来：只是应用位置不同（query后 vs decoder内）
+================================================================================
+
+[77] [Unknown Time]
+这俩函数名都是forward，怎么看出一个是轨迹头内部decoder层，一个是query后
+================================================================================
+
+[78] [Unknown Time]
+这个操作是diffusiondrive独有的吗？各种cross。 transfuser里面有吗？
+================================================================================
+
+[79] [Unknown Time]
+运行成功了，但是看不太懂，为什么有3个轨迹？PDM preference是什么意思？ 可视化里面显示的style是输入的风格，还是输出的风格？一个数据是不是可以输入不同的风格，我吗看一个数据输入多个风格的结果？
+================================================================================
+
+[80] [Unknown Time]
+这个评测的意义是什么？已经标好了风格，pred的时候输入时有风格输入吗？输入的是标记好的风格吗？啥意思。。如果已经标记好了，这个pdm的分数有什么意义？你先不要写代码，先讲方案
+================================================================================
+
+[81] [Unknown Time]
+你可以看一下这个仓里面模型的评测是属于哪一种？
+================================================================================
+
+[82] [Unknown Time]
+在评测过程中需要通过navsim回放，为什么？轨迹预测完就是一个未来的轨迹不能直接计算ADE等指标吗？为什么要Navsim回放？具体代码在哪里?
+================================================================================
+
+[83] [Unknown Time]
+在评测过程中对不同风格，会做权重调整，比如下面这些：风格模板（Qualitative → Quantitative）
+保守：
+更低 jerk/加速度上限；
+更长时距/更大 TTC；
+EP 目标更保守（进展稍慢、等待更充分）；
+交互偏“先让后行”。
+正常：
+舒适/进展/余量均衡；
+接近人类群体的中位行为（P50）。
+激进：
+更高 EP 目标（加速更积极、等待更少）；
+可接受更小的时距/TTC（但仍需安全门限）；
+交互偏“先行”，切入更果断但需受控。。 这个给是如何体现在代码中
+================================================================================
+
+[84] [Unknown Time]
+再问一下基础的问题，在diffusiondrive-style中，有一个规划的扩散头，这里对traj_fea做了风格融入。这个traj_feat是什么？另外，plan_anchor加入的步骤，和这里的上下关系是什么，diffusion的去噪和这个head的关系是什么，上下文关系是什么
+================================================================================
+
+[85] [Unknown Time]
+pdm的评测，在训练的时候会用吗？训练阶段算loss的时候会考虑风格吗
+================================================================================
+
+[86] [Unknown Time]
+如果loss中没有考虑风格，为啥模型可以学会风格？
+================================================================================
+
+[87] [Unknown Time]
+这个项目基本跑通了，但是我发现一个问题，就是做分析的时候对数据片段的浏览，预测结果的浏览，交叉分析很不方便。我想和fiftyone这个开源项目结合。 你先讲讲可行性和开发思路
+================================================================================
+
+[88] [Unknown Time]
+在用fiftyone分析之前，我想了解一下openscene的数据。已经sensor_blob、log文件里面是啥，做cache的时候是做了什么转换
+================================================================================
+
+[89] [Unknown Time]
+帮我看一下diffusiondrive里面输出多少条轨迹，是个根据什么原则确认的这个数量，最终挑选轨迹是怎么定的，具体代码在哪里
+================================================================================
+
+[90] [Unknown Time]
+diffusiondrive最终输出20条轨迹，并且在此基础上进行挑选。这个操作在你各个提的步骤里面属于什么环节？
+================================================================================
+
+[91] [Unknown Time]
+我尝试理解一下，在训练阶段，选取的不是置信度最高的，而是和后验真值最近的。其他1-5步的对应代码能否也呈现一下
+================================================================================
+
+[92] [Unknown Time]
+增加噪声时，在推理和训练的时候具体有什么区别？为什么有这些区别？
+================================================================================
+
+[93] [Unknown Time]
+我理解如下：训练的时候，应该是知道加噪前、加噪后，以及加的噪声。学习加的噪声，和最后结果的映射。这里为什么没有加噪前的信息？
+================================================================================
+
+[94] [Unknown Time]
+能否把这个对话中我问题中涉及到的点，和你的回复，整体归纳一些，形成一个markdown文件
+================================================================================
+
+[95] [Unknown Time]
+我想在这个项目里面增加一个目录，学习一下diffusion的基础知识。可以给我一个方案吗
+================================================================================
+
+[96] [Unknown Time]
+先不用写代码。先跟我对清楚这个tutorial的内容。我觉得初期，我就想学一下最基础的概念。我想尝试学习训一个小的diffsuion网络，可以把基础概念学习一下
+================================================================================
+
+[97] [Unknown Time]
+我想做一个agent：
+1.  类似transfuser_backbone， 主要是出来各类来源数据。这个类名字叫diffusion_condition_head;
+
+2. diffusion_policy_head_dense， 有点类似transfuser_model_v2，就是接在diffusion_condition_head之后的，处理的动作，一方面根据白盒的多模轨迹concat到输入中，第二方面，对所有的输入组unified_token， 第三方面，调用diffusion_transfomer_decoder, 将多个condition依次cross attention，输出轨迹；
+
+3. 其他就是我刚刚描述过程中涉及的类，比如diffusion_transformer_dense就是处理decoder的。这里也会调用最基础的DiT；
+
+帮我设计一下方案和软件实现
+================================================================================
+
+[98] [Unknown Time]
+先不要写代码，先讲一下方案，模块名是不是可以优化一下？跟我再细化一下需求
+================================================================================
+
+[99] [Unknown Time]
+class DiffusionConditionHead():
+
+        super().__init__(config)
+
+        self.dynamic_feat_condition = DynamicFeatCondition(config.dynamic_condition)
+
+        self.dynamic_white_condition = DynamicWhiteCondition(config.dynamic_white_condition)
+
+        self.static_feat_condition = StaticFeatCondition(config.static_condition)
+
+        self.ego_feat_condition = EgoFeatCondition(config.ego_condition)
+
+        self.fusion_dynamic_white_feat_condition = fusion_dynamic_white_feat_condition(config.dynamic_condition, config.dynamic_white_condition)
+
+        self.navi_condition = NaviCondition(config.navi_condition)
+
+        self.percep_cache = config.get("percep_cache", None)
+
+        self.convertD = config.get("convertD", False)
+
+        self.iter_count = 0
+
+        self.unet_feat_count = 0
+
+
+
+
+def forward():
+        """
+
+        Args:
+
+            *inputs: [pncpkl, god_out(dense of embedding), sparse_out, cog_out]
+
+            **kwargs:
+
+        Returns:
+
+            *object_enc: with pncpkl in---B*A(=32)*T(=11 history)*D; without pncpkl in---B*A(=428 v1&v2; =429 v3+)*T(=1)*D; 
+
+            *god_scene
+
+        Notice:
+
+            *with pncpkl in: PDPN embedding as query, object_enc has time dim
+
+        """
+
+        self.iter_count += 1
+
+        if not self.convertD:
+
+            static_outputs, god_outputs, inst_outputs, unet_feats = self.cached_perception_input(*inputs, **kwargs)
+
+        else:
+
+            pnc_input_list = list(PNC_ALL_INPUT.keys())
+
+            god_outputs = inputs[pnc_input_list.index('god_dense_out')].float().permute(0, 1, 4, 2, 3).flatten(1, 2)
+
+ 
+
+            inst_outputs = dict()
+
+            inst_outputs['detect_info'] = dict()
+
+            inst_outputs['detect_info']['query_embedding'] = inputs[pnc_input_list.index('all_instance_embeddings')]
+
+            inst_outputs['detect_info']['bbox_preds'] = inputs[pnc_input_list.index('all_instance_decoded_boxes')] 
+
+            inst_outputs['pc_range'] = torch.tensor([-80.0, -44.8, -1, 120.0, 44.8, 5], dtype=god_outputs.dtype, device=god_outputs.device)
+
+ 
+
+            static_outputs = dict()
+
+            static_outputs['object_feat'] = inputs[pnc_input_list.index('object_feat')]
+
+            static_outputs['object_mask'] = inputs[pnc_input_list.index('object_mask')]
+
+            static_outputs['object_time'] = inputs[pnc_input_list.index('object_time')]
+
+            static_outputs['object_position'] = inputs[pnc_input_list.index('object_position')]
+
+            static_outputs['staticRG_feat'] = inputs[pnc_input_list.index('staticRG_feat')]
+
+            static_outputs['staticRG_mask'] = inputs[pnc_input_list.index('staticRG_mask')]
+
+            static_outputs['left_boundary_feat'] = inputs[pnc_input_list.index('left_boundary_feat')]
+
+            static_outputs['right_boundary_feat'] = inputs[pnc_input_list.index('right_boundary_feat')]
+
+            static_outputs['curb_feat'] =inputs[pnc_input_list.index('curb_feat')]
+
+            static_outputs['curb_mask'] = inputs[pnc_input_list.index('curb_mask')]
+
+            static_outputs['static_obj_feat'] = inputs[pnc_input_list.index('static_obj_feat')]
+
+            static_outputs['static_obj_mask'] = inputs[pnc_input_list.index('static_obj_mask')]
+
+            static_outputs['crosswalk_feat'] = inputs[pnc_input_list.index('crosswalk_feat')]
+
+            static_outputs['crosswalk_mask'] = inputs[pnc_input_list.index('crosswalk_mask')]
+
+            static_outputs['intersection_feat'] = inputs[pnc_input_list.index('intersection_feat')]
+
+            static_outputs['intersection_mask'] = inputs[pnc_input_list.index('intersection_mask')]
+
+            static_outputs['traffic_light_feat'] = inputs[pnc_input_list.index('traffic_light_feat')]
+
+            static_outputs['traffic_light_mask'] = inputs[pnc_input_list.index('traffic_light_mask')]
+
+            static_outputs['sd_road_feature'] = inputs[pnc_input_list.index('sd_road_feature')]
+
+            static_outputs['sd_road_feature_mask'] = inputs[pnc_input_list.index('sd_road_feature_mask')]
+
+            static_outputs['dis_to_cross'] = inputs[pnc_input_list.index('dis_to_cross')]
+
+            static_outputs['speed_limit'] = inputs[pnc_input_list.index('speed_limit')]
+
+            static_outputs['topo_guide_points'] = inputs[pnc_input_list.index('topo_guide_points')]
+
+
+
+            unet_feats = inputs[pnc_input_list.index('cog_dense_out')].float()
+
+
+
+        inst_feat, god_feat = self.dynamic_feat_condition(inst_outputs, god_outputs)
+
+        obj_white, white_mask = self.dynamic_white_condition(static_outputs)
+
+        inst_feat = self.fusion_dynamic_white_feat_condition(inst_feat, obj_white, white_mask)
+
+        unet_feats = unet_feats.float()
+
+        static_feat, cognition_feat = self.static_feat_condition(static_outputs, unet_feats, inst_outputs)
+
+        ego_feat = self.ego_feat_condition(static_outputs, inst_outputs['pc_range'])
+
+        navi_feat, navi_mask = self.navi_condition(static_outputs)
+
+
+
+        if not self.convertD:
+
+            return ego_feat, inst_feat, god_feat, static_feat, cognition_feat, inst_outputs, navi_feat, navi_mask
+
+        else:
+
+            return ego_feat, inst_feat, god_feat, static_feat, cognition_feat, navi_feat, navi_mask
+
+
+
+
+
+
+class DiffusionPolicyDense():   
+def __init__(self, cfg):
+
+        super().__init__(cfg)
+
+
+
+        self.denoising_num = cfg.get("denoising_num", 5)
+
+        self.denoising_num_train = cfg.get("denoising_num_train", 2)
+
+        self.convertD = cfg.get("convertD", False)
+
+        self.with_repeat = cfg.get("with_repeat", False)
+
+
+
+        dit_nlayer = cfg.get("dit_nlayer", 2)
+
+        dit_hidden_dim = cfg.get("dit_hidden_dim", 512)
+
+        condition_hidden_dim = cfg.get("condition_hidden_dim", 256)
+
+        dit_nhead = cfg.get("dit_nhead", 4)
+
+        dit_with_ca = cfg.get("dit_with_ca", True)
+
+        point_wise = cfg.get("point_wise", True)
+
+        condition_num_heads = cfg.get("condition_num_heads", 4)
+
+
+
+        self.traj_len = cfg.get("traj_len", 25)
+
+        self.len_10m_path = cfg.get("10m_path_len", 7)
+
+        object_hist_len = cfg.get('object_hist_len', 11)
+
+
+
+        god_bev_range = cfg.get("god_bev_range", [288, 112])
+
+        inst_num = cfg.get("inst_num", 128)
+
+        static_num = cfg.get("static_num", 292)
+
+
+
+        self.collision_dpo_switch = cfg.get("collision_dpo_switch", False)
+
+        self.make_shortcut_cfg(cfg.get("shortcut_cfg", None))
+
+
+
+        if self.with_repeat:
+
+            condition_hidden_dim = condition_hidden_dim * object_hist_len
+
+        
+
+        if dit_with_ca:
+
+            moe_config={
+
+                'moe':cfg.get('moe', False),
+
+                'n_experts': cfg.get('n_experts', 2),
+
+                'n_activated_experts': cfg.get('n_activated_experts', 8),
+
+                'n_shared_experts': cfg.get('n_shared_experts', 1),
+
+                'moe_inter_dim': cfg.get('moe_inter_dim', 192),
+
+                'load_balancing': cfg.get('load_balancing', True),
+
+                'load_balancing_disable_iter': cfg.get('load_balancing_disable_iter', 120000),
+
+                'norm_topk_prob': cfg.get('norm_topk_prob', True),
+
+                'gamma': cfg.get('gamma', 0.001),
+
+                'onnx': cfg.get('convertD', False)
+
+            }
+
+            self.unified_tokenizer = UnifiedTokenizer(
+
+                layer_nums=cfg.get('uni_att_nlayer', 3),
+
+                condition_hidden_dim=condition_hidden_dim,
+
+                cog_and_god_dim= cfg.get('cog_and_god_dim', 128),
+
+                condition_num_heads=condition_num_heads,
+
+                hidden_dim=dit_hidden_dim, 
+
+                num_heads=dit_nhead,
+
+                onnx=self.convertD,
+
+                moe_config={'moe':False}
+
+            )
+
+
+
+            self.diffusion_decoder = DiTDenseWithCA(
+
+                layer_nums=dit_nlayer, 
+
+                condition_num_heads=condition_num_heads,
+
+                hidden_dim=dit_hidden_dim, 
+
+                num_heads=dit_nhead,
+
+                traj_len=self.traj_len,
+
+                onnx=self.convertD,
+
+                moe_config=moe_config,
+
+                enable_shortcut=self.enable_shortcut,
+
+            )
+
+        else:
+
+            self.diffusion_decoder = DiTDense(
+
+                layer_nums=dit_nlayer,
+
+                condition_hidden_dim=condition_hidden_dim,
+
+                hidden_dim=dit_hidden_dim, 
+
+                num_heads=dit_nhead,
+
+                traj_len=self.traj_len,
+
+                god_bev_range=god_bev_range,
+
+                inst_num=inst_num,
+
+                static_num=static_num,
+
+            )
+
+
+
+    def stopgrad(self, x):
+
+        return x.detach()
+
+
+
+    def get_train_tuple(self, z0=None, z1=None, device=None, t=None):
+
+        a, k = z0.shape
+
+        if t is None:
+
+            t = torch.rand((a, 1), device=device)
+
+        z_t = t * z1 + (1.0 - t) * z0
+
+        target = z1 - z0
+
+        return z_t, t, target
+
+
+
+    def sample_ode(self, ego_condition, inst_condition, god_condition, static_condition, cognition_condition, navinn_condition, navinn_condition_mask, navi_condition, navi_condition_mask, z0=None, n=None, dt_mode=None):
+
+        b = ego_condition.shape[0]
+
+        if n is None:
+
+            n = self.denoising_num
+
+        dt = 1.0 / n
+
+        z = z0.detach().clone()  #[b, 25, 2]
+
+
+
+        tokens, ego_condition, final_condition = \
+
+            self.unified_tokenizer(ego_condition, navinn_condition, navinn_condition_mask, navi_condition, navi_condition_mask,
+
+                inst_condition, god_condition, static_condition, cognition_condition)
+
+
+
+        for i in range(n):
+
+            t = torch.ones((b, 1), device=ego_condition.device) * i / n
+
+            pred = self.diffusion_decoder(tokens, ego_condition, final_condition, z, t, dt_mode=dt_mode)
+
+            z = z.detach().clone() + pred * dt
+
+        return z
+
+
+
+    @torch.no_grad()
+
+    def sample_ode_train(self, tokens, ego_condition, final_condition, z0=None, n=None, dt_mode=None):
+
+        # navinn_condition, navinn_condition_mask, navi_condition, navi_condition_mask, 
+
+        b = ego_condition.shape[0]
+
+        if n is None:
+
+            n = self.denoising_num
+
+        dt = 1.0 / n
+
+        z = z0.detach().clone()  # [b, 25, 2]
+
+
+
+        for i in range(n):
+
+            t = torch.ones((b, 1), device=ego_condition.device) * i/n
+
+            pred = self.diffusion_decoder(tokens, ego_condition, final_condition, z, t, dt_mode=dt_mode)
+
+            z = z.detach().clone() + pred * dt
+
+        return z
+
+
+
+
+
+
+def forward():
+        # [b, 1, 256] [b, 128, 256] [b, 288, 112, 256] [b, 292, 256]
+
+        ego_condition, inst_condition, god_condition, static_condition, cognition_condition, navi_condition, navi_condition_mask, navinn_condition, navinn_condition_mask = inputs
+
+        device = ego_condition.device
+
+        b = ego_condition.shape[0]
+
+        ori_b = ego_condition.shape[0]
+
+
+
+        #is_train = False if self.convertD else kwargs['infos']['is_train'][0]
+
+        if self.convertD or (not self.training):
+
+            top_k = 1
+
+
+
+            broadcast_mask = torch.ones((1, top_k, 1, 1)).to(ego_condition.device)
+
+            ego_condition = ego_condition.unsqueeze(1) * broadcast_mask
+
+            ego_condition = ego_condition.flatten(0, 1)
+
+
+
+            static_condition = static_condition.unsqueeze(1) * broadcast_mask
+
+            static_condition = static_condition.flatten(0, 1)
+
+            total_len = self.traj_len + self.len_10m_path
+
+            topk_trajs = torch.zeros([b * top_k, total_len, 2], device=device)   #[b, 25, 2]
+
+            dt_mode = self.dt_mode_convertD if self.enable_shortcut else None
+
+
+
+            topk_trajs = self.sample_ode(ego_condition, inst_condition, god_condition, static_condition, cognition_condition, navinn_condition, navinn_condition_mask, navi_condition, navi_condition_mask, topk_trajs, n=self.denoising_num, dt_mode=dt_mode)
+
+            topk_trajs = topk_trajs.reshape(b, top_k, total_len, 2)
+
+            topk_trajs_new = topk_trajs[:, :, :25, :]
+
+            path_10m = topk_trajs[:, :, 25:, :]
+
+            trajs = topk_trajs_new.mean(dim=1)
+
+            path_diff = trajs[:, 1:, :] - trajs[:, :-1, :]
+
+            path_diff = torch.cat((trajs[:, 0:1, :], path_diff), dim=1)
+
+            traj_new = torch.zeros((b, 50, 2), dtype=torch.float32, device=device)  # [1, 50 , 2]
+
+            traj_new[:, 1::2, :] = trajs
+
+            traj_new[:, 0::2, :] = trajs - path_diff / 2.0
+
+            # fem_idx = (traj_new[0, 0, :1] * 0.0).to(device)
+
+            return traj_new, path_10m.reshape(b, self.len_10m_path, 2)
+
+        else:
+
+            # get noise input
+
+            total_len = self.traj_len + self.len_10m_path
+
+            init_noise = torch.randn((b, total_len * 2), device=device)
+
+            full_gt_traj = kwargs['labels'][0]["full_gt_traj_trans"]
+
+            gt_traj_10m_path = kwargs['labels'][0]['path_10m']
+
+            ego_gt_traj = torch.cat((full_gt_traj[:, :self.traj_len, :2], gt_traj_10m_path), dim=1)
+
+
+
+            c = {
+
+                "ego_condition": ego_condition,
+
+                "navinn_condition": navinn_condition,
+
+                "navinn_condition_mask": navinn_condition_mask,
+
+                "navi_condition": navi_condition,
+
+                "navi_condition_mask": navi_condition_mask,
+
+                "inst_condition": inst_condition,
+
+                "god_condition": god_condition,
+
+                "static_condition": static_condition,
+
+                "cognition_condition": cognition_condition,
+
+            }
+
+
+
+            if self.enable_shortcut:
+
+                noise_traj_t, t, dt, gt_flow, shortcut_index = self.get_shortcut_target(c=c, x0=init_noise.reshape(b, total_len, 2), x1=ego_gt_traj)
+
+                c = {k: torch.cat((v, v[:b][shortcut_index]), dim=0) for k, v in c.items()}
+
+            else:
+
+                noise_traj_t, t, gt_flow = self.get_train_tuple(init_noise, ego_gt_traj.reshape(b, -1), device=device)
+
+
+
+            noise_traj_t_c = noise_traj_t.reshape(-1, total_len, 2)
+
+
+
+            has_neg = kwargs['labels'][0]["has_neg"].squeeze(-1)
+
+            dpo_bs = has_neg.sum().to(torch.int32)
+
+            if self.collision_dpo_switch and (has_neg.any() == True):
+
+                c = {k: torch.cat((v, v[:b][has_neg]), dim=0) for k, v in c.items()}
+
+                dt = torch.cat((dt, dt[:b][has_neg]))
+
+                neg_full_gt_traj = kwargs['labels'][0]["neg_full_gt_traj_trans"][has_neg]
+
+                neg_gt_traj_10m_path = kwargs['labels'][0]['neg_path_10m'][has_neg]
+
+                neg_ego_gt_traj = torch.cat((neg_full_gt_traj[:, :self.traj_len, :2], neg_gt_traj_10m_path), dim=1)
+
+                neg_b = neg_full_gt_traj.shape[0]
+
+                neg_noise_traj_t, neg_t, neg_gt_flow = self.get_train_tuple(init_noise[has_neg],
+
+                                                                            neg_ego_gt_traj.reshape(neg_b, -1),
+
+                                                                            device=device, t=t[:b][has_neg])
+
+                neg_noise_traj_t_c = neg_noise_traj_t.reshape(neg_b, -1, 2)
+
+
+
+                noise_traj_t_c = torch.cat((noise_traj_t_c, neg_noise_traj_t_c), dim=0)
+
+                t = torch.cat((t, neg_t), dim=0)
+
+                noise_traj_t = torch.cat((noise_traj_t, neg_noise_traj_t), dim=0)
+
+                gt_flow = torch.cat((gt_flow, neg_gt_flow), dim=0)
+
+                b = ego_condition.shape[0]
+
+
+
+            # train
+
+            tokens, ego_condition, final_condition = self.unified_tokenizer(**c)
+
+                                                                
+
+            predict_flow = self.diffusion_decoder(tokens, ego_condition, final_condition, noise_traj_t_c, t, dt)
+
+            predict_flow = predict_flow.reshape(noise_traj_t.shape[0], -1)
+
+            pred_traj = noise_traj_t + (1 - t) * predict_flow
+
+
+
+            traj_len = self.traj_len * 2
+
+
+
+            pred_traj_from_scratch = self.sample_ode_train(tokens[:ori_b], ego_condition[:ori_b], final_condition[:ori_b], z0=init_noise.reshape(ori_b, -1, 2),
+
+                                                           n=self.denoising_num_train, dt_mode=self.dt_mode_train if self.enable_shortcut else None)
+
+
+
+            if self.enable_shortcut:
+
+                predict_flow, predict_flow_shorcut, predict_flow_dpo = torch.split(predict_flow, [b, self.shortcut_bs, dpo_bs], dim=0)
+
+                gt_flow, gt_flow_shortcut, gt_flow_dpo = torch.split(gt_flow, [b, self.shortcut_bs, dpo_bs], dim=0)
+
+                predict_flow = torch.cat((predict_flow, predict_flow_dpo), dim=0)
+
+                gt_flow = torch.cat((gt_flow, gt_flow_dpo), dim=0)
+
+                shortcut_results = [
+
+                    predict_flow_shorcut[:, :traj_len],
+
+                    gt_flow_shortcut[:, :traj_len],
+
+                    predict_flow_shorcut[:, traj_len:],
+
+                    gt_flow_shortcut[:, traj_len:],
+
+                    shortcut_index,
+
+                ]
+
+            else:
+
+                shortcut_results = None
+
+
+
+            return (
+
+                predict_flow[:, :traj_len],
+
+                gt_flow[:, :traj_len],
+
+                pred_traj,
+
+                predict_flow[:, traj_len:],
+
+                gt_flow[:, traj_len:],
+
+                pred_traj[:, traj_len:],
+
+                pred_traj_from_scratch[:, :25, :],
+
+                shortcut_results,
+
+            )
+================================================================================
+
+[100] [Unknown Time]
+我觉得模块名字还是换一下，我想保留原有功能，但是重新开发
+================================================================================
+
+[101] [Unknown Time]
+方案A；把需求和方案梳理成markdown文档。重新建一个agents目录
+================================================================================
+
+[102] [Unknown Time]
+给出todolist。我觉得当前要把我给的代码先把关键代码腾挪进去，但是一些依赖的模块可以先预留；
+================================================================================
+
+[103] [Unknown Time]
+开始开发吧
+================================================================================
+
+[104] [Unknown Time]
+有几个要修改一下，整个项目外部有配置文件管理，代码里面的更多是默认的参数。所以不要着重搞这些参数，到时候再整个项目外部做好参数管理就行了。代码上做好紧凑清晰一些，不要追求过多的模块化，按照合理的方式组织就行。
+================================================================================
+
+[105] [Unknown Time]
+开始吧
+================================================================================
+
