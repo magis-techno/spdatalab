@@ -236,7 +236,7 @@ def extract_grid_datasets(conn, grid_info: Dict) -> Tuple[List[str], Dict]:
 
 def call_multimodal_api(retriever: MultimodalRetriever, query_text: str, 
                        collection: str, city_id: str, dataset_names: List[str],
-                       max_results: int = 100) -> List[Dict]:
+                       max_results: int = 100, use_dataset_filter: bool = False) -> List[Dict]:
     """调用多模态API检索
     
     Args:
@@ -244,8 +244,9 @@ def call_multimodal_api(retriever: MultimodalRetriever, query_text: str,
         query_text: 查询文本
         collection: Collection名称
         city_id: 城市ID
-        dataset_names: Dataset名称列表
+        dataset_names: Dataset名称列表（仅当use_dataset_filter=True时使用）
         max_results: 最大返回结果数
+        use_dataset_filter: 是否使用dataset_name过滤（默认False，因为会导致无结果）
         
     Returns:
         检索结果列表
@@ -269,18 +270,31 @@ def call_multimodal_api(retriever: MultimodalRetriever, query_text: str,
     print(f"   查询文本: '{query_text}'")
     print(f"   Collection: {collection}")
     print(f"   城市过滤: {city_id}")
-    print(f"   Dataset过滤: {len(dataset_names)} 个")
+    if use_dataset_filter:
+        print(f"   Dataset过滤: {len(dataset_names)} 个 ⚠️")
+    else:
+        print(f"   Dataset过滤: 禁用（避免无结果）")
     print(f"   最大结果数: {max_results}")
     
     try:
         # 调用API
-        results = retriever.retrieve_by_text(
-            text=query_text,
-            collection=collection,
-            count=max_results,
-            dataset_name=dataset_names,
-            filter_dict=filter_dict
-        )
+        # 注意：根据调试结果，dataset_name参数会导致无结果，默认不使用
+        if use_dataset_filter:
+            results = retriever.retrieve_by_text(
+                text=query_text,
+                collection=collection,
+                count=max_results,
+                dataset_name=dataset_names,
+                filter_dict=filter_dict
+            )
+        else:
+            # 只使用城市过滤，不传dataset_name
+            results = retriever.retrieve_by_text(
+                text=query_text,
+                collection=collection,
+                count=max_results,
+                filter_dict=filter_dict
+            )
         
         print(f"✅ API调用成功: 返回 {len(results)} 条结果")
         
@@ -424,6 +438,8 @@ def main():
                        help='分析日期（格式: YYYY-MM-DD），默认使用最新日期')
     parser.add_argument('--top-n', type=int, default=10,
                        help='显示top N个最相似结果（默认: 10）')
+    parser.add_argument('--use-dataset-filter', action='store_true',
+                       help='使用dataset_name过滤（实验性，可能导致无结果）')
     
     args = parser.parse_args()
     
@@ -458,9 +474,12 @@ def main():
                 print("\n❌ Grid内没有有效的dataset，无法继续")
                 return 1
             
-            print(f"\n💡 提示: 将使用 {len(dataset_names)} 个dataset进行过滤")
-            if len(dataset_names) > 50:
-                print(f"⚠️ Dataset数量较多，API调用可能需要较长时间")
+            if args.use_dataset_filter:
+                print(f"\n⚠️ 将使用 {len(dataset_names)} 个dataset进行过滤（实验性功能）")
+                print(f"💡 提示: 根据测试，dataset过滤可能导致无结果")
+            else:
+                print(f"\n💡 提示: 已禁用dataset过滤，只使用城市过滤")
+                print(f"   Grid内有 {len(dataset_names)} 个dataset，但API只按城市过滤")
         
         # 4. 初始化多模态API
         print(f"\n🔧 初始化多模态API...")
@@ -469,13 +488,15 @@ def main():
         print(f"✅ API配置加载成功")
         
         # 5. 调用多模态API
+        # 注意：根据调试，dataset_name过滤会导致无结果，默认禁用
         results = call_multimodal_api(
             retriever,
             args.query_text,
             args.collection,
             args.city,
             dataset_names,
-            args.max_results
+            args.max_results,
+            use_dataset_filter=args.use_dataset_filter
         )
         
         if not results:
