@@ -33,6 +33,12 @@ from sqlalchemy import create_engine, text
 from sklearn.cluster import DBSCAN
 from sklearn.preprocessing import StandardScaler
 
+# 导入高性能polygon查询器
+from spdatalab.dataset.polygon_trajectory_query import (
+    HighPerformancePolygonTrajectoryQuery,
+    PolygonTrajectoryConfig
+)
+
 # 抑制警告
 warnings.filterwarnings('ignore', category=UserWarning)
 warnings.filterwarnings('ignore', category=FutureWarning)
@@ -52,6 +58,9 @@ class ClusterConfig:
     # 数据库配置
     local_dsn: str = LOCAL_DSN
     point_table: str = POINT_TABLE
+    
+    # 轨迹查询配置
+    query_limit: int = 50000          # 每个grid的轨迹点查询限制
     
     # 轨迹切分配置（距离优先+时长上限）
     min_distance: float = 50.0        # 主切分：50米/段
@@ -119,7 +128,18 @@ class GridTrajectoryClusterer:
         )
         self.scaler = StandardScaler()
         
+        # 初始化高性能查询器
+        query_config = PolygonTrajectoryConfig(
+            limit_per_polygon=self.config.query_limit,
+            fetch_complete_trajectories=False,  # 只查询相交的点
+            batch_threshold=1,  # 单个grid使用批量策略
+            enable_speed_stats=False,
+            enable_avp_stats=False
+        )
+        self.trajectory_query = HighPerformancePolygonTrajectoryQuery(query_config)
+        
         logger.info("🚀 GridTrajectoryClusterer 初始化完成")
+        logger.info(f"   查询限制: {self.config.query_limit}点/grid")
         logger.info(f"   切分策略: {self.config.min_distance}米/{self.config.max_duration}秒")
         logger.info(f"   聚类参数: eps={self.config.eps}, min_samples={self.config.min_samples}")
     
@@ -189,52 +209,53 @@ class GridTrajectoryClusterer:
         
         return grids_df
     
-    def query_trajectory_points(self, grid_geometry) -> pd.DataFrame:
-        """查询grid内的高质量轨迹点（workstage=2）
+    def query_trajectory_points(self, grid_geometry, grid_id: int = 0) -> pd.DataFrame:
+        """查询grid内的高质量轨迹点（使用高性能查询器）
         
         Args:
             grid_geometry: Grid的几何对象（Polygon）
+            grid_id: Grid ID（用于标识）
             
         Returns:
             轨迹点DataFrame
         """
-        logger.debug("🔍 查询grid内的轨迹点...")
+        logger.debug("🔍 查询grid内的轨迹点（使用高性能查询器）...")
         
-        # 将几何转换为WKT
-        geometry_wkt = grid_geometry.wkt
-        
-        sql = text(f"""
-            SELECT 
-                dataset_name,
-                vehicle_id,
-                timestamp,
-                twist_linear,
-                yaw,
-                pitch,
-                roll,
-                workstage,
-                ST_X(point_lla) as lon,
-                ST_Y(point_lla) as lat
-            FROM {self.config.point_table}
-            WHERE ST_Intersects(point_lla, ST_GeomFromText(:geometry_wkt, 4326))
-              AND workstage = 2
-              AND point_lla IS NOT NULL
-              AND twist_linear IS NOT NULL
-            ORDER BY dataset_name, timestamp;
-        """)
+        # 将grid包装成polygon格式
+        polygon_data = [{
+            'id': f'grid_{grid_id}',
+            'geometry': grid_geometry,
+            'properties': {'grid_id': grid_id}
+        }]
         
         try:
-            with self.engine.connect() as conn:
-                points_df = pd.read_sql(sql, conn, params={'geometry_wkt': geometry_wkt})
+            # 使用高性能查询器（复用所有优化策略）
+            points_df, stats = self.trajectory_query.query_intersecting_trajectory_points(polygon_data)
             
-            logger.debug(f"   查询到 {len(points_df)} 个高质量轨迹点")
             if not points_df.empty:
+                # 重命名列以匹配后续处理
+                points_df = points_df.rename(columns={
+                    'longitude': 'lon',
+                    'latitude': 'lat',
+                    'twist_linear': 'twist_linear'  # 保持原名
+                })
+                
+                # 添加vehicle_id列（如果不存在）
+                if 'vehicle_id' not in points_df.columns:
+                    points_df['vehicle_id'] = None
+                
+                logger.debug(f"   查询到 {len(points_df)} 个高质量轨迹点")
                 logger.debug(f"   涉及轨迹数: {points_df['dataset_name'].nunique()}")
+                logger.debug(f"   查询用时: {stats['query_time']:.2f}s")
+            else:
+                logger.debug("   未找到轨迹点")
             
             return points_df
             
         except Exception as e:
             logger.error(f"❌ 查询轨迹点失败: {e}")
+            import traceback
+            traceback.print_exc()
             return pd.DataFrame()
     
     def segment_trajectories(
@@ -786,8 +807,8 @@ class GridTrajectoryClusterer:
         }
         
         try:
-            # 1. 查询轨迹点
-            points_df = self.query_trajectory_points(geometry)
+            # 1. 查询轨迹点（使用高性能查询器）
+            points_df = self.query_trajectory_points(geometry, grid_id)
             stats['total_points'] = len(points_df)
             stats['trajectory_count'] = points_df['dataset_name'].nunique() if not points_df.empty else 0
             

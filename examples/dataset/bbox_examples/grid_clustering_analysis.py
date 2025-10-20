@@ -209,6 +209,11 @@ def main():
     grid_group.add_argument('--top-n', type=int, help='只处理前N个热点grid')
     grid_group.add_argument('--grid-ids', type=int, nargs='+', help='指定特定grid的ID列表')
     
+    # 查询参数
+    query_group = parser.add_argument_group('轨迹查询参数')
+    query_group.add_argument('--query-limit', type=int, default=50000,
+                            help='每个grid的轨迹点查询限制，默认50000')
+    
     # 切分参数
     segment_group = parser.add_argument_group('轨迹切分参数')
     segment_group.add_argument('--min-distance', type=float, default=50.0, 
@@ -260,12 +265,14 @@ def main():
         print("所有grid", end="")
     print()
     
+    print(f"   查询限制: {args.query_limit}点/grid")
     print(f"   切分策略: {args.min_distance}米 / {args.max_duration}秒")
     print(f"   质量过滤: 移动>{args.min_movement}m, 跳点<{args.max_jump}m, 速度<{args.max_speed}m/s")
     print(f"   聚类参数: eps={args.eps}, min_samples={args.min_samples}")
     
     # 创建配置
     config = ClusterConfig(
+        query_limit=args.query_limit,
         min_distance=args.min_distance,
         max_duration=args.max_duration,
         min_points=args.min_points,
