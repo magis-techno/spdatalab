@@ -67,7 +67,19 @@ def diagnose_grid_clustering(city_id='A72', grid_rank=1):
     # 检查数据
     print(f"\n📊 数据检查:")
     print(f"  timestamp范围: {points_df['timestamp'].min()} - {points_df['timestamp'].max()}")
-    print(f"  timestamp跨度: {(points_df['timestamp'].max() - points_df['timestamp'].min()) / 1e9:.2f} 秒")
+    
+    # 检测timestamp单位
+    ts_min = points_df['timestamp'].min()
+    ts_max = points_df['timestamp'].max()
+    if ts_min < 1e10 and ts_max < 1e10:
+        print(f"  timestamp单位: 秒级")
+    elif ts_min < 1e13 and ts_max < 1e13:
+        print(f"  timestamp单位: 毫秒级")
+    elif ts_min < 1e16 and ts_max < 1e16:
+        print(f"  timestamp单位: 微秒级")
+    else:
+        print(f"  timestamp单位: 混合/纳秒级 ⚠️")
+    
     print(f"  lon范围: [{points_df['lon'].min():.6f}, {points_df['lon'].max():.6f}]")
     print(f"  lat范围: [{points_df['lat'].min():.6f}, {points_df['lat'].max():.6f}]")
     print(f"  twist_linear范围: [{points_df['twist_linear'].min():.2f}, {points_df['twist_linear'].max():.2f}] m/s")
@@ -79,7 +91,21 @@ def diagnose_grid_clustering(city_id='A72', grid_rank=1):
             break
         
         group = group.sort_values('timestamp')
-        time_span = (group['timestamp'].max() - group['timestamp'].min()) / 1e9
+        
+        # 自动检测timestamp单位
+        sample_ts = group['timestamp'].median()
+        if sample_ts < 1e10:
+            scale = 1  # 秒
+        elif sample_ts < 1e13:
+            scale = 1e3  # 毫秒
+        elif sample_ts < 1e16:
+            scale = 1e6  # 微秒
+        else:
+            scale = 1e9  # 纳秒
+        
+        # 统一为秒
+        timestamps_sec = group['timestamp'] / scale
+        time_span = timestamps_sec.max() - timestamps_sec.min()
         
         # 计算总距离
         total_dist = 0

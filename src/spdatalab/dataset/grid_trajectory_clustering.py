@@ -280,13 +280,16 @@ class GridTrajectoryClusterer:
         
         all_segments = []
         
-        # 按dataset_name分组
+        # 按dataset_name分组（逐条轨迹处理）
         for dataset_name, group in points_df.groupby('dataset_name'):
             # 按timestamp排序
             group = group.sort_values('timestamp').reset_index(drop=True)
             
             if len(group) < self.config.min_points:
                 continue
+            
+            # 统一该轨迹的timestamp单位为秒
+            group = self._normalize_trajectory_timestamps(group)
             
             # 切分该轨迹
             segments = self._segment_single_trajectory(dataset_name, group)
@@ -295,6 +298,40 @@ class GridTrajectoryClusterer:
         logger.debug(f"   切分得到 {len(all_segments)} 个轨迹段")
         
         return all_segments
+    
+    def _normalize_trajectory_timestamps(self, trajectory_df: pd.DataFrame) -> pd.DataFrame:
+        """统一单条轨迹的timestamp单位为秒
+        
+        自动检测timestamp单位（秒/毫秒/微秒/纳秒）并转换为秒
+        注意：不同轨迹可能有不同的timestamp单位，所以逐条处理
+        """
+        if trajectory_df.empty or 'timestamp' not in trajectory_df.columns:
+            return trajectory_df
+        
+        # 复制以避免修改原数据
+        df = trajectory_df.copy()
+        
+        # 检测timestamp单位（使用中位数更稳健）
+        sample_ts = df['timestamp'].median()
+        
+        # 判断单位（基于数值大小）
+        if sample_ts < 1e10:
+            # 10位数：秒级 (< 2286-11-20)
+            scale = 1
+        elif sample_ts < 1e13:
+            # 13位数：毫秒级
+            scale = 1e3
+        elif sample_ts < 1e16:
+            # 16位数：微秒级
+            scale = 1e6
+        else:
+            # 19位数：纳秒级
+            scale = 1e9
+        
+        if scale > 1:
+            df['timestamp'] = df['timestamp'] / scale
+        
+        return df
     
     def _segment_single_trajectory(
         self, 
