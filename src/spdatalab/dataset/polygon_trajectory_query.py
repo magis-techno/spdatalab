@@ -236,6 +236,9 @@ class HighPerformancePolygonTrajectoryQuery:
                     timestamp,
                     point_lla,
                     twist_linear,
+                    yaw,
+                    pitch,
+                    roll,
                     avp_flag,
                     workstage,
                     ST_X(point_lla) as longitude,
@@ -449,6 +452,9 @@ class HighPerformancePolygonTrajectoryQuery:
                     timestamp,
                     point_lla,
                     twist_linear,
+                    yaw,
+                    pitch,
+                    roll,
                     avp_flag,
                     workstage,
                     ST_X(point_lla) as longitude,
@@ -501,7 +507,8 @@ class HighPerformancePolygonTrajectoryQuery:
                 
                 # 构建DataFrame
                 columns = ['dataset_name', 'timestamp', 'point_lla', 'twist_linear', 
-                          'avp_flag', 'workstage', 'longitude', 'latitude', 'polygon_id']
+                          'yaw', 'pitch', 'roll', 'avp_flag', 'workstage', 
+                          'longitude', 'latitude', 'polygon_id']
                 result_df = pd.DataFrame(rows, columns=columns)
                 
                 logger.info(f"📊 构建DataFrame完成: {len(result_df)} 行数据")

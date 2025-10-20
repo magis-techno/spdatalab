@@ -170,14 +170,13 @@ def query_trajectory_points(grid_geometry, grid_id: int, limit: int = None):
             print(f"   查询用时: {stats['query_time']:.2f}s")
             
             # 重命名列以匹配后续处理
-            if 'longitude' in points_df.columns:
-                points_df = points_df.rename(columns={
-                    'longitude': 'lon',
-                    'latitude': 'lat',
-                    'twist_linear': 'speed'
-                })
+            points_df = points_df.rename(columns={
+                'longitude': 'lon',
+                'latitude': 'lat',
+                'twist_linear': 'speed'
+            })
             
-            # 添加vehicle_id列（如果不存在）
+            # 添加vehicle_id列（polygon查询不返回此字段）
             if 'vehicle_id' not in points_df.columns:
                 points_df['vehicle_id'] = None
             
@@ -194,7 +193,7 @@ def query_trajectory_points(grid_geometry, grid_id: int, limit: int = None):
         return pd.DataFrame()
 
 def calculate_point_features(points_df: pd.DataFrame):
-    """为每个点计算特征（兼容缺失字段）"""
+    """为每个点计算特征"""
     print(f"\n📐 计算点特征...")
     
     # 检查必需字段
@@ -204,13 +203,12 @@ def calculate_point_features(points_df: pd.DataFrame):
         print(f"⚠️ 缺少必需字段: {missing_fields}")
         return pd.DataFrame()
     
-    # 检查可选字段
+    # 检查姿态字段（现在应该都有了）
     has_yaw = 'yaw' in points_df.columns
     has_pitch = 'pitch' in points_df.columns
     has_roll = 'roll' in points_df.columns
-    has_workstage = 'workstage' in points_df.columns
     
-    print(f"   字段可用性: yaw={has_yaw}, pitch={has_pitch}, roll={has_roll}, workstage={has_workstage}")
+    print(f"   姿态字段: yaw={has_yaw}, pitch={has_pitch}, roll={has_roll}")
     
     # 按轨迹分组计算
     features_list = []
@@ -227,16 +225,6 @@ def calculate_point_features(points_df: pd.DataFrame):
         group['acceleration'] = 0.0
         group['yaw_change_rate'] = 0.0
         group['cumulative_distance'] = 0.0
-        
-        # 如果缺失yaw等字段，添加空列
-        if not has_yaw:
-            group['yaw'] = None
-        if not has_pitch:
-            group['pitch'] = None
-        if not has_roll:
-            group['roll'] = None
-        if not has_workstage:
-            group['workstage'] = 2  # 默认值
         
         # 计算逐点特征
         cumulative_dist = 0.0
@@ -260,7 +248,7 @@ def calculate_point_features(points_df: pd.DataFrame):
                     speed_diff = group.iloc[i+1]['speed'] - group.iloc[i]['speed']
                     group.at[i, 'acceleration'] = speed_diff / time_gap
                     
-                    # 航向角变化率（如果有yaw字段）
+                    # 航向角变化率
                     if has_yaw and pd.notna(group.iloc[i]['yaw']) and pd.notna(group.iloc[i+1]['yaw']):
                         yaw_diff = group.iloc[i+1]['yaw'] - group.iloc[i]['yaw']
                         group.at[i, 'yaw_change_rate'] = yaw_diff / time_gap
@@ -274,12 +262,14 @@ def calculate_point_features(points_df: pd.DataFrame):
     print(f"✅ 特征计算完成")
     print(f"   加速度范围: {result_df['acceleration'].min():.2f} - {result_df['acceleration'].max():.2f} m/s²")
     
-    if has_yaw and result_df['yaw_change_rate'].notna().any():
+    if has_yaw:
         yaw_valid = result_df['yaw_change_rate'].dropna()
         if len(yaw_valid) > 0:
             print(f"   航向角变化率范围: {yaw_valid.min():.4f} - {yaw_valid.max():.4f} rad/s")
+        else:
+            print(f"   航向角变化率: 数据中无有效值")
     else:
-        print(f"   航向角变化率: 不可用（缺少yaw字段）")
+        print(f"   航向角变化率: 字段不可用")
     
     return result_df
 
@@ -380,10 +370,10 @@ def export_to_database(engine, points_df: pd.DataFrame, grid_id: int):
                 'lon': float(row['lon']),
                 'lat': float(row['lat']),
                 'speed': float(row['speed']) if pd.notna(row['speed']) else None,
-                'yaw': float(row['yaw']) if pd.notna(row.get('yaw')) else None,
-                'pitch': float(row['pitch']) if pd.notna(row.get('pitch')) else None,
-                'roll': float(row['roll']) if pd.notna(row.get('roll')) else None,
-                'workstage': int(row['workstage']) if pd.notna(row.get('workstage')) else 2,
+                'yaw': float(row['yaw']) if pd.notna(row['yaw']) else None,
+                'pitch': float(row['pitch']) if pd.notna(row['pitch']) else None,
+                'roll': float(row['roll']) if pd.notna(row['roll']) else None,
+                'workstage': int(row['workstage']) if pd.notna(row['workstage']) else 2,
                 'distance_to_next': float(row['distance_to_next']),
                 'time_gap': float(row['time_gap']),
                 'acceleration': float(row['acceleration']),
