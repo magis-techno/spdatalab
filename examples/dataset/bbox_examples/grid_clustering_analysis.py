@@ -109,77 +109,166 @@ def export_to_geojson(clusterer, city_id: str, analysis_id: str, output_file: st
     print(f"   Grid数量: {gdf['grid_id'].nunique()}")
 
 
-def print_summary_stats(clusterer, city_id: str = None):
-    """打印汇总统计"""
+def print_summary_stats_from_memory(stats_df: pd.DataFrame):
+    """从内存统计结果打印汇总（不依赖数据库表）"""
     print(f"\n" + "="*70)
-    print(f"📊 聚类结果汇总统计")
+    print(f"📊 聚类结果汇总统计 (基于运行结果)")
     print(f"="*70)
     
-    # 查询轨迹段统计
-    where_clause = f"WHERE city_id = '{city_id}'" if city_id else ""
+    if stats_df.empty:
+        print("\n⚠️ 没有统计数据")
+        return
     
-    segments_sql = f"""
-        SELECT 
-            COUNT(*) as total_segments,
-            COUNT(*) FILTER (WHERE quality_flag = 'valid') as valid_segments,
-            COUNT(DISTINCT grid_id) as grid_count,
-            COUNT(DISTINCT cluster_label) as cluster_count,
-            COUNT(*) FILTER (WHERE cluster_label = -1) as noise_count
-        FROM grid_trajectory_segments
-        {where_clause};
-    """
+    # 筛选成功的grid
+    successful = stats_df[stats_df['success'] == True]
     
-    with clusterer.engine.connect() as conn:
-        stats = pd.read_sql(segments_sql, conn).iloc[0]
+    if successful.empty:
+        print("\n⚠️ 没有成功处理的grid")
+        return
     
-    print(f"\n轨迹段统计:")
-    print(f"  总轨迹段数: {stats['total_segments']}")
-    print(f"  有效轨迹段: {stats['valid_segments']} ({stats['valid_segments']/max(stats['total_segments'],1)*100:.1f}%)")
-    print(f"  Grid数量: {stats['grid_count']}")
-    print(f"  聚类数量: {stats['cluster_count']}")
-    print(f"  噪声点: {stats['noise_count']} ({stats['noise_count']/max(stats['valid_segments'],1)*100:.1f}%)")
+    # 轨迹段统计（从stats_df汇总）
+    total_points = successful['total_points'].sum()
+    total_trajectories = successful['trajectory_count'].sum()
+    total_segments = successful['total_segments'].sum()
+    valid_segments = successful['valid_segments'].sum()
+    grid_count = len(successful)
     
-    # 查询聚类行为统计
-    behavior_sql = f"""
-        SELECT 
-            behavior_label,
-            COUNT(*) as count,
-            AVG(segment_count) as avg_segments_per_cluster,
-            AVG(centroid_avg_speed) as avg_speed
-        FROM grid_clustering_summary
-        {where_clause.replace('city_id', 's.city_id') if where_clause else ''}
-        GROUP BY behavior_label
-        ORDER BY count DESC;
-    """
+    print(f"\n📊 处理统计:")
+    print(f"  处理Grid数: {grid_count}")
+    print(f"  总轨迹点数: {total_points:,}")
+    print(f"  总轨迹数: {total_trajectories:,}")
+    print(f"  总轨迹段数: {total_segments:,}")
+    print(f"  有效轨迹段: {valid_segments:,} ({valid_segments/max(total_segments,1)*100:.1f}%)")
     
-    with clusterer.engine.connect() as conn:
-        behavior_stats = pd.read_sql(behavior_sql, conn)
+    # 聚类统计（从cluster_info汇总）
+    all_clusters = []
+    for _, row in successful.iterrows():
+        if 'cluster_info' in row and isinstance(row['cluster_info'], dict):
+            for label, info in row['cluster_info'].items():
+                all_clusters.append({
+                    'grid_id': row['grid_id'],
+                    'cluster_label': label,
+                    'behavior_label': info.get('behavior_label', 'unknown'),
+                    'segment_count': info.get('segment_count', 0),
+                    'speed_range': info.get('speed_range', ''),
+                    'avg_speed': info.get('centroid_avg_speed', 0)
+                })
     
-    if not behavior_stats.empty:
-        print(f"\n行为类型分布:")
+    if all_clusters:
+        clusters_df = pd.DataFrame(all_clusters)
+        
+        # 按行为类型统计
+        behavior_stats = clusters_df.groupby('behavior_label').agg({
+            'cluster_label': 'count',
+            'segment_count': 'sum',
+            'avg_speed': 'mean'
+        }).reset_index()
+        behavior_stats.columns = ['behavior_label', 'cluster_count', 'total_segments', 'avg_speed']
+        behavior_stats = behavior_stats.sort_values('total_segments', ascending=False)
+        
+        print(f"\n🎯 行为类型分布:")
         for _, row in behavior_stats.iterrows():
-            print(f"  {row['behavior_label']:15s}: {row['count']:3.0f}个聚类 "
-                  f"(平均 {row['avg_segments_per_cluster']:.1f}段/聚类, "
-                  f"平均速度 {row['avg_speed']:.1f}m/s)")
+            print(f"  {row['behavior_label']:15s}: {row['cluster_count']:3.0f}个聚类, "
+                  f"{row['total_segments']:5.0f}段 "
+                  f"(平均速度 {row['avg_speed']:.1f}m/s)")
+        
+        # 噪声统计
+        noise_clusters = clusters_df[clusters_df['cluster_label'] == -1]
+        if not noise_clusters.empty:
+            noise_segments = noise_clusters['segment_count'].sum()
+            print(f"\n⚠️ 噪声点: {len(noise_clusters)}个噪声簇, {noise_segments}段 "
+                  f"({noise_segments/valid_segments*100:.1f}%)")
     
-    # 查询质量过滤统计
-    quality_sql = f"""
-        SELECT 
-            quality_flag,
-            COUNT(*) as count
-        FROM grid_trajectory_segments
-        {where_clause}
-        GROUP BY quality_flag
-        ORDER BY count DESC;
-    """
+    # 质量过滤统计（从quality_stats汇总）
+    all_quality = {}
+    for _, row in successful.iterrows():
+        if 'quality_stats' in row and isinstance(row['quality_stats'], dict):
+            for flag, count in row['quality_stats'].items():
+                all_quality[flag] = all_quality.get(flag, 0) + count
     
-    with clusterer.engine.connect() as conn:
-        quality_stats = pd.read_sql(quality_sql, conn)
+    if all_quality:
+        print(f"\n🔍 质量过滤统计:")
+        quality_total = sum(all_quality.values())
+        for flag, count in sorted(all_quality.items(), key=lambda x: x[1], reverse=True):
+            print(f"  {flag:20s}: {count:5.0f} ({count/quality_total*100:.1f}%)")
+
+
+def print_summary_stats_from_db(clusterer, city_id: str = None):
+    """从数据库查询统计（需要表已存在）"""
+    print(f"\n" + "="*70)
+    print(f"📊 聚类结果汇总统计 (从数据库)")
+    print(f"="*70)
     
-    if not quality_stats.empty:
-        print(f"\n质量过滤统计:")
-        for _, row in quality_stats.iterrows():
-            print(f"  {row['quality_flag']:20s}: {row['count']:5.0f} ({row['count']/quality_stats['count'].sum()*100:.1f}%)")
+    try:
+        # 查询轨迹段统计
+        where_clause = f"WHERE city_id = '{city_id}'" if city_id else ""
+        
+        segments_sql = f"""
+            SELECT 
+                COUNT(*) as total_segments,
+                COUNT(*) FILTER (WHERE quality_flag = 'valid') as valid_segments,
+                COUNT(DISTINCT grid_id) as grid_count,
+                COUNT(DISTINCT cluster_label) as cluster_count,
+                COUNT(*) FILTER (WHERE cluster_label = -1) as noise_count
+            FROM grid_trajectory_segments
+            {where_clause};
+        """
+        
+        with clusterer.engine.connect() as conn:
+            stats = pd.read_sql(segments_sql, conn).iloc[0]
+        
+        print(f"\n轨迹段统计:")
+        print(f"  总轨迹段数: {stats['total_segments']}")
+        print(f"  有效轨迹段: {stats['valid_segments']} ({stats['valid_segments']/max(stats['total_segments'],1)*100:.1f}%)")
+        print(f"  Grid数量: {stats['grid_count']}")
+        print(f"  聚类数量: {stats['cluster_count']}")
+        print(f"  噪声点: {stats['noise_count']} ({stats['noise_count']/max(stats['valid_segments'],1)*100:.1f}%)")
+        
+        # 查询聚类行为统计
+        behavior_sql = f"""
+            SELECT 
+                behavior_label,
+                COUNT(*) as count,
+                AVG(segment_count) as avg_segments_per_cluster,
+                AVG(centroid_avg_speed) as avg_speed
+            FROM grid_clustering_summary
+            {where_clause.replace('city_id', 's.city_id') if where_clause else ''}
+            GROUP BY behavior_label
+            ORDER BY count DESC;
+        """
+        
+        with clusterer.engine.connect() as conn:
+            behavior_stats = pd.read_sql(behavior_sql, conn)
+        
+        if not behavior_stats.empty:
+            print(f"\n行为类型分布:")
+            for _, row in behavior_stats.iterrows():
+                print(f"  {row['behavior_label']:15s}: {row['count']:3.0f}个聚类 "
+                      f"(平均 {row['avg_segments_per_cluster']:.1f}段/聚类, "
+                      f"平均速度 {row['avg_speed']:.1f}m/s)")
+        
+        # 查询质量过滤统计
+        quality_sql = f"""
+            SELECT 
+                quality_flag,
+                COUNT(*) as count
+            FROM grid_trajectory_segments
+            {where_clause}
+            GROUP BY quality_flag
+            ORDER BY count DESC;
+        """
+        
+        with clusterer.engine.connect() as conn:
+            quality_stats = pd.read_sql(quality_sql, conn)
+        
+        if not quality_stats.empty:
+            print(f"\n质量过滤统计:")
+            for _, row in quality_stats.iterrows():
+                print(f"  {row['quality_flag']:20s}: {row['count']:5.0f} ({row['count']/quality_stats['count'].sum()*100:.1f}%)")
+    
+    except Exception as e:
+        print(f"\n⚠️ 无法从数据库查询统计: {e}")
+        print(f"   提示：可能需要先创建数据库表，或使用内存统计")
 
 
 def main():
@@ -305,18 +394,15 @@ def main():
         stats_df.to_csv(stats_file, index=False)
         print(f"\n💾 统计信息已保存到: {stats_file}")
         
-        # 显示汇总统计
+        # 显示汇总统计（从内存，不依赖数据库表）
         if args.show_summary:
-            print_summary_stats(clusterer, args.city)
+            print_summary_stats_from_memory(stats_df)
         
-        # 导出GeoJSON
+        # 导出GeoJSON（需要数据库表）
         if args.export_geojson:
-            if args.city:
-                # 生成analysis_id（使用最新的）
-                analysis_id = f"clustering_{timestamp}"
-                export_to_geojson(clusterer, args.city, analysis_id, args.export_geojson)
-            else:
-                print("\n⚠️ 导出GeoJSON需要指定--city参数")
+            print("\n⚠️ GeoJSON导出需要先创建数据库表")
+            print("   请执行: psql -f sql/grid_clustering_tables.sql")
+            print("   或查看README了解详情")
         
         print(f"\n✅ 分析完成！")
         print(f"\n💡 下一步操作:")

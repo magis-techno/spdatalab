@@ -79,6 +79,9 @@ class ClusterConfig:
     
     # 性能配置
     batch_size: int = 100             # 批量保存大小
+    
+    # 结果保存配置
+    save_to_database: bool = False    # 是否保存到数据库（需要表存在）
 
 
 @dataclass
@@ -871,11 +874,15 @@ class GridTrajectoryClusterer:
                 logger.info(f"   簇{label}: {info['segment_count']}段 | "
                           f"{info['behavior_label']} | {info['speed_range']}")
             
-            # 6. 保存结果
-            self.save_results(
-                grid_id, city_id, analysis_id,
-                valid_segments, labels, cluster_info
-            )
+            # 6. 保存结果（可选）
+            if self.config.save_to_database:
+                logger.info(f"💾 保存结果到数据库...")
+                self.save_results(
+                    grid_id, city_id, analysis_id,
+                    valid_segments, labels, cluster_info
+                )
+            else:
+                logger.debug(f"⏭️  跳过数据库保存（save_to_database=False）")
             
             stats['success'] = True
             stats['elapsed_time'] = time.time() - start_time
