@@ -5,7 +5,7 @@
 
 用途：
 1. 从city_hotspots获取指定grid
-2. 查询该grid内的高质量轨迹点（workstage=2）
+2. 查询该grid内的高质量轨迹点（workstage=2）- 复用polygon_trajectory_query的高性能查询
 3. 为每个点计算特征（速度、加速度、航向角变化等）
 4. 导出到debug表，方便QGIS可视化分析
 
@@ -33,14 +33,32 @@ import sys
 from pathlib import Path
 import argparse
 from datetime import datetime
+import logging
 
 import numpy as np
 import pandas as pd
 from sqlalchemy import create_engine, text
+from shapely import wkt
+
+# 添加项目路径
+project_root = Path(__file__).parent.parent.parent.parent
+sys.path.insert(0, str(project_root / "src"))
+
+# 导入polygon查询器（复用高性能查询逻辑）
+from spdatalab.dataset.polygon_trajectory_query import (
+    HighPerformancePolygonTrajectoryQuery,
+    PolygonTrajectoryConfig
+)
 
 # 数据库配置
 LOCAL_DSN = "postgresql+psycopg://postgres:postgres@local_pg:5432/postgres"
-POINT_TABLE = "public.ddi_data_points"
+
+# 日志配置
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 def get_top_grid(engine, city_id: str = None, grid_rank: int = 1, grid_id: int = None):
     """获取热点grid信息"""
@@ -107,43 +125,73 @@ def get_top_grid(engine, city_id: str = None, grid_rank: int = 1, grid_id: int =
     
     return grid
 
-def query_trajectory_points(engine, geometry_wkt: str, limit: int = None):
-    """查询grid内的轨迹点"""
-    print(f"\n🔍 查询Grid内的轨迹点...")
+def query_trajectory_points(grid_geometry, grid_id: int, limit: int = None):
+    """查询grid内的轨迹点（使用高性能polygon查询器）
     
-    limit_clause = f"LIMIT {limit}" if limit else ""
+    Args:
+        grid_geometry: Grid的几何对象（Shapely Polygon）
+        grid_id: Grid ID
+        limit: 限制返回点数（默认10000）
+        
+    Returns:
+        轨迹点DataFrame
+    """
+    print(f"\n🔍 查询Grid内的轨迹点（使用高性能查询器）...")
+    print(f"   Grid ID: {grid_id}")
+    print(f"   点数限制: {limit or 10000}")
     
-    sql = text(f"""
-        SELECT 
-            dataset_name,
-            vehicle_id,
-            timestamp,
-            twist_linear as speed,
-            yaw,
-            pitch,
-            roll,
-            workstage,
-            ST_X(point_lla) as lon,
-            ST_Y(point_lla) as lat
-        FROM {POINT_TABLE}
-        WHERE ST_Intersects(point_lla, ST_GeomFromText(:geometry_wkt, 4326))
-          AND workstage = 2
-          AND point_lla IS NOT NULL
-          AND twist_linear IS NOT NULL
-        ORDER BY dataset_name, timestamp
-        {limit_clause};
-    """)
+    # 1. 将grid包装成polygon格式
+    polygon_data = [{
+        'id': f'grid_{grid_id}',
+        'geometry': grid_geometry,
+        'properties': {'grid_id': grid_id}
+    }]
     
-    with engine.connect() as conn:
-        points_df = pd.read_sql(sql, conn, params={'geometry_wkt': geometry_wkt})
+    # 2. 配置查询器（只查询相交片段，不获取完整轨迹）
+    config = PolygonTrajectoryConfig(
+        limit_per_polygon=limit or 10000,
+        fetch_complete_trajectories=False,  # 只要相交的点
+        batch_threshold=1,  # 单个polygon，使用批量策略
+        enable_speed_stats=False,  # 暂时禁用，后面自己计算
+        enable_avp_stats=False
+    )
     
-    print(f"✅ 查询到 {len(points_df)} 个轨迹点")
-    if not points_df.empty:
-        print(f"   轨迹数: {points_df['dataset_name'].nunique()}")
-        print(f"   时间范围: {points_df['timestamp'].min()} - {points_df['timestamp'].max()}")
-        print(f"   速度范围: {points_df['speed'].min():.2f} - {points_df['speed'].max():.2f} m/s")
+    # 3. 创建查询处理器
+    processor = HighPerformancePolygonTrajectoryQuery(config)
     
-    return points_df
+    # 4. 执行查询（复用所有优化策略）
+    try:
+        points_df, stats = processor.query_intersecting_trajectory_points(polygon_data)
+        
+        print(f"✅ 查询完成: {len(points_df)} 个轨迹点")
+        if not points_df.empty:
+            print(f"   轨迹数: {points_df['dataset_name'].nunique()}")
+            print(f"   查询策略: {stats['strategy']}")
+            print(f"   查询用时: {stats['query_time']:.2f}s")
+            
+            # 重命名列以匹配后续处理
+            if 'longitude' in points_df.columns:
+                points_df = points_df.rename(columns={
+                    'longitude': 'lon',
+                    'latitude': 'lat',
+                    'twist_linear': 'speed'
+                })
+            
+            # 添加vehicle_id列（如果不存在）
+            if 'vehicle_id' not in points_df.columns:
+                points_df['vehicle_id'] = None
+            
+            print(f"   时间范围: {points_df['timestamp'].min()} - {points_df['timestamp'].max()}")
+            if 'speed' in points_df.columns:
+                print(f"   速度范围: {points_df['speed'].min():.2f} - {points_df['speed'].max():.2f} m/s")
+        
+        return points_df
+        
+    except Exception as e:
+        print(f"❌ 查询失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return pd.DataFrame()
 
 def calculate_point_features(points_df: pd.DataFrame):
     """为每个点计算特征"""
@@ -433,10 +481,13 @@ def main():
         if grid is None:
             return 1
         
-        # 2. 查询轨迹点
+        # 转换geometry为Shapely对象
+        grid_geometry = wkt.loads(grid['geometry_wkt'])
+        
+        # 2. 查询轨迹点（使用高性能查询器）
         points_df = query_trajectory_points(
-            engine,
-            grid['geometry_wkt'],
+            grid_geometry=grid_geometry,
+            grid_id=grid['grid_id'],
             limit=args.limit
         )
         
