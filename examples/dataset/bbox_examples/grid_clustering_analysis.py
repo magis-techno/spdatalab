@@ -325,13 +325,15 @@ def main():
     
     # 聚类参数
     cluster_group = parser.add_argument_group('聚类参数')
-    cluster_group.add_argument('--eps', type=float, default=0.4,
-                              help='DBSCAN距离阈值，默认0.4')
-    cluster_group.add_argument('--min-samples', type=int, default=3,
-                              help='DBSCAN最小样本数，默认3')
+    cluster_group.add_argument('--eps', type=float, default=0.8,
+                              help='DBSCAN距离阈值，默认0.8（减少噪声）')
+    cluster_group.add_argument('--min-samples', type=int, default=5,
+                              help='DBSCAN最小样本数，默认5（更稳定的簇）')
     
     # 输出参数
     output_group = parser.add_argument_group('输出参数')
+    output_group.add_argument('--save-to-database', action='store_true',
+                             help='保存结果到数据库表（需要先创建表）')
     output_group.add_argument('--export-geojson', metavar='FILE',
                              help='导出结果到GeoJSON文件')
     output_group.add_argument('--show-summary', action='store_true', default=True,
@@ -358,6 +360,7 @@ def main():
     print(f"   切分策略: {args.min_distance}米 / {args.max_duration}秒")
     print(f"   质量过滤: 移动>{args.min_movement}m, 跳点<{args.max_jump}m, 速度<{args.max_speed}m/s")
     print(f"   聚类参数: eps={args.eps}, min_samples={args.min_samples}")
+    print(f"   数据库保存: {'✅ 开启' if args.save_to_database else '❌ 关闭（仅内存统计）'}")
     
     # 创建配置
     config = ClusterConfig(
@@ -370,7 +373,8 @@ def main():
         max_jump=args.max_jump,
         max_speed=args.max_speed,
         eps=args.eps,
-        min_samples=args.min_samples
+        min_samples=args.min_samples,
+        save_to_database=args.save_to_database
     )
     
     # 创建聚类器
@@ -400,17 +404,29 @@ def main():
         
         # 导出GeoJSON（需要数据库表）
         if args.export_geojson:
-            print("\n⚠️ GeoJSON导出需要先创建数据库表")
-            print("   请执行: psql -f sql/grid_clustering_tables.sql")
-            print("   或查看README了解详情")
+            if args.save_to_database:
+                export_to_geojson(clusterer, args.city, analysis_id, args.export_geojson)
+            else:
+                print("\n⚠️ GeoJSON导出需要先保存到数据库")
+                print("   请重新运行并添加 --save-to-database 参数")
+                print("   或使用内存统计结果")
         
         print(f"\n✅ 分析完成！")
-        print(f"\n💡 下一步操作:")
-        print(f"   1. 在QGIS中加载 grid_trajectory_segments 表")
-        print(f"   2. 按 cluster_label 字段分类着色")
-        print(f"   3. 查看 grid_clustering_summary 表了解聚类统计")
-        if args.export_geojson:
-            print(f"   4. 在QGIS/Kepler.gl中加载 {args.export_geojson}")
+        
+        # 根据是否保存到数据库，给出不同的下一步建议
+        if args.save_to_database:
+            print(f"\n💡 下一步操作:")
+            print(f"   1. 在QGIS中加载 grid_trajectory_segments 表")
+            print(f"   2. 按 cluster_label 字段分类着色")
+            print(f"   3. 查看 grid_clustering_summary 表了解聚类统计")
+            if args.export_geojson:
+                print(f"   4. 在QGIS/Kepler.gl中加载 {args.export_geojson}")
+        else:
+            print(f"\n💡 下一步操作:")
+            print(f"   • 查看上方统计结果，调整参数（--eps, --min-samples）")
+            print(f"   • 若要保存到数据库查看详细结果:")
+            print(f"     1. 创建数据库表: psql -f sql/grid_clustering_tables.sql")
+            print(f"     2. 重新运行并添加 --save-to-database 参数")
         
         return 0
         

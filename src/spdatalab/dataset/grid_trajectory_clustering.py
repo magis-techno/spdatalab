@@ -74,8 +74,8 @@ class ClusterConfig:
     max_speed: float = 30.0           # 最大合理速度（m/s）
     
     # 聚类配置
-    eps: float = 0.4                  # DBSCAN距离阈值
-    min_samples: int = 3              # DBSCAN最小样本数
+    eps: float = 0.8                  # DBSCAN距离阈值（增大以减少噪声）
+    min_samples: int = 5              # DBSCAN最小样本数（增大以形成更稳定的簇）
     
     # 性能配置
     batch_size: int = 100             # 批量保存大小
@@ -451,7 +451,9 @@ class GridTrajectoryClusterer:
         self, 
         segment: TrajectorySegment
     ) -> Tuple[bool, str]:
-        """质量过滤：原地不动、GPS跳点、速度异常
+        """质量过滤：GPS跳点、速度异常等
+        
+        注意：静止（stationary）也是有效行为，会被标记但不过滤
         
         Returns:
             (is_valid, reason)
@@ -462,23 +464,23 @@ class GridTrajectoryClusterer:
         if len(points) < self.config.min_points:
             return False, "insufficient_points"
         
-        # 2. 移动距离检查（过滤原地不动）
-        total_distance = self._calculate_total_distance(points)
-        if total_distance < self.config.min_movement:
-            return False, "stationary"
-        
-        # 3. GPS跳点检查
+        # 2. GPS跳点检查（真正的数据质量问题）
         max_jump = self._calculate_max_consecutive_distance(points)
         if max_jump > self.config.max_jump:
             return False, "gps_jump"
         
-        # 4. 速度合理性检查
+        # 3. 速度合理性检查（数据异常）
         if 'twist_linear' in points.columns:
             avg_speed = points['twist_linear'].mean()
             if avg_speed > self.config.max_speed:
                 return False, "excessive_speed"
         
-        return True, "valid"
+        # 4. 移动距离检查（标记但不过滤）
+        total_distance = self._calculate_total_distance(points)
+        if total_distance < self.config.min_movement:
+            return True, "stationary"  # ✅ 静止也是有效行为
+        
+        return True, "moving"  # 标记为移动状态
     
     def extract_features(self, segment: TrajectorySegment) -> np.ndarray:
         """提取10维特征向量
