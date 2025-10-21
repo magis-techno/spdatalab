@@ -61,4 +61,4 @@ def ensure_dir(path: Union[str, Path]) -> None:
     Args:
         path: 目录路径
     """
-    Path(path).mkdir(parents=True, exist_ok=True) 
+    Path(path).mkdir(parents=True, exist_ok=True)
