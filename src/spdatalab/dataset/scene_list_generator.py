@@ -54,46 +54,50 @@ class SceneListGenerator:
         Yields:
             解码后的场景数据字典
         """
-        # ============ 临时调试代码 START ============
-        logger.info(f"[调试] SceneListGenerator.iter_scenes_from_file 开始处理: {file_path[:100]}...")
-        # ============ 临时调试代码 END ============
+        # 【调试】打印开始读取文件
+        logger.info(f"[OBS调试] ========== 开始读取文件 ==========")
+        logger.info(f"[OBS调试] 文件路径: {file_path}")
+        logger.info(f"[OBS调试] 是否OBS路径: {file_path.startswith('obs://')}")
         
         try:
+            logger.info(f"[OBS调试] 调用 open_file 打开文件...")
             with open_file(file_path, 'r') as f:
-                # ============ 临时调试代码 START ============
-                logger.info(f"[调试] 文件已打开，开始逐行读取")
+                logger.info(f"[OBS调试] 文件已打开，开始逐行读取")
                 line_count = 0
-                # ============ 临时调试代码 END ============
+                scene_count = 0
                 
                 for line_num, line in enumerate(f, 1):
+                    line_count += 1
+                    
+                    # 每10行打印一次进度
+                    if line_num % 10 == 0:
+                        logger.info(f"[OBS调试] 已读取 {line_num} 行，成功解析 {scene_count} 个场景")
+                    
                     scene = decode_shrink_line(line)
                     if scene is not None:
-                        # ============ 临时调试代码 START ============
-                        line_count += 1
-                        if line_count <= 3:  # 只打印前3行
-                            logger.info(f"[调试] 成功解码第 {line_num} 行，scene_id: {scene.get('scene_id', 'N/A')[:30]}...")
-                        # ============ 临时调试代码 END ============
+                        scene_count += 1
                         yield scene
                     else:
                         self.stats['failed_scenes'] += 1
                         logger.warning(f"文件 {file_path} 第 {line_num} 行解码失败")
                 
-                # ============ 临时调试代码 START ============
-                logger.info(f"[调试] 文件读取完成，共处理 {line_count} 行")
-                # ============ 临时调试代码 END ============
+                logger.info(f"[OBS调试] 文件读取完成!")
+                logger.info(f"[OBS调试]   总行数: {line_count}")
+                logger.info(f"[OBS调试]   成功解析场景数: {scene_count}")
+                logger.info(f"[OBS调试]   失败解析行数: {line_count - scene_count}")
+                
         except Exception as e:
-            # ============ 临时调试代码 START ============
-            logger.error(f"[调试] 读取文件异常！")
-            logger.error(f"[调试] 异常类型: {type(e).__name__}")
-            logger.error(f"[调试] 异常详情: {str(e)}")
-            import traceback
-            logger.error(f"[调试] 堆栈跟踪:\n{traceback.format_exc()}")
-            # ============ 临时调试代码 END ============
+            logger.error(f"[OBS调试] ❌ 读取文件失败!")
+            logger.error(f"[OBS调试]   文件路径: {file_path}")
+            logger.error(f"[OBS调试]   错误类型: {type(e).__name__}")
+            logger.error(f"[OBS调试]   错误信息: {str(e)}")
+            logger.error(f"[OBS调试]   完整异常:", exc_info=True)
             logger.error(f"读取文件 {file_path} 失败: {str(e)}")
             self.stats['failed_files'] += 1
             return
             
         self.stats['processed_files'] += 1
+        logger.info(f"[OBS调试] ========== 文件处理完成 ==========")
         
     def iter_scene_list(self, index_file: str) -> Iterator[Dict]:
         """迭代生成场景数据列表。
