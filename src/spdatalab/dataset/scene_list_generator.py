@@ -54,16 +54,41 @@ class SceneListGenerator:
         Yields:
             解码后的场景数据字典
         """
+        # ============ 临时调试代码 START ============
+        logger.info(f"[调试] SceneListGenerator.iter_scenes_from_file 开始处理: {file_path[:100]}...")
+        # ============ 临时调试代码 END ============
+        
         try:
             with open_file(file_path, 'r') as f:
+                # ============ 临时调试代码 START ============
+                logger.info(f"[调试] 文件已打开，开始逐行读取")
+                line_count = 0
+                # ============ 临时调试代码 END ============
+                
                 for line_num, line in enumerate(f, 1):
                     scene = decode_shrink_line(line)
                     if scene is not None:
+                        # ============ 临时调试代码 START ============
+                        line_count += 1
+                        if line_count <= 3:  # 只打印前3行
+                            logger.info(f"[调试] 成功解码第 {line_num} 行，scene_id: {scene.get('scene_id', 'N/A')[:30]}...")
+                        # ============ 临时调试代码 END ============
                         yield scene
                     else:
                         self.stats['failed_scenes'] += 1
                         logger.warning(f"文件 {file_path} 第 {line_num} 行解码失败")
+                
+                # ============ 临时调试代码 START ============
+                logger.info(f"[调试] 文件读取完成，共处理 {line_count} 行")
+                # ============ 临时调试代码 END ============
         except Exception as e:
+            # ============ 临时调试代码 START ============
+            logger.error(f"[调试] 读取文件异常！")
+            logger.error(f"[调试] 异常类型: {type(e).__name__}")
+            logger.error(f"[调试] 异常详情: {str(e)}")
+            import traceback
+            logger.error(f"[调试] 堆栈跟踪:\n{traceback.format_exc()}")
+            # ============ 临时调试代码 END ============
             logger.error(f"读取文件 {file_path} 失败: {str(e)}")
             self.stats['failed_files'] += 1
             return

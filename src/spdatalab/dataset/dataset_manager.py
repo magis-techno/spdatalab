@@ -389,6 +389,10 @@ class DatasetManager:
         Returns:
             scene_id列表
         """
+        # ============ 临时调试代码 START ============
+        logger.info(f"[调试] extract_scene_ids_from_file: {file_path[:100]}...")
+        # ============ 临时调试代码 END ============
+        
         # 检查缓存
         cache_key = hashlib.md5(file_path.encode()).hexdigest()
         cache_file = self._cache_dir / f"{cache_key}.pkl"
@@ -397,10 +401,17 @@ class DatasetManager:
             try:
                 with open(cache_file, 'rb') as f:
                     cached_scene_ids = pickle.load(f)
+                # ============ 临时调试代码 START ============
+                logger.info(f"[调试] 从缓存加载成功: {len(cached_scene_ids)} 个scene_id")
+                # ============ 临时调试代码 END ============
                 logger.debug(f"从缓存加载 {file_path}: {len(cached_scene_ids)} 个scene_id")
                 return cached_scene_ids
             except Exception as e:
                 logger.warning(f"读取缓存失败 {cache_file}: {e}")
+        
+        # ============ 临时调试代码 START ============
+        logger.info(f"[调试] 缓存不存在，需要从OBS读取文件")
+        # ============ 临时调试代码 END ============
         
         from .scene_list_generator import SceneListGenerator
         
@@ -408,11 +419,19 @@ class DatasetManager:
         generator = SceneListGenerator()
         
         try:
+            # ============ 临时调试代码 START ============
+            logger.info(f"[调试] 开始迭代场景数据...")
+            # ============ 临时调试代码 END ============
+            
             for scene in generator.iter_scenes_from_file(file_path):
                 scene_id = scene.get('scene_id')
                 if scene_id:
                     scene_ids.append(scene_id)
-                    
+            
+            # ============ 临时调试代码 START ============        
+            logger.info(f"[调试] 迭代完成，共收集 {len(scene_ids)} 个scene_id")
+            # ============ 临时调试代码 END ============
+            
             logger.info(f"从 {file_path} 提取到 {len(scene_ids)} 个scene_id")
             
             # 保存缓存
@@ -424,6 +443,13 @@ class DatasetManager:
                 logger.warning(f"保存缓存失败 {cache_file}: {e}")
             
         except Exception as e:
+            # ============ 临时调试代码 START ============
+            logger.error(f"[调试] 提取scene_id过程中发生异常")
+            logger.error(f"[调试] 异常类型: {type(e).__name__}")
+            logger.error(f"[调试] 异常详情: {str(e)}")
+            import traceback
+            logger.error(f"[调试] 堆栈跟踪:\n{traceback.format_exc()}")
+            # ============ 临时调试代码 END ============
             logger.error(f"提取scene_id失败: {file_path}, 错误: {str(e)}")
             self.stats['failed_files'] += 1
             
@@ -530,8 +556,18 @@ class DatasetManager:
             (item, scene_ids, scene_count) 元组
         """
         obs_path = item['obs_path']
+        # ============ 临时调试代码 START ============
+        logger.info(f"[调试] 处理数据项: {item.get('name', 'unknown')}")
+        logger.info(f"[调试] OBS路径: {obs_path[:100]}...")
+        # ============ 临时调试代码 END ============
+        
         scene_ids = self.extract_scene_ids_from_file(obs_path)
         scene_count = len(scene_ids)
+        
+        # ============ 临时调试代码 START ============
+        logger.info(f"[调试] 提取到 {scene_count} 个 scene_id")
+        # ============ 临时调试代码 END ============
+        
         return item, scene_ids, scene_count
 
     def _build_dataset_from_items_standard_mode(self, items: List[Dict], dataset_name: str, 

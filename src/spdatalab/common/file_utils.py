@@ -27,16 +27,33 @@ def open_file(path: Union[str, Path], mode: str = 'r') -> Union[TextIO, BinaryIO
     path = str(path)
     is_obs = path.startswith('obs://')
     
+    # ============ 临时调试代码 START ============
+    if is_obs:
+        logger.info(f"[调试] 准备打开 OBS 文件: {path[:80]}...")
+        logger.info(f"[调试] 打开模式: {mode}")
+    # ============ 临时调试代码 END ============
+    
     try:
         if is_obs:
             init_moxing()  # 初始化 moxing 环境
+            # ============ 临时调试代码 START ============
+            logger.info(f"[调试] 调用 mox.file.File({path[:80]}..., {mode})")
+            # ============ 临时调试代码 END ============
             file_obj = mox.file.File(path, mode)
+            # ============ 临时调试代码 START ============
+            logger.info(f"[调试] 成功打开 OBS 文件")
+            # ============ 临时调试代码 END ============
         else:
             file_obj = open(path, mode)
             
         yield file_obj
         
     except Exception as e:
+        # ============ 临时调试代码 START ============
+        logger.error(f"[调试] 打开文件失败 {path[:80]}...")
+        logger.error(f"[调试] 错误类型: {type(e).__name__}")
+        logger.error(f"[调试] 错误详情: {str(e)}")
+        # ============ 临时调试代码 END ============
         logger.error(f"打开文件失败 {path}: {str(e)}")
         raise
         
